@@ -1,0 +1,27 @@
+parameters:
+    level: 5
+    paths:
+        - src
+        - bot.php
+        - nowpayments_ipn.php
+        - bootstrap.php
+        - cron
+        - tools
+    excludePaths:
+        - vendor
+    bootstrapFiles:
+        - bootstrap.php
+    treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: false
+    ignoreErrors:
+        # $http_response_header یک متغیر فوق‌العاده در PHP است که فقط در صورت
+        # موفقیت file_get_contents ساخته می‌شود؛ تحلیل‌گر این را نمی‌فهمد.
+        -
+            message: '#Variable \$http_response_header on left side of \?\?#'
+            path: src/Support/Http.php
+
+        # اسکریپت‌های CLI با exit() خاتمه می‌یابند؛ تحلیل‌گر شمارهٔ خط بعد
+        # را غیرقابل دسترس می‌داند چون فکر می‌کند بدنه هرگز برنمی‌گردد.
+        -
+            message: '#Else branch is unreachable#'
+            path: tools/*.php

@@ -36,9 +36,17 @@ function line(string $status, string $label, string $detail = ''): void
     global $ok, $bad, $warn;
 
     $icons = ['ok' => '✅', 'warn' => '⚠️ ', 'bad' => '❌'];
-    if ($status === 'ok') { $ok++; } elseif ($status === 'warn') { $warn++; } else { $bad++; }
+    $icon  = $icons[$status] ?? '•';
 
-    echo $icons[$status] . ' ' . $label . ($detail !== '' ? ' — ' . $detail : '') . PHP_EOL;
+    if ($status === 'ok') {
+        $ok++;
+    } elseif ($status === 'warn') {
+        $warn++;
+    } else {
+        $bad++;
+    }
+
+    echo $icon . ' ' . $label . ($detail !== '' ? ' — ' . $detail : '') . PHP_EOL;
 }
 
 echo PHP_EOL . "════════════════════════════════════════" . PHP_EOL;

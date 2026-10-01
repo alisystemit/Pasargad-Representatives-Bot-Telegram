@@ -129,25 +129,14 @@ final class Notifier
     }
 
     /**
-     * ارسال عکس با کپشن.
+     * ارسال عکس با کپشن (delegates به BotApi که فرمت HTML و
+     * fallback بدون فرمت را مدیریت می‌کند).
      *
      * @param array<int, array<int, array<string, mixed>>> $keyboard
      */
     public function sendPhoto(int $chatId, string $fileId, string $caption = '', array $keyboard = []): bool
     {
-        $params = ['chat_id' => $chatId, 'photo' => $fileId];
-
-        if ($caption !== '') {
-            $params['caption'] = Str::truncate($caption, 1024);
-            $params['parse_mode'] = 'HTML';
-        }
-
-        $markup = $this->bot->buildMarkup($keyboard);
-        if ($markup !== null) {
-            $params['reply_markup'] = json_encode($markup);
-        }
-
-        $result = $this->bot->call('sendPhoto', $params);
+        $result = $this->bot->sendPhoto($chatId, $fileId, $caption, $keyboard);
 
         return (bool) ($result['ok'] ?? false);
     }

@@ -1015,37 +1015,6 @@ final class Kernel
         );
     }
 
-    private function showCreditInfo(int $chatId, array $user): void
-    {
-        $credit = (int) ($user['user_credit'] ?? 0);
-        $expire = $user['user_credit_expire'] ?? null;
-
-        $lines = [
-            '🎁 <b>اعتبار ساخت کاربر</b>',
-            '',
-            '💾 اعتبار فعلی: <b>' . Str::formatBytes($credit) . '</b>',
-        ];
-
-        if ($expire !== null) {
-            $lines[] = '📅 انقضا: ' . Str::date((int) $expire);
-        }
-
-        if ($credit <= 0) {
-            $lines[] = '';
-            $lines[] = 'ℹ️ برای افزایش اعتبار، بستهٔ «اعتبار کاربر» را از فروشگاه بخرید.';
-        }
-
-        $lines[] = '';
-        $lines[] = 'ℹ️ با این اعتبار می‌توانید برای مشتریان خود کاربر جدید بسازید.';
-
-        $this->bot->sendMessage($chatId, implode("\n", $lines), [
-            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                [['text' => '🛒 خرید اعتبار', 'data' => \Pasargad\Telegram\BotApi::encodeData('shop', ['kind' => PackageRepository::KIND_USER_CREDIT])]],
-                Keyboard::back('menu'),
-            ])),
-        ]);
-    }
-
     /**
      * کلاینت پنل (در صورت تزریق‌نشدن، از تنظیمات ساخته می‌شود).
      */
@@ -1078,7 +1047,9 @@ final class Kernel
     }
 
     /**
-     * @param array<string, mixed> $order
+     * دستور /buy با کد سفارش — نمایش جزئیات سفارش برای خود کاربر.
+     *
+     * @param array<string, mixed> $user
      */
     private function handleBuyCommand(Update $update, array $user): void
     {

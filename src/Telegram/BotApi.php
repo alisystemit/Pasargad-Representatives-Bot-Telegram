@@ -164,15 +164,57 @@ class BotApi
     }
 
     /**
-     * ویرایش متن همراه با کیبورد — متد پرکاربرد داخل ربات.
+     * ویرایش متن همراه با کیبورد اینلاین — متد پرکاربرد داخل ربات.
      *
-     * @param array<string, mixed> $keyboard
+     * @param  array<int, array<int, array<string, mixed>>> $keyboard ساختار
+     *         [[ ['text' => '…', 'data' => '…'], … ], …]
      */
     public function edit(int $chatId, int $messageId, string $text, array $keyboard = []): array
     {
         return $this->editMessageText($chatId, $messageId, $text, [
             'reply_markup' => $this->buildMarkup($keyboard),
         ]);
+    }
+
+    /**
+     * ارسال عکس با کپشن اختیاری.
+     *
+     * @param  array<int, array<int, array<string, mixed>>> $keyboard
+     * @return array<string, mixed>
+     */
+    public function sendPhoto(int $chatId, string $photo, string $caption = '', array $keyboard = []): array
+    {
+        $params = [
+            'chat_id' => $chatId,
+            'photo'   => $photo,
+        ];
+
+        if ($caption !== '') {
+            // کپشن تلگرام حداکثر ۱۰۲۴ کاراکتر است.
+            $params['caption']   = Str::truncate($caption, 1024);
+            $params['parse_mode'] = 'HTML';
+        }
+
+        $markup = $this->buildMarkup($keyboard);
+        if ($markup !== null) {
+            $params['reply_markup'] = json_encode($markup, JSON_UNESCAPED_UNICODE);
+        }
+
+        $result = $this->call('sendPhoto', $params);
+
+        if (!($result['ok'] ?? false) && $caption !== '') {
+            // اگر کپشن HTML مشکل‌ساز بود، بدون فرمت HTML دوباره تلاش می‌کنیم.
+            $description = (string) ($result['description'] ?? '');
+            if (str_contains($description, "can't parse entities") || str_contains($description, 'Unsupported start tag')) {
+                $plain = $params;
+                unset($plain['parse_mode']);
+                $plain['caption'] = $this->stripHtml($caption);
+
+                return $this->call('sendPhoto', $plain);
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -274,35 +316,103 @@ class BotApi
      */
     public function buildMarkup(array $keyboard): ?array
     {
-        if ($keyboard === []) {
+        $rows = $this->normalizeKeyboard($keyboard);
+
+        if ($rows === []) {
             return null;
         }
 
+        return ['inline_keyboard' => $rows];
+    }
+
+    /**
+     * نرمال‌سازی کیبورد به ساختار قطعی تلگرام.
+     *
+     * این تنها نقطه‌ای است که خروجی نهایی ساخته می‌شود، بنابراین هر ناسازگاری
+     * ورودی اینجا گرفته می‌شود تا پیام خراب (کیبورد بی‌دکمه، دکمهٔ بی‌متن،
+     * callback_data بلندتر از ۶۴ بایت) هرگز به تلگرام نرود.
+     *
+     * @param  array<int, mixed> $keyboard
+     * @return array<int, array<int, array<string, mixed>>>
+     */
+    private function normalizeKeyboard(array $keyboard): array
+    {
         $rows = [];
+
         foreach ($keyboard as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
             $buttons = [];
-            foreach ((array) $row as $button) {
-                if (!is_array($button)) {
-                    continue;
-                }
 
-                $style = (string) ($button['style'] ?? 'default');
+            foreach ($row as $button) {
+                $normalized = $this->normalizeButton($button);
 
-                if ($style === 'url') {
-                    $buttons[] = ['text' => (string) ($button['text'] ?? ''), 'url' => (string) ($button['url'] ?? '')];
-                } elseif ($style === 'pay') {
-                    $buttons[] = ['text' => (string) ($button['text'] ?? ''), 'pay' => true];
-                } else {
-                    $buttons[] = [
-                        'text'          => (string) ($button['text'] ?? ''),
-                        'callback_data' => (string) ($button['data'] ?? 'noop'),
-                    ];
+                if ($normalized !== null) {
+                    $buttons[] = $normalized;
                 }
             }
-            $rows[] = $buttons;
+
+            if ($buttons !== []) {
+                $rows[] = $buttons;
+            }
         }
 
-        return ['inline_keyboard' => $rows];
+        return $rows;
+    }
+
+    /**
+     * نرمال‌سازی یک دکمه؛ اگر دکمه معتبر نباشد null برمی‌گرداند.
+     *
+     * @param  mixed $button
+     * @return array<string, mixed>|null
+     */
+    private function normalizeButton($button): ?array
+    {
+        if (!is_array($button)) {
+            return null;
+        }
+
+        $text = trim((string) ($button['text'] ?? ''));
+
+        // دکمهٔ بدون متن در تلگرام خطا می‌دهد.
+        if ($text === '') {
+            return null;
+        }
+
+        $style = (string) ($button['style'] ?? 'default');
+
+        // دکمهٔ پرداخت مستقیم تلگرام
+        if ($style === 'pay') {
+            return ['text' => $text, 'pay' => true];
+        }
+
+        // دکمهٔ لینک بیرونی
+        if ($style === 'url' || isset($button['url'])) {
+            $url = trim((string) ($button['url'] ?? ''));
+
+            if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
+                Logger::warning('Skipping button with invalid url', ['text' => $text, 'url' => $url]);
+                return null;
+            }
+
+            return ['text' => $text, 'url' => $url];
+        }
+
+        // دکمهٔ callback
+        $data = trim((string) ($button['data'] ?? $button['callback_data'] ?? ''));
+
+        if ($data === '') {
+            $data = 'noop';
+        }
+
+        // تلگرام callback_data را به ۶۴ بایت محدود می‌کند.
+        if (strlen($data) > 64) {
+            $data = substr($data, 0, 52) . '~' . substr(sha1($data), 0, 10);
+        }
+
+        return ['text' => $text, 'callback_data' => $data];
     }
 
     /**

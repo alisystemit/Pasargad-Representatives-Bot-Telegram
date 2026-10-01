@@ -117,8 +117,13 @@ final class Http
         }
 
         $context = stream_context_create($contextOptions);
-        $raw     = @file_get_contents($url, false, $context);
-        $headersOut = isset($http_response_header) && is_array($http_response_header) ? $http_response_header : [];
+
+        // $http_response_header متغیری است که file_get_contents در همین scope
+        // می‌سازد؛ اگر درخواست شکست خورده باشد ممکن است اصلاً ساخته نشود.
+        $raw = @file_get_contents($url, false, $context);
+
+        /** @var array<int, string> $headersOut */
+        $headersOut = $http_response_header ?? [];
 
         $status  = 0;
         $headers = [];
@@ -143,17 +148,26 @@ final class Http
     /**
      * درخواست JSON با تلاش مجدد در صورت خطای شبکه/سرور.
      *
-     * @param  array<string, mixed> $options
+     * @param  array<string, mixed>|string|null $payload آرایهٔ داده یا JSON از پیش کدگذاری‌شده
+     * @param  array<string, mixed>             $options
      * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
      */
-    public static function json(string $method, string $url, array $payload = null, array $options = []): array
+    public static function json(string $method, string $url, $payload = null, array $options = []): array
     {
         $headers = (array) ($options['headers'] ?? []);
         $headers[] = 'Accept: application/json';
 
         if ($payload !== null && !isset($options['form'])) {
             $headers[] = 'Content-Type: application/json';
-            $body      = is_string($payload) ? $payload : json_encode($payload, JSON_UNESCAPED_UNICODE);
+            $encoded   = is_string($payload) ? $payload : json_encode($payload, JSON_UNESCAPED_UNICODE);
+
+            // اگر json_encode شکست بخورد (داده نامعتبر مثلاً UTF-8 خراب)،
+            // بدنهٔ خالی فرستادن بهتر از ارسال JSON ناقص است.
+            if ($encoded === false) {
+                return ['status' => 0, 'data' => null, 'raw' => '', 'error' => 'کدگذاری JSON درخواست ناموفق بود.'];
+            }
+
+            $body = $encoded;
         } else {
             $body = null;
         }

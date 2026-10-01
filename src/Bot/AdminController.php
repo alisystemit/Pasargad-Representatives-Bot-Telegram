@@ -76,7 +76,6 @@ final class AdminController
     /**
      * مسیریابی callback های مدیریتی.
      *
-     * @param array<string, mixed> $update
      * @param array<string, mixed> $user
      * @param array<string, mixed> $data
      */

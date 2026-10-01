@@ -124,16 +124,15 @@ function slugify(string $text): string
 {
     // تبدیل عنوان فارسی به یک کلید لاتین پایدار برای جلوگیری از تکرار
     $map = [
-        'بسته'       => 'package',
-        'اعتبار'     => 'credit',
-        'کاربر'      => 'user',
-        'گیگ'        => 'gb',
-        'برنزی'      => 'bronze',
-        'نقره‌ای'     => 'silver',
-        'نقره ای'     => 'silver',
-        'طلایی'      => 'gold',
-        'الماس'      => 'diamond',
-        'برنزی'      => 'bronze',
+        'بسته'   => 'package',
+        'اعتبار' => 'credit',
+        'کاربر'  => 'user',
+        'گیگ'    => 'gb',
+        'برنزی'  => 'bronze',
+        'نقره‌ای' => 'silver',
+        'نقره ای' => 'silver',
+        'طلایی'  => 'gold',
+        'الماس'  => 'diamond',
     ];
 
     foreach ($map as $fa => $en) {

@@ -157,7 +157,8 @@ try {
 } catch (\RuntimeException) {
     $rolledBack = true;
 }
-check('رول‌بک تراکنش', $rolledBack && (int) $db->value('SELECT is_active FROM packages WHERE slug = ?', ['test-pkg']) === 0);
+check('رول‌بک تراکنش', $rolledBack);
+check('تغییرات تراکنش برگشت خورد', (int) $db->value('SELECT is_active FROM packages WHERE slug = ?', ['test-pkg']) === 0);
 
 echo "\n▶ پاک‌سازی داده‌های تست\n";
 $db->run('DELETE FROM payments');

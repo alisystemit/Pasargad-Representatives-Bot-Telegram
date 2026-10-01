@@ -22,7 +22,6 @@ final class UserProvisioner
 {
     private PasarGuardClient $panel;
     private UserRepository $users;
-    private ?PasarGuardClient $client = null;
 
     public function __construct(UserRepository $users, ?PasarGuardClient $panel = null)
     {
