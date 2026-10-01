@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Payment;
 
+use Pasargad\Store\FeatureFlags;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
@@ -20,6 +21,7 @@ final class PaymentService
     private OrderRepository $orders;
     private Provisioner $provisioner;
     private Settings $settings;
+    private FeatureFlags $flags;
     private ?object $notifier = null;
 
     /** @var array<string, PaymentGateway> */
@@ -28,14 +30,21 @@ final class PaymentService
     public function __construct(
         ?OrderRepository $orders = null,
         ?Provisioner $provisioner = null,
-        ?Settings $settings = null
+        ?Settings $settings = null,
+        ?FeatureFlags $flags = null
     ) {
         $this->orders     = $orders ?? new OrderRepository();
         $this->provisioner = $provisioner ?? new Provisioner();
         $this->settings   = $settings ?? new Settings();
+        $this->flags      = $flags ?? new FeatureFlags($this->settings);
 
         $this->registerGateway(new CardToCardGateway());
         $this->registerGateway(new NowPaymentsGateway());
+    }
+
+    public function flags(): FeatureFlags
+    {
+        return $this->flags;
     }
 
     public function registerGateway(PaymentGateway $gateway): void
@@ -57,13 +66,39 @@ final class PaymentService
     }
 
     /**
-     * فهرست درگاه‌های فعال برای نمایش به کاربر.
+     * فهرست درگاه‌های آمادهٔ استفاده برای کاربر.
+     *
+     * درگاه باید هم در کانفیگ پیکربندی شده باشد (isEnabled)
+     * و هم سوییچ آن در پنل روشن باشد.
      *
      * @return array<string, PaymentGateway>
      */
     public function activeGateways(): array
     {
-        return array_filter($this->gateways, static fn (PaymentGateway $g): bool => $g->isEnabled());
+        return array_filter(
+            $this->gateways,
+            fn (PaymentGateway $g): bool => $g->isEnabled() && $this->flags->isGatewayEnabled($g->name())
+        );
+    }
+
+    /**
+     * همهٔ درگاه‌ها به‌همراه وضعیت سوییچ — برای نمایش به سوپرادمین.
+     *
+     * @return array<string, array{gateway:PaymentGateway, configured:bool, enabled:bool}>
+     */
+    public function gatewayStates(): array
+    {
+        $result = [];
+
+        foreach ($this->gateways as $name => $gateway) {
+            $result[$name] = [
+                'gateway'    => $gateway,
+                'configured' => $gateway->isEnabled(),
+                'enabled'    => $this->flags->isGatewayEnabled($name),
+            ];
+        }
+
+        return $result;
     }
 
     // ------------------------------------------------------------------
@@ -82,6 +117,11 @@ final class PaymentService
 
         if ($gateway === null || !$gateway->isEnabled()) {
             return ['ok' => false, 'message' => 'روش پرداخت انتخابی در دسترس نیست.'];
+        }
+
+        // سوییچ پنل: حتی اگر در کانفیگ باشد، سوپرادمین می‌تواند آن را خاموش کند.
+        if (!$this->flags->isGatewayEnabled($method)) {
+            return ['ok' => false, 'message' => 'این روش پرداخت موقتاً غیرفعال شده است. لطفاً روش دیگری را انتخاب کنید.'];
         }
 
         if ((int) $order['price_toman'] < 1) {

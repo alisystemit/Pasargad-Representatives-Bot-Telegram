@@ -141,14 +141,49 @@ echo PHP_EOL . "▶ پرداخت\n";
 // ------------------------------------------------------------------
 
 $card = new CardToCardGateway();
-line($card->isEnabled() ? 'ok' : 'warn', 'کارت‌به‌کارت', $card->isEnabled() ? Config::str('store.card_number') : 'تنظیم نشده');
+line($card->isEnabled() ? 'ok' : 'warn', 'کارت‌به‌کارت (کانفیگ)',
+    $card->isEnabled() ? Config::str('store.card_number') : 'تنظیم نشده');
 
 $np = new NowPaymentsGateway();
-line($np->isEnabled() ? 'ok' : 'warn', 'ارز دیجیتال', $np->isEnabled() ? 'NOWPayments فعال' : 'تنظیم نشده');
+line($np->isEnabled() ? 'ok' : 'warn', 'ارز دیجیتال (کانفیگ)',
+    $np->isEnabled() ? 'NOWPayments فعال' : 'تنظیم نشده');
 
 if ($np->isEnabled()) {
     line(Config::str('nowpayments.ipn_secret') !== '' ? 'ok' : 'bad',
         'کلید IPN', Config::str('nowpayments.ipn_secret') !== '' ? 'تنظیم شده' : 'بدون این کلید IPN تأیید نمی‌شود');
+}
+
+// ------------------------------------------------------------------
+echo PHP_EOL . "▶ سوییچ‌های پنل مدیریت\n";
+// ------------------------------------------------------------------
+
+try {
+    $flags = new \Pasargad\Store\FeatureFlags(new Settings(Db::instance()));
+
+    line($flags->isBotEnabled() ? 'ok' : 'warn', 'کل ربات',
+        $flags->isBotEnabled() ? 'فعال' : '⚠️ غیرفعال — کاربران پیام تعیین‌شده را می‌بینند');
+
+    foreach ($flags->gatewayStatuses() as $name => $status) {
+        $label = $name === 'card2card' ? 'سوییچ کارت‌به‌کارت' : 'سوییچ ارز دیجیتال';
+        $note  = $status['enabled'] ? 'فعال' : 'غیرفعال';
+
+        if (!$status['configured']) {
+            $note .= ' (در کانفیگ پیکربندی نشده)';
+        }
+
+        line($status['enabled'] ? 'ok' : 'warn', $label, $note);
+    }
+
+    line($flags->isRenewalEnabled() ? 'ok' : 'warn', 'تمدید',
+        $flags->isRenewalEnabled() ? 'فعال' : 'غیرفعال');
+
+    line($flags->isUserToolsEnabled() ? 'ok' : 'warn', 'ابزار ساخت/تمدید کاربر',
+        $flags->isUserToolsEnabled() ? 'فعال' : 'غیرفعال');
+
+    $notice = $flags->disabledNotice();
+    line('ok', 'متن غیرفعالی', mb_strlen($notice) . ' کاراکتر');
+} catch (\Throwable $e) {
+    line('warn', 'سوییچ‌ها', $e->getMessage());
 }
 
 // ------------------------------------------------------------------

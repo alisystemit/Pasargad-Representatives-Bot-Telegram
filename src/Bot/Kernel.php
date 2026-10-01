@@ -34,8 +34,10 @@ final class Kernel
     private PaymentService $payments;
     private Settings $settings;
     private SessionStore $sessions;
+    private \Pasargad\Store\FeatureFlags $flags;
     private ?\Pasargad\Panel\PasarGuardClient $panel = null;
     private ?UserCreator $userCreator = null;
+    private ?AdminController $adminController = null;
 
     public function __construct(
         ?BotApi $bot = null,
@@ -47,7 +49,8 @@ final class Kernel
         ?PaymentService $payments = null,
         ?Settings $settings = null,
         ?SessionStore $sessions = null,
-        ?\Pasargad\Panel\PasarGuardClient $panel = null
+        ?\Pasargad\Panel\PasarGuardClient $panel = null,
+        ?\Pasargad\Store\FeatureFlags $flags = null
     ) {
         $this->bot        = $bot ?? new BotApi();
         $this->notifier   = $notifier ?? new Notifier($this->bot);
@@ -56,11 +59,20 @@ final class Kernel
         $this->orders     = $orders ?? new OrderRepository();
         $this->settings   = $settings ?? new Settings();
         $this->sessions   = $sessions ?? new SessionStore();
+        $this->flags      = $flags ?? new \Pasargad\Store\FeatureFlags($this->settings);
         $this->panel      = $panel;
         $this->provisioner = $provisioner ?? new Provisioner($panel, $this->orders, $this->users, $this->settings);
-        $this->payments   = $payments ?? new PaymentService($this->orders, $this->provisioner, $this->settings);
+        $this->payments   = $payments ?? new PaymentService($this->orders, $this->provisioner, $this->settings, $this->flags);
 
         $this->payments->setNotifier($this->notifier);
+    }
+
+    /**
+     * سوییچ‌های فعال/غیرفعال ربات.
+     */
+    public function flags(): \Pasargad\Store\FeatureFlags
+    {
+        return $this->flags;
     }
 
     /**
@@ -120,6 +132,13 @@ final class Kernel
 
         $isAdmin = $this->notifier->isAdmin($userId);
 
+        // کل ربات خاموش است: فقط سوپرادمین‌ها راه دسترسی دارند تا بتوانند
+        // دوباره روشنش کنند (وگرنه ربات برای همیشه خاموش می‌ماند).
+        if (!$this->flags->isBotEnabled() && !$isAdmin) {
+            $this->handleDisabledBot($update, $chatId);
+            return;
+        }
+
         try {
             if ($update->isCallbackQuery()) {
                 $this->handleCallback($update, $user, $isAdmin);
@@ -138,6 +157,47 @@ final class Kernel
         }
     }
 
+    /**
+     * پاسخ به کاربر وقتی کل ربات خاموش است.
+     *
+     * متن نمایشی از تنظیمات خوانده می‌شود تا سوپرادمین بتواند پیام دلخواه بگذارد.
+     * برای callback فقط یک پاسخ کوتاه (toast) داده می‌شود تا صفحه عوض نشود.
+     */
+    private function handleDisabledBot(Update $update, int $chatId): void
+    {
+        $notice = $this->flags->disabledNotice();
+
+        if ($update->isCallbackQuery()) {
+            $this->bot->answerCallback(
+                (string) ($update->raw()['callback_query']['id'] ?? ''),
+                Str::truncate(strip_tags($notice), 180),
+                true
+            );
+            return;
+        }
+
+        // فقط به پیام‌های معنادار پاسخ می‌دهیم تا در صورت انبوه پیام، اسپم نشود.
+        $text = $update->text();
+        if ($text === '' || $text === '/start') {
+            $this->bot->sendMessage($chatId, $notice, [
+                'reply_markup' => $this->bot->buildMarkup(
+                    \Pasargad\Telegram\Keyboard::link('📞 پشتیبانی', $this->supportLink())
+                ),
+            ]);
+            return;
+        }
+
+        $this->bot->sendMessage($chatId, $notice);
+    }
+
+    /**
+     * لینک پشتیبانی از تنظیمات (در صورت نبود، خالی برمی‌گردد).
+     */
+    private function supportLink(): string
+    {
+        return Config::str('notifications.support_link', 'https://t.me/');
+    }
+
     // ------------------------------------------------------------------
     // پیام‌های متنی
     // ------------------------------------------------------------------
@@ -147,6 +207,19 @@ final class Kernel
         $chatId = (int) $update->chatId();
         $text   = $update->text();
         $state  = $this->sessions->get($update->userId());
+
+        // مسیر ویرایش متن غیرفعالی (فقط سوپرادمین)
+        if ($isAdmin && ($state['step'] ?? '') === 'admin_notice') {
+            $this->sessions->clear((int) $update->userId());
+
+            if ($text === '' || $update->command() === 'cancel') {
+                $this->bot->sendMessage($chatId, '❌ لغو شد.');
+            } else {
+                $this->adminController()->saveNotice($chatId, $text);
+            }
+
+            return;
+        }
 
         // مسیر ورود (state machine ساده)
         if ($state !== null && $this->handleSessionState($update, $user, $state)) {
@@ -329,6 +402,19 @@ final class Kernel
             return;
         }
 
+        // اگر قابلیت مربوطه در پنل خاموش شده، جریان متوقف می‌شود.
+        if (!$this->flags->isUserToolsEnabled()) {
+            $this->sessions->clear($telegramId);
+            $this->bot->sendMessage($chatId, '⚙️ ابزار ساخت کاربر موقتاً غیرفعال است.');
+            return;
+        }
+
+        if ($mode === 'extend' && !$this->flags->isRenewalEnabled()) {
+            $this->sessions->clear($telegramId);
+            $this->bot->sendMessage($chatId, '⏸️ قابلیت تمدید کاربر موقتاً غیرفعال است.');
+            return;
+        }
+
         switch ($step) {
             case 'user_credit:username':
                 $username = Str::toEnglishDigits(trim($text));
@@ -485,6 +571,12 @@ final class Kernel
             return;
         }
 
+        // دکمهٔ نمایشی (غیرفعال) — فقط بازخورد می‌دهد
+        if ($ns === 'noop') {
+            $this->bot->answerCallback($callbackId, 'این قابلیت در حال حاضر غیرفعال است.');
+            return;
+        }
+
         if ($ns === 'menu') {
             $this->bot->answerCallback($callbackId);
             $this->showMainMenu($chatId, $user, $isAdmin);
@@ -573,7 +665,21 @@ final class Kernel
         // ابزارهای ساخت/تمدید کاربر
         if ($ns === 'uc.new' || $ns === 'uc.extend') {
             $this->bot->answerCallback($callbackId);
-            $mode = $ns === 'uc.extend' ? 'extend' : 'new';
+
+            if (!$this->flags->isUserToolsEnabled()) {
+                $this->bot->sendMessage($chatId, '⚙️ ابزار ساخت کاربر موقتاً غیرفعال است.');
+                return;
+            }
+
+            $isExtend = $ns === 'uc.extend';
+
+            // تمدید کاربر جداگانه کنترل می‌شود تا بتوان آن را خاموش کرد.
+            if ($isExtend && !$this->flags->isRenewalEnabled()) {
+                $this->bot->sendMessage($chatId, '⏸️ قابلیت تمدید کاربر موقتاً غیرفعال است.');
+                return;
+            }
+
+            $mode = $isExtend ? 'extend' : 'new';
             $this->sessions->set((int) $update->userId(), ['step' => 'user_credit:username', 'mode' => $mode]);
             $this->userCreator()->askUsername($chatId, $mode);
             return;
@@ -667,6 +773,11 @@ final class Kernel
     {
         if (!$this->settings->bool(Settings::SHOP_OPENED, true)) {
             $this->bot->sendMessage($chatId, '🛒 فروشگاه موقتاً بسته است.');
+            return;
+        }
+
+        if (!$this->flags->isBotEnabled()) {
+            $this->bot->sendMessage($chatId, $this->flags->disabledNotice());
             return;
         }
 
@@ -994,22 +1105,34 @@ final class Kernel
     }
 
     /**
+     * کنترلرر پنل مدیریت (یک‌بار ساخته و نگه داشته می‌شود).
+     */
+    private function adminController(): AdminController
+    {
+        if ($this->adminController === null) {
+            $this->adminController = new AdminController(
+                $this->bot,
+                $this->notifier,
+                $this->users,
+                $this->packages,
+                $this->orders,
+                $this->provisioner,
+                $this->payments,
+                $this->settings,
+                $this->sessions,
+                $this->flags
+            );
+        }
+
+        return $this->adminController;
+    }
+
+    /**
      * مسیریابی callback های مدیریتی (در AdminController پیاده‌سازی می‌شود).
      */
     private function adminRouter(Update $update, array $user, array $data, string $ns, bool $isAdmin): void
     {
-        $admin = new AdminController(
-            $this->bot,
-            $this->notifier,
-            $this->users,
-            $this->packages,
-            $this->orders,
-            $this->provisioner,
-            $this->payments,
-            $this->settings
-        );
-
-        $admin->route($update, $user, $data, $ns);
+        $this->adminController()->route($update, $user, $data, $ns);
     }
 
     private function safeReply(int $chatId, string $text): void

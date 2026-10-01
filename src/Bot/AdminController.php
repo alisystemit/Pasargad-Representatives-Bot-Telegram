@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Pasargad\Bot;
 
 use Pasargad\Payment\PaymentService;
+use Pasargad\Store\FeatureFlags;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\UserRepository;
+use Pasargad\Support\Config;
 use Pasargad\Support\Str;
 use Pasargad\Telegram\BotApi;
 use Pasargad\Telegram\Keyboard;
@@ -36,6 +38,8 @@ final class AdminController
     private Provisioner $provisioner;
     private PaymentService $payments;
     private Settings $settings;
+    private SessionStore $sessions;
+    private FeatureFlags $flags;
 
     public function __construct(
         BotApi $bot,
@@ -45,7 +49,9 @@ final class AdminController
         OrderRepository $orders,
         Provisioner $provisioner,
         PaymentService $payments,
-        Settings $settings
+        Settings $settings,
+        ?SessionStore $sessions = null,
+        ?FeatureFlags $flags = null
     ) {
         $this->bot         = $bot;
         $this->notifier    = $notifier;
@@ -55,6 +61,16 @@ final class AdminController
         $this->provisioner = $provisioner;
         $this->payments    = $payments;
         $this->settings    = $settings;
+        $this->sessions    = $sessions ?? new SessionStore();
+        $this->flags       = $flags ?? new FeatureFlags($settings);
+    }
+
+    /**
+     * سوییچ‌های فعال/غیرفعال.
+     */
+    public function flags(): FeatureFlags
+    {
+        return $this->flags;
     }
 
     /**
@@ -139,6 +155,28 @@ final class AdminController
 
             // ---------------- تنظیمات ----------------
             case 'admin.settings':
+                $this->showSettings($chatId);
+                break;
+
+            case 'admin.gateways':
+                $this->showGateways($chatId);
+                break;
+
+            case 'admin.gateway.toggle':
+                $this->toggleGateway($chatId, (string) ($data['name'] ?? ''));
+                break;
+
+            case 'admin.flag.toggle':
+                $this->toggleFlag($chatId, (string) ($data['key'] ?? ''));
+                break;
+
+            case 'admin.notice.edit':
+                $this->startEditNotice($chatId, (int) $update->userId());
+                break;
+
+            case 'admin.notice.reset':
+                $this->flags->resetDisabledNotice();
+                $this->bot->sendMessage($chatId, '♻️ متن پیش‌فرض بازگردانی شد.');
                 $this->showSettings($chatId);
                 break;
 
@@ -736,26 +774,63 @@ final class AdminController
 
     private function showSettings(int $chatId): void
     {
+        $flags     = $this->flags();
         $shopOpen  = $this->settings->bool(Settings::SHOP_OPENED, true);
         $autoApply = $this->settings->bool(Settings::AUTO_APPLY, true);
+        $botOn     = $flags->isBotEnabled();
 
         $lines = [
-            '⚙️ <b>تنظیمات فروشگاه</b>',
+            '⚙️ <b>تنظیمات ربات</b>',
             '',
-            '🛒 فروشگاه: ' . ($shopOpen ? '🟢 باز' : '🔴 بسته'),
-            '⚙️ اجرای خودکار بسته: ' . ($autoApply ? '🟢 فعال' : '🔴 غیرفعال'),
+            ($botOn ? '🟢' : '🔴') . ' کل ربات: <b>' . ($botOn ? 'فعال' : 'غیرفعال') . '</b>',
+            ($shopOpen ? '🟢' : '🔴') . ' فروشگاه: <b>' . ($shopOpen ? 'باز' : 'بسته') . '</b>',
+            ($autoApply ? '🟢' : '🔴') . ' اجرای خودکار بسته: <b>' . ($autoApply ? 'فعال' : 'غیرفعال') . '</b>',
         ];
 
+        // درگاه‌ها
         $lines[] = '';
-        $lines[] = 'ℹ️ با «اجرای خودکار» فعال، بسته بلافاصله پس از تأیید پرداخت روی پنل اعمال می‌شود.';
+        $lines[] = '💳 <b>درگاه‌های پرداخت</b>';
+
+        foreach ($flags->gatewayStatuses() as $name => $status) {
+            $label = $name === 'card2card' ? 'کارت‌به‌کارت' : 'ارز دیجیتال';
+            $icon  = $status['enabled'] ? '🟢' : '🔴';
+            $note  = '';
+
+            if (!$status['configured']) {
+                $note = '  (پیکربندی نشده در config.php)';
+            }
+
+            $lines[] = $icon . ' ' . $label . ': <b>' . ($status['enabled'] ? 'فعال' : 'غیرفعال') . '</b>' . $note;
+        }
+
+        // قابلیت‌ها
+        $lines[] = '';
+        $lines[] = '🔧 <b>قابلیت‌ها</b>';
+        $lines[] = ($flags->isRenewalEnabled() ? '🟢' : '🔴') . ' تمدید: <b>'
+            . ($flags->isRenewalEnabled() ? 'فعال' : 'غیرفعال') . '</b>';
+        $lines[] = ($flags->isUserToolsEnabled() ? '🟢' : '🔴') . ' ابزار ساخت/تمدید کاربر: <b>'
+            . ($flags->isUserToolsEnabled() ? 'فعال' : 'غیرفعال') . '</b>';
 
         $keyboard = Keyboard::rows([
             [
-                ['text' => $shopOpen ? '🔴 بستن فروشگاه' : '🟢 باز کردن فروشگاه',
-                 'data' => BotApi::encodeData('admin.setting.toggle', ['key' => Settings::SHOP_OPENED])],
-                ['text' => $autoApply ? '⛔️ خاموش کردن اجرای خودکار' : '✅ روشن کردن اجرای خودکار',
-                 'data' => BotApi::encodeData('admin.setting.toggle', ['key' => Settings::AUTO_APPLY])],
+                ['text' => $botOn ? '🔴 غیرفعال کردن ربات' : '🟢 فعال کردن ربات',
+                 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::BOT_ENABLED])],
+                ['text' => '✏️ متن غیرفعالی',
+                 'data' => BotApi::encodeData('admin.notice.edit')],
             ],
+            [
+                ['text' => $shopOpen ? '🔴 بستن فروشگاه' : '🟢 باز کردن فروشگاه',
+                 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::SHOP_OPENED])],
+                ['text' => $autoApply ? '⛔️ خاموش کردن اجرای خودکار' : '✅ روشن کردن اجرای خودکار',
+                 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::AUTO_APPLY])],
+            ],
+            [
+                ['text' => ($flags->isRenewalEnabled() ? '🔴' : '🟢') . ' تمدید',
+                 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::RENEWAL_ENABLED])],
+                ['text' => ($flags->isUserToolsEnabled() ? '🔴' : '🟢') . ' ابزار کاربر',
+                 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::USER_TOOLS])],
+            ],
+            [['text' => '💳 مدیریت درگاه‌های پرداخت', 'data' => BotApi::encodeData('admin.gateways')]],
             [
                 ['text' => '📊 آمار', 'data' => BotApi::encodeData('admin.stats')],
                 ['text' => '🛠 پنل مدیریت', 'data' => BotApi::encodeData('admin.home')],
@@ -765,6 +840,173 @@ final class AdminController
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
             'reply_markup' => $this->bot->buildMarkup($keyboard),
         ]);
+    }
+
+    /**
+     * صفحهٔ مدیریت درگاه‌های پرداخت.
+     */
+    private function showGateways(int $chatId): void
+    {
+        $states = $this->payments->gatewayStates();
+        $flags  = $this->flags();
+
+        $lines = ['💳 <b>درگاه‌های پرداخت</b>', ''];
+        $keyboard = [];
+
+        foreach ($states as $name => $state) {
+            $gateway = $state['gateway'];
+            $enabled = $state['enabled'];
+            $isOn    = $enabled && $state['configured'];
+
+            $lines[] = ($isOn ? '🟢' : '🔴') . ' <b>' . Str::escape($gateway->title()) . '</b>';
+
+            if ($name === 'card2card') {
+                $card = Config::str('store.card_number');
+                $lines[] = '   شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape($card) . '</code>' : '<i>تنظیم نشده</i>');
+            } else {
+                $lines[] = '   کلید API: ' . ($state['configured'] ? '<code>••••••</code>' : '<i>تنظیم نشده</i>');
+            }
+
+            $lines[] = '   وضعیت: ' . ($enabled ? 'فعال' : 'غیرفعال')
+                . ($state['configured'] ? '' : ' — تا وقتی در config.php پیکربندی نشود کار نمی‌کند');
+            $lines[] = '';
+
+            $keyboard[] = [[
+                'text' => ($enabled ? '🔴 خاموش کردن' : '🟢 روشن کردن') . ' ' . $gateway->title(),
+                'data' => BotApi::encodeData('admin.gateway.toggle', ['name' => $name]),
+            ]];
+        }
+
+        $active = 0;
+        foreach ($states as $state) {
+            if ($state['enabled'] && $state['configured']) {
+                $active++;
+            }
+        }
+
+        $lines[] = $active > 0
+            ? '✅ <b>' . Str::faNumber($active) . ' درگاه آمادهٔ پذیرش پرداخت است.</b>'
+            : '⚠️ <b>هیچ درگاه فعالی وجود ندارد!</b> کاربران نمی‌توانند پرداخت کنند.';
+
+        $keyboard[] = Keyboard::back('admin.settings', '⚙️ بازگشت به تنظیمات');
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
+
+    /**
+     * روشن/خاموش کردن یک درگاه پرداخت.
+     */
+    private function toggleGateway(int $chatId, string $name): void
+    {
+        if (!$this->flags()->setGatewayEnabled($name, !$this->flags()->isGatewayEnabled($name))) {
+            $this->bot->sendMessage($chatId, '❌ درگاه ناشناخته است.');
+            return;
+        }
+
+        $state = $this->flags()->isGatewayEnabled($name);
+
+        // اگر آخرین درگاه فعال خاموش شد، به کاربران هشدار می‌دهیم.
+        if (!$state) {
+            $stillAvailable = false;
+            foreach ($this->payments->gatewayStates() as $key => $info) {
+                if ($key !== $name && $info['enabled'] && $info['configured']) {
+                    $stillAvailable = true;
+                    break;
+                }
+            }
+
+            if (!$stillAvailable) {
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    '⚠️ <b>هشدار:</b> با خاموش کردن این درگاه، هیچ روش پرداختی فعال نماند.',
+                    '',
+                    'کاربرانی که سفارش ثبت کرده‌اند نمی‌توانند پرداخت کنند.',
+                    'برای بازگرداندن، همین دکمه را دوباره بزنید.',
+                ]));
+            }
+        }
+
+        $this->showGateways($chatId);
+    }
+
+    /**
+     * تغییر وضعیت یک کلید دوحالته.
+     */
+    private function toggleFlag(int $chatId, string $key): void
+    {
+        $new = $this->flags()->toggle($key);
+
+        if ($new === null) {
+            $this->bot->sendMessage($chatId, '❌ کلید تنظیم نامعتبر است.');
+            return;
+        }
+
+        // خاموش کردن کل ربات: هشدار مهم چون همهٔ کاربران را از دسترس خارج می‌کند.
+        if ($key === Settings::BOT_ENABLED && $new === false) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '🔴 <b>ربات غیرفعال شد.</b>',
+                '',
+                'کاربران عادی دیگر نمی‌توانند از ربات استفاده کنند و پیام تعیین‌شده را می‌بینند.',
+                'سوپرADMین‌ها همچنان دسترسی دارند تا بتوانند ربات را دوباره روشن کنند.',
+            ]));
+
+            $this->showSettings($chatId);
+            return;
+        }
+
+        $this->showSettings($chatId);
+    }
+
+    /**
+     * شروع ویرایش متن غیرفعالی ربات.
+     */
+    public function startEditNotice(int $chatId, int $adminId): void
+    {
+        $current = $this->flags()->disabledNotice();
+
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '✏️ <b>متن غیرفعالی ربات</b>',
+            '',
+            'این متن به کاربرانی نمایش داده می‌شود که وقتی ربات خاموش است پیام می‌دهند.',
+            '',
+            '📌 <b>متن فعلی:</b>',
+            $current,
+            '',
+            '────────────────────',
+            'متن جدید را بفرستید. برای بازگردانی متن پیش‌فرض «پیش‌فرض» را بنویسید.',
+            'برای لغو /cancel را بزنید.',
+        ]), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                [['text' => '♻️ بازگردانی متن پیش‌فرض', 'data' => BotApi::encodeData('admin.notice.reset')]],
+                Keyboard::back('admin.settings', '❌ انصراف'),
+            ])),
+        ]);
+
+        $this->sessions->set($adminId, ['step' => 'admin_notice']);
+    }
+
+    /**
+     * ذخیرهٔ متن غیرفعالی که ادمین فرستاده است.
+     */
+    public function saveNotice(int $chatId, string $text): void
+    {
+        $text = trim($text);
+
+        if (mb_strlen($text) > 4000) {
+            $this->bot->sendMessage($chatId, '⚠️ متن بیش از حد طولانی است (حداکثر ۴۰۰۰ کاراکتر).');
+            return;
+        }
+
+        if ($text === '' || $text === 'پیش‌فرض') {
+            $this->flags()->resetDisabledNotice();
+            $this->bot->sendMessage($chatId, '♻️ متن پیش‌فرض بازگردانی شد.');
+        } else {
+            $this->flags()->setDisabledNotice($text);
+            $this->bot->sendMessage($chatId, '✅ متن غیرفعالی ذخیره شد.');
+        }
+
+        $this->showSettings($chatId);
     }
 
     private function toggleSetting(int $chatId, string $key): void

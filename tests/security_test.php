@@ -198,7 +198,7 @@ check('آمار برای سوپرادمین باز شد', str_contains($bot->all
 
 $bot->reset();
 $kernel->handle(cb($adminId, ['n' => 'admin.settings']));
-check('تنظیمات برای سوپرادمین باز شد', str_contains($bot->allText(), 'تنظیمات فروشگاه'), $bot->allText());
+check('تنظیمات برای سوپرادمین باز شد', str_contains($bot->allText(), 'تنظیمات ربات'), $bot->allText());
 
 // ------------------------------------------------------------------
 echo "\n▶ SQL injection\n";

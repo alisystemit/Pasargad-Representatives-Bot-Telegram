@@ -37,6 +37,9 @@ final class UserCreator
     public function showMenu(int $chatId, array $user): void
     {
         $credit = (int) $user['user_credit'];
+        $flags  = new \Pasargad\Store\FeatureFlags();
+        $toolsOn = $flags->isUserToolsEnabled();
+        $renewOn = $flags->isRenewalEnabled();
 
         $lines = [
             '🎫 <b>ابزار کاربران</b>',
@@ -48,7 +51,10 @@ final class UserCreator
             $lines[] = '📅 انقضای اعتبار: ' . Str::date((int) $user['user_credit_expire']);
         }
 
-        if ($credit <= 0) {
+        if (!$toolsOn) {
+            $lines[] = '';
+            $lines[] = '⚙️ این ابزار موقتاً غیرفعال است.';
+        } elseif ($credit <= 0) {
             $lines[] = '';
             $lines[] = '⚠️ اعتباری برای ساخت کاربر ندارید.';
             $lines[] = 'برای افزایش، بستهٔ «اعتبار کاربر» را بخرید.';
@@ -59,11 +65,18 @@ final class UserCreator
 
         $keyboard = [];
 
-        if ($credit > 0) {
-            $keyboard[] = [
-                ['text' => '➕ ساخت کاربر جدید', 'data' => BotApi::encodeData('uc.new')],
-                ['text' => '🔄 تمدید کاربر', 'data' => BotApi::encodeData('uc.extend')],
-            ];
+        if (!$toolsOn) {
+            $keyboard[] = [['text' => '🛒 خرید اعتبار کاربر', 'data' => BotApi::encodeData('shop', ['kind' => 'user_credit'])]];
+        } elseif ($credit > 0) {
+            $keyboard[] = [['text' => '➕ ساخت کاربر جدید', 'data' => BotApi::encodeData('uc.new')]];
+
+            // دکمهٔ تمدید فقط وقتی نمایش داده می‌شود که قابلیتش روشن باشد.
+            if ($renewOn) {
+                $keyboard[] = [['text' => '🔄 تمدید کاربر', 'data' => BotApi::encodeData('uc.extend')]];
+            } else {
+                $keyboard[] = [['text' => '⏸️ تمدید (غیرفعال)', 'data' => BotApi::encodeData('noop')]];
+            }
+
             $keyboard[] = [['text' => '📋 لیست کاربران پنل', 'data' => BotApi::encodeData('uc.list')]];
         } else {
             $keyboard[] = [[

@@ -101,10 +101,50 @@ final class Settings
         Logger::debug('Settings loaded', ['count' => count($data)]);
     }
 
-    // کلیدهای پرکاربرد
-    public const SHOP_OPENED     = 'shop_opened';
-    public const AUTO_APPLY      = 'auto_apply';
+    // ------------------------------------------------------------------
+    // کلیدهای تنظیمات
+    // ------------------------------------------------------------------
+
+    // فروشگاه و اجرا
+    public const SHOP_OPENED      = 'shop_opened';
+    public const AUTO_APPLY       = 'auto_apply';
     public const LOW_VOLUME_ALERT = 'low_volume_alert';
-    public const WELCOME_TEXT    = 'welcome_text';
-    public const SUPPORT_TEXT    = 'support_text';
+
+    // کل ربات
+    public const BOT_ENABLED         = 'bot_enabled';
+    public const BOT_DISABLED_NOTICE = 'bot_disabled_notice';
+
+    // درگاه‌های پرداخت (هر کدام مستقلاً قابل خاموش/روشن شدن)
+    public const GATEWAY_CARD2CARD      = 'gateway_card2card';
+    public const GATEWAY_NOWPAYMENTS    = 'gateway_nowpayments';
+
+    // قابلیت‌ها
+    public const RENEWAL_ENABLED = 'renewal_enabled';     // تمدید بسته/کاربر
+    public const USER_TOOLS      = 'user_tools_enabled';  // ساخت و تمدید کاربر
+
+    // متن‌ها
+    public const WELCOME_TEXT = 'welcome_text';
+    public const SUPPORT_TEXT = 'support_text';
+
+    /**
+     * پیام پیش‌فرض وقتی ربات خاموش است.
+     */
+    public const DEFAULT_DISABLED_NOTICE = "⛔️ <b>ربات در حال حاضر غیرفعال است</b>\n\n"
+        . "سرویس موقتاً در دسترس نیست. لطفاً کمی بعد دوباره مراجعه کنید.\n"
+        . "در صورت نیاز به پشتیبانی با ما در تماس باشید.";
+
+    /**
+     * کلیدهایی که مقدارشان صفر/یک (bool) است و می‌توانند از پنل تغییر کنند.
+     *
+     * @var array<int, string>
+     */
+    public const TOGGLE_KEYS = [
+        self::BOT_ENABLED,
+        self::GATEWAY_CARD2CARD,
+        self::GATEWAY_NOWPAYMENTS,
+        self::RENEWAL_ENABLED,
+        self::USER_TOOLS,
+        self::SHOP_OPENED,
+        self::AUTO_APPLY,
+    ];
 }
