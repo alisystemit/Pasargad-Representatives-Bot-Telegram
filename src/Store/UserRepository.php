@@ -85,6 +85,17 @@ final class UserRepository
         return $row;
     }
 
+    /**
+     * به‌روزرسانی عمومی فیلدهای کاربر.
+     *
+     * @param array<string, mixed> $data
+     */
+    public function update(int $userId, array $data): void
+    {
+        $data['updated_at'] = time();
+        $this->db->update('users', $data, ['id' => $userId]);
+    }
+
     public function touch(int $userId): void
     {
         $this->db->update('users', ['last_seen_at' => time(), 'updated_at' => time()], ['id' => $userId]);
