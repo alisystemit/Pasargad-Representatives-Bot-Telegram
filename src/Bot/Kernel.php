@@ -251,7 +251,16 @@ final class Kernel
         // مدیریت بسته‌ها با پیام متنی (فقط سوپرادمین)
         if ($isAdmin && str_contains($text, '|')) {
             $editor = new PackageEditor($this->packages, $this->bot);
-            if ($editor->tryHandle($chatId, $text, (int) $update->userId())) {
+
+            // اگر ادمین قبلاً روی «✏️ ویرایش» زده باشد، این پیام باید بستهٔ
+            // موجود را به‌روزرسانی کند نه اینکه بستهٔ تکراری بسازد.
+            $editingId = $this->adminController()->editingPackageId((int) $update->userId());
+
+            if ($editor->tryHandle($chatId, $text, (int) $update->userId(), $editingId)) {
+                if ($editingId !== null) {
+                    $this->sessions->clear((int) $update->userId());
+                }
+
                 return;
             }
         }

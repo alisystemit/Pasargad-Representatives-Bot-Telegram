@@ -255,6 +255,7 @@ final class Text
             'applying'         => '⚙️ در حال اجرا',
             'applied'          => '✅ اجرا شد',
             'failed'           => '❌ ناموفق',
+            'rejected'         => '🚫 پرداخت رد شد',
             'cancelled'        => '🚫 لغو شده',
             'refunded'         => '↩️ بازگشت وجه',
         ];
@@ -273,6 +274,37 @@ final class Text
         return rtrim(implode("\n", $lines));
     }
 
+    /**
+     * برچسب فارسی وضعیت سفارش — تنها منبع حقیقت برای نمایش وضعیت.
+     *
+     * نگه‌داشتن یک نقشهٔ واحد مهم است: هر وضعیت جدیدی که به OrderRepository
+     * اضافه شود، اینجا هم دیده می‌شود و کاربر وضعیت خام نمی‌بیند.
+     *
+     * @return array<string, string>
+     */
+    public static function statusLabels(): array
+    {
+        return [
+            'created'          => '🆕 ایجاد شده',
+            'awaiting_payment' => '⏳ در انتظار پرداخت',
+            'paid'             => '💰 پرداخت شده — در صف اجرا',
+            'applying'         => '⚙️ در حال اجرا روی پنل',
+            'applied'          => '✅ با موفقیت اجرا شد',
+            'failed'           => '❌ ناموفق',
+            'rejected'         => '🚫 پرداخت توسط مدیریت رد شد',
+            'cancelled'        => '🚫 لغو شده',
+            'refunded'         => '↩️ بازگشت وجه',
+        ];
+    }
+
+    /**
+     * برچسب وضعیت با بازگشت به خود وضعیت در صورت ناشناخته بودن.
+     */
+    public static function statusLabel(string $status): string
+    {
+        return self::statusLabels()[$status] ?? $status;
+    }
+
     public static function orderDetails(array $order): string
     {
         $statusLabels = [
@@ -282,6 +314,7 @@ final class Text
             'applying'         => '⚙️ در حال اجرا روی پنل',
             'applied'          => '✅ با موفقیت اجرا شد',
             'failed'           => '❌ ناموفق',
+            'rejected'         => '🚫 پرداخت رد شد',
             'cancelled'        => '🚫 لغو شده',
             'refunded'         => '↩️ بازگشت وجه',
         ];

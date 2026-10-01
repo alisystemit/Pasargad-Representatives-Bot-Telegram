@@ -119,7 +119,7 @@ final class AdminController
                 break;
 
             case 'admin.pkg.edit':
-                $this->startEditPackage($chatId, (int) ($data['id'] ?? 0));
+                $this->startEditPackage($chatId, (int) ($data['id'] ?? 0), (int) $update->userId());
                 break;
 
             // ---------------- سفارش‌ها ----------------
@@ -421,13 +421,38 @@ final class AdminController
         ]));
     }
 
-    private function startEditPackage(int $chatId, int $packageId): void
+    /**
+     * شناسهٔ بسته‌ای که ادمین در حال ویرایش آن است (یا null).
+     *
+     * Kernel پیش از ساخت بستهٔ جدید این را چک می‌کند تا پیام ویرایش به
+     * update منجر شود نه ایجاد رکورد تکراری.
+     */
+    public function editingPackageId(int $telegramId): ?int
+    {
+        $state = $this->sessions->get($telegramId);
+        $id    = (int) ($state['package_id'] ?? 0);
+
+        if (($state['step'] ?? '') !== 'pkg:edit' || $id <= 0) {
+            return null;
+        }
+
+        return $id;
+    }
+
+    private function startEditPackage(int $chatId, int $packageId, int $telegramId): void
     {
         $package = $this->packages->find($packageId);
         if ($package === null) {
             $this->bot->sendMessage($chatId, Text::notFound());
             return;
         }
+
+        // بدون این ثبت، Kernel شناسه را نمی‌داند و به‌جای ویرایش، بستهٔ
+        // تکراری می‌سازد — یعنی فروش با قیمت اشتباه.
+        $this->sessions->set($telegramId, [
+            'step'      => 'pkg:edit',
+            'package_id' => $packageId,
+        ]);
 
         $this->bot->sendMessage($chatId, implode("\n", [
             '✏️ <b>ویرایش بسته</b>',
@@ -476,7 +501,9 @@ final class AdminController
             'applying'         => '⚙️',
             'applied'          => '✅',
             'failed'           => '❌',
+            'rejected'         => '🚫',
             'cancelled'        => '🚫',
+            'refunded'         => '↩️',
         ];
 
         $lines = ['🧾 <b>مدیریت سفارش‌ها</b> (' . Str::faNumber($total) . ')', ''];
@@ -511,6 +538,7 @@ final class AdminController
         $keyboard[] = [
             ['text' => '⏳ رسیدها', 'data' => BotApi::encodeData('admin.orders', ['status' => 'awaiting_payment'])],
             ['text' => '❌ ناموفق', 'data' => BotApi::encodeData('admin.orders', ['status' => 'failed'])],
+            ['text' => '🚫 رد شده', 'data' => BotApi::encodeData('admin.orders', ['status' => 'rejected'])],
         ];
         $keyboard[] = Keyboard::back('admin.home', '🛠 پنل مدیریت');
 
@@ -560,7 +588,12 @@ final class AdminController
             ]];
         }
 
-        if (in_array((string) $order['status'], [OrderRepository::STATUS_PAID, OrderRepository::STATUS_FAILED], true)) {
+        // «اجرای دستی» فقط برای سفارش‌هایی که هنوز نهایی نشده‌اند؛
+        // سفارش ردشده/لغوشده/بازگشت‌وجه هرگز نباید اجرا شود (حتی با دکمهٔ ادمین).
+        if (
+            in_array((string) $order['status'], [OrderRepository::STATUS_PAID, OrderRepository::STATUS_FAILED], true)
+            && !$this->orders->isTerminal((string) $order['status'])
+        ) {
             $keyboard[] = [[
                 'text' => '⚙️ اجرای بسته روی پنل',
                 'data' => BotApi::encodeData('admin.retry', ['id' => $orderId]),
@@ -613,6 +646,16 @@ final class AdminController
         $order = $this->orders->find($orderId);
         if ($order === null) {
             $this->bot->sendMessage($chatId, Text::notFound());
+            return;
+        }
+
+        // دکمه مخفی شده اما callback قدیمی در چت همچنان قابل کلیک است؛
+        // سفارش نهایی (ردشده/لغوشده/بازگشت‌وجه) هرگز نباید اجرا شود.
+        if ($this->orders->isTerminal((string) $order['status'])) {
+            $this->bot->sendMessage($chatId, '🚫 این سفارش نهایی شده و قابل اجرا نیست. وضعیت: '
+                . Str::escape(Text::statusLabel((string) $order['status'])));
+
+            $this->showOrder($chatId, $orderId);
             return;
         }
 

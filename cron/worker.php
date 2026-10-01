@@ -28,19 +28,27 @@ use Pasargad\Support\Migrator;
 Logger::channel('worker');
 
 /**
- * مسیر یک فایل کمکی داخل پوشهٔ لاگ (برای قفل و گزارش).
+ * مسیر فایل قفل در پوشهٔ داده (نه لاگ، چون پوشهٔ لاگ ممکن است پاک شود).
  */
-function support_path(string $name): string
+function lock_file(): string
 {
-    return rtrim(\Pasargad\Support\Config::str('log.path', __DIR__ . '/data/logs'), '/\\')
-        . DIRECTORY_SEPARATOR . $name;
+    $dataDir = dirname(\Pasargad\Support\Config::str('db.path', __DIR__ . '/../data/bot.sqlite'));
+
+    if (!is_dir($dataDir)) {
+        @mkdir($dataDir, 0775, true);
+    }
+
+    return rtrim($dataDir, '/\\') . DIRECTORY_SEPARATOR . 'worker.lock';
 }
 
-$lockFile = support_path('worker.lock');
-$lock     = fopen($lockFile, 'c');
+$lockFile = lock_file();
+$lock     = @fopen($lockFile, 'c');
 
-// قفل: از اجرای همزمان چند نمونه جلوگیری می‌کند
-if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
+if ($lock === false) {
+    // ناتوانی در ساخت فایل قفل نباید باعث شود کرون بی‌صدا از کار بیفتد.
+    fwrite(STDERR, "هشدار: فایل قفل ساخته نشد (" . $lockFile . ") — بدون قفل ادامه می‌دهیم.\n");
+    $lock = null;
+} elseif (!flock($lock, LOCK_EX | LOCK_NB)) {
     echo "worker دیگری در حال اجراست؛ خروج.\n";
     exit(0);
 }
@@ -48,6 +56,12 @@ if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
 try {
     $db = Db::instance();
     (new Migrator($db))->migrate();
+
+    // اطمینان از وجود پوشهٔ لاگ (اگر نبود، لاگ‌ها بی‌صدا از دست می‌رفتند).
+    $logDir = \Pasargad\Support\Config::str('log.path', __DIR__ . '/../data/logs');
+    if (!is_dir($logDir)) {
+        @mkdir($logDir, 0775, true);
+    }
 
     // ۱) اجرای خودکار بسته‌های پرداخت‌شده
     $orders    = new OrderRepository($db);
@@ -100,7 +114,7 @@ try {
     exit(1);
 } finally {
     if (is_resource($lock)) {
-        flock($lock, LOCK_UN);
-        fclose($lock);
+        @flock($lock, LOCK_UN);
+        @fclose($lock);
     }
 }

@@ -8,6 +8,7 @@ use Pasargad\Store\FeatureFlags;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
+use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
@@ -22,6 +23,7 @@ final class PaymentService
     private Provisioner $provisioner;
     private Settings $settings;
     private FeatureFlags $flags;
+    private UserRepository $users;
     private ?object $notifier = null;
 
     /** @var array<string, PaymentGateway> */
@@ -31,12 +33,14 @@ final class PaymentService
         ?OrderRepository $orders = null,
         ?Provisioner $provisioner = null,
         ?Settings $settings = null,
-        ?FeatureFlags $flags = null
+        ?FeatureFlags $flags = null,
+        ?UserRepository $users = null
     ) {
         $this->orders     = $orders ?? new OrderRepository();
         $this->provisioner = $provisioner ?? new Provisioner();
         $this->settings   = $settings ?? new Settings();
         $this->flags      = $flags ?? new FeatureFlags($this->settings);
+        $this->users      = $users ?? new UserRepository();
 
         $this->registerGateway(new CardToCardGateway());
         $this->registerGateway(new NowPaymentsGateway());
@@ -253,9 +257,29 @@ final class PaymentService
         // تأیید: پرداخت paid شود و بسته خودکار اعمال گردد.
         if (!$this->orders->markPaid($orderId, 'card2card', (string) ($order['code'] ?? ''))) {
             $current = $this->orders->find($orderId);
-            if (in_array((string) ($current['status'] ?? ''), [OrderRepository::STATUS_PAID, OrderRepository::STATUS_APPLIED], true)) {
+            $status  = (string) ($current['status'] ?? '');
+
+            if (in_array($status, [OrderRepository::STATUS_PAID, OrderRepository::STATUS_APPLIED], true)) {
                 return ['ok' => true, 'message' => 'این سفارش قبلاً تأیید شده بود.', 'applied' => false];
             }
+
+            // سفارش‌های نهایی (ردشده/لغوشده/بازگشت وجه) نباید دوباره تأیید شوند؛
+            // دکمهٔ تأییدِ قدیمی در چت همچنان قابل کلیک است.
+            if ($this->orders->isTerminal($status)) {
+                $labels = [
+                    OrderRepository::STATUS_REJECTED => 'این پرداخت قبلاً توسط سوپرادمین رد شده است.',
+                    OrderRepository::STATUS_CANCELLED => 'این سفارش لغو شده است.',
+                    OrderRepository::STATUS_REFUNDED  => 'وجه این سفارش بازگردانده شده است.',
+                ];
+
+                return [
+                    'ok'      => false,
+                    'message' => $labels[$status] ?? 'این سفارش نهایی شده و قابل تأیید نیست.',
+                    'applied' => false,
+                ];
+            }
+
+            return ['ok' => false, 'message' => 'تغییر وضعیت سفارش ممکن نشد.', 'applied' => false];
         }
 
         $this->orders->update($orderId, [
@@ -463,9 +487,25 @@ final class PaymentService
      * @param array<string, mixed> $order
      * @param array<string, mixed> $result
      */
+    /**
+     * @param array<string, mixed> $order
+     * @param array<string, mixed> $result
+     */
     private function notifyUserApplied(array $order, array $result): void
     {
         if ($this->notifier === null) {
+            return;
+        }
+
+        // نکتهٔ مهم: order['user_id'] شناسهٔ داخلی دیتابیس است، نه آیدی تلگرام.
+        // باید از طریق UserRepository به telegram_id رسید.
+        $telegramId = $this->telegramIdOf((int) $order['user_id']);
+
+        if ($telegramId === null) {
+            Logger::warning('Cannot notify user about applied package', [
+                'user_id' => $order['user_id'] ?? null,
+            ]);
+
             return;
         }
 
@@ -480,7 +520,30 @@ final class PaymentService
             $message .= 'اعتبار ساخت کاربر شما: <b>' . Str::formatBytes((int) $details['credit_total']) . "</b>\n";
         }
 
-        $this->notifier->notifyUser((int) $order['user_id'], $message);
+        $this->notifier->notifyUser($telegramId, $message);
+    }
+
+    /**
+     * تبدیل شناسهٔ داخلی کاربر به آیدی تلگرام.
+     *
+     * لازم است چون orders.user_id کلید خارجی جدول users است، نه chat id تلگرام.
+     * اگر این تبدیل انجام نشود، اعلان‌ها به چت اشتباهی (با آیدی کوچک) ارسال می‌شود.
+     */
+    private function telegramIdOf(int $userId): ?int
+    {
+        if ($userId <= 0) {
+            return null;
+        }
+
+        $row = $this->users->findById($userId);
+
+        if ($row === null) {
+            return null;
+        }
+
+        $telegramId = (int) ($row['telegram_id'] ?? 0);
+
+        return $telegramId > 0 ? $telegramId : null;
     }
 
     /**

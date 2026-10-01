@@ -19,6 +19,7 @@ $suites = [
     ['هستهٔ سیستم',            $root . '/tools/selftest.php',        false],
     ['بازگشتی (باگ‌های بحرانی)', $root . '/tests/regression_test.php', false],
     ['ساختار کیبورد',         $root . '/tests/keyboard_test.php',   false],
+    ['تقسیم پیام بلند',       $root . '/tests/message_split_test.php', false],
     ['منطق خرید و اجرا',      $root . '/tests/shop_test.php',      false],
     ['اعتبار ساخت کاربر',      $root . '/tests/user_credit_test.php', false],
     ['سرویس هشدارها',          $root . '/tests/alerts_test.php',      false],
