@@ -15,7 +15,7 @@ use Pasargad\Telegram\BotApi;
 final class Notifier
 {
     private BotApi $bot;
-    private int $lastSendAt = 0;
+    private float $lastSendAt = 0.0;
 
     public function __construct(?BotApi $bot = null)
     {
@@ -97,25 +97,34 @@ final class Notifier
      *
      * @param array<string, mixed>|null $button
      */
+    /**
+     * ارسال رسید (عکس) به سوپرADMین‌ها برای تأیید.
+     *
+     * @param array<string, mixed>|null $button
+     */
     public function notifyAdminsWithPhoto(string $fileId, string $caption, ?array $button = null): void
     {
         $keyboard = $button !== null ? [[$button]] : [];
 
-        foreach ($this->adminIds() as $adminId) {
-            $result = $this->bot->sendMessage($adminId, $caption, [
-                'reply_markup' => $this->bot->buildMarkup($keyboard),
+        if ($this->adminIds() === []) {
+            return;
+        }
+
+        $result = $this->bot->sendPhoto(
+            $this->adminIds()[0],
+            $fileId,
+            $caption,
+            $keyboard
+        );
+
+        if (!($result['ok'] ?? false)) {
+            Logger::warning('Failed to send receipt to admin', [
+                'admin_id' => $this->adminIds()[0],
+                'error'    => $result['description'] ?? 'unknown',
             ]);
 
-            if (!($result['ok'] ?? false)) {
-                Logger::warning('Failed to send receipt to admin', ['admin_id' => $adminId]);
-            }
-
-            // ارسال عکس جداگانه چون پیام قبلی آن را ندارد
-            $this->bot->sendMessage($adminId, '🧾 تصویر رسید:', [
-                'reply_markup' => $this->bot->buildMarkup($keyboard),
-            ]);
-
-            $this->sendPhoto($adminId, $fileId, $caption, $keyboard);
+            // اگر ارسال عکس شکست خورد، پیام متنی بفرست تا دست‌کم اطلاعات برسد.
+            $this->notifyAdmins($caption . "\n\n(تصویر رسید ارسال نشد)", $button);
         }
     }
 

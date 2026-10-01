@@ -34,6 +34,7 @@ final class Kernel
     private PaymentService $payments;
     private Settings $settings;
     private SessionStore $sessions;
+    private ?\Pasargad\Panel\PasarGuardClient $panel = null;
 
     public function __construct(
         ?BotApi $bot = null,
@@ -44,17 +45,19 @@ final class Kernel
         ?Provisioner $provisioner = null,
         ?PaymentService $payments = null,
         ?Settings $settings = null,
-        ?SessionStore $sessions = null
+        ?SessionStore $sessions = null,
+        ?\Pasargad\Panel\PasarGuardClient $panel = null
     ) {
         $this->bot        = $bot ?? new BotApi();
         $this->notifier   = $notifier ?? new Notifier($this->bot);
         $this->users      = $users ?? new UserRepository();
         $this->packages   = $packages ?? new PackageRepository();
         $this->orders     = $orders ?? new OrderRepository();
-        $this->provisioner = $provisioner ?? new Provisioner(null, $this->orders, $this->users, $settings);
-        $this->payments   = $payments ?? new PaymentService($this->orders, $this->provisioner, $settings);
         $this->settings   = $settings ?? new Settings();
         $this->sessions   = $sessions ?? new SessionStore();
+        $this->panel      = $panel;
+        $this->provisioner = $provisioner ?? new Provisioner($panel, $this->orders, $this->users, $this->settings);
+        $this->payments   = $payments ?? new PaymentService($this->orders, $this->provisioner, $this->settings);
 
         $this->payments->setNotifier($this->notifier);
     }
@@ -169,6 +172,8 @@ final class Kernel
             case 'start':
             case 'menu':
                 $this->sessions->clear((int) $update->userId());
+                $name = (string) ($user['first_name'] ?? $user['username'] ?? 'دوست عزیز');
+                $this->bot->sendMessage($chatId, Text::welcome($name, $this->isLinked($user)));
                 $this->showMainMenu($chatId, $user, $isAdmin);
                 break;
 
@@ -225,21 +230,30 @@ final class Kernel
     // نشست ورود
     // ------------------------------------------------------------------
 
-    private function handleSessionState(Update $update, array $user, string $state): bool
+    /**
+     * پردازش پیام بر اساس وضعیت نشست جاری (مثلاً مراحل ورود).
+     *
+     * @param  array<string, mixed> $user
+     * @param  array<string, mixed> $state وضعیت خوانده‌شده از SessionStore
+     * @return bool true یعنی پیام در این مسیر مصرف شد
+     */
+    private function handleSessionState(Update $update, array $user, array $state): bool
     {
         $chatId  = (int) $update->chatId();
         $telegramId = (int) $update->userId();
         $text     = $update->text();
+        $step     = (string) ($state['step'] ?? '');
 
-        switch ($state) {
+        switch ($step) {
             case 'await_username':
-                $username = \Pasargad\Support\Str::toEnglishDigits(trim($text));
-                if ($update->isCommand() && $username === '/cancel') {
+                // کاربر می‌تواند با /cancel یا دکمهٔ «❌ انصراف» (پیام خالی) عملیات را لغو کند.
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
                     $this->bot->sendMessage($chatId, '❌ لغو شد.');
                     return true;
                 }
 
+                $username = \Pasargad\Support\Str::toEnglishDigits(trim($text));
                 if (!\Pasargad\Support\Str::isValidPanelUsername($username)) {
                     $this->bot->sendMessage($chatId, '⚠️ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد و _ مجاز است.');
                     return true;
@@ -273,7 +287,7 @@ final class Kernel
     private function attemptLogin(int $chatId, array $user, string $username, string $password): void
     {
         try {
-            $panel   = new \Pasargad\Panel\PasarGuardClient();
+            $panel   = $this->panelClient();
             $admin   = $panel->getAdmin($username, $username, $password);
 
             $this->users->linkPanel((int) $user['id'], $username, $password, $admin);
@@ -363,7 +377,9 @@ final class Kernel
         if ($ns === 'user.login') {
             $this->bot->answerCallback($callbackId);
             $this->sessions->set((int) $update->userId(), ['step' => 'await_username']);
-            $this->bot->edit($chatId, (int) $update->messageId(), Text::loginAskUsername(), Keyboard::back('menu', '❌ انصراف'));
+            $this->bot->sendMessage($chatId, Text::loginAskUsername(), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::back('menu', '❌ انصراف')),
+            ]);
             return;
         }
 
@@ -446,8 +462,7 @@ final class Kernel
 
     private function showMainMenu(int $chatId, array $user, bool $isAdmin, bool $force = false): void
     {
-        $linked = ($user['panel_username'] ?? null) !== null
-            && in_array((string) $user['panel_status'], ['active', 'limited'], true);
+        $linked = $this->isLinked($user);
 
         $this->bot->sendMessage($chatId, Text::mainMenu($isAdmin, $linked, $this->settings->bool(Settings::SHOP_OPENED, true)), [
             'reply_markup' => $this->bot->buildMarkup($this->mainMenuKeyboard($user, $isAdmin)),
@@ -459,8 +474,7 @@ final class Kernel
      */
     private function mainMenuKeyboard(array $user, bool $isAdmin): array
     {
-        $linked = ($user['panel_username'] ?? null) !== null
-            && in_array((string) $user['panel_status'], ['active', 'limited'], true);
+        $linked = $this->isLinked($user);
 
         $rows = [];
 
@@ -781,6 +795,40 @@ final class Kernel
         ]);
     }
 
+    /**
+     * کلاینت پنل (در صورت تزریق‌نشدن، از تنظیمات ساخته می‌شود).
+     */
+    private function panelClient(): \Pasargad\Panel\PasarGuardClient
+    {
+        if ($this->panel === null) {
+            $this->panel = new \Pasargad\Panel\PasarGuardClient();
+        }
+
+        return $this->panel;
+    }
+
+    /**
+     * آیا کاربر به پنل متصل و فعال است؟
+     *
+     * @param  array<string, mixed> $user
+     */
+    private function isLinked(array $user): bool
+    {
+        return $this->isLinkedUser($user);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function isLinkedUser(array $user): bool
+    {
+        return ($user['panel_username'] ?? null) !== null
+            && in_array((string) $user['panel_status'], ['active', 'limited'], true);
+    }
+
+    /**
+     * @param array<string, mixed> $order
+     */
     private function handleBuyCommand(Update $update, array $user): void
     {
         $chatId = (int) $update->chatId();

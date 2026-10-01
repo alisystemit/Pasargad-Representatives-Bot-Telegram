@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Pasargad\Telegram;
 
 /**
- * نمایندهٔ ساختارشدهٔ یک آپدیت تلگرام با دسترسی‌های کوتاه.
+     * نمایندهٔ ساختارشدهٔ یک آپدیت تلگرام با دسترسی‌های کوتاه.
  */
 final class Update
 {
@@ -38,16 +38,30 @@ final class Update
     }
 
     /**
-     * پیام یا callback را با هم برمی‌گرداند (پیام callback هم موجود است).
+     * ساختار اصلی آپدیت: برای callback_query خودِ callback و برای پیام، خودِ پیام.
      */
     private function payload(): array
     {
         return $this->isCallback ? $this->callback : $this->message;
     }
 
+    /**
+     * پیامی که callback به آن اشاره دارد (برای callback_query).
+     *
+     * @return array<string, mixed>
+     */
+    private function baseMessage(): array
+    {
+        if (!$this->isCallback) {
+            return $this->message;
+        }
+
+        return is_array($this->callback['message'] ?? null) ? $this->callback['message'] : [];
+    }
+
     public function chatId(): ?int
     {
-        $chat = $this->payload()['chat'] ?? null;
+        $chat = $this->baseMessage()['chat'] ?? null;
 
         return is_array($chat) ? (int) ($chat['id'] ?? 0) : null;
     }
@@ -61,9 +75,9 @@ final class Update
 
     public function messageId(): ?int
     {
-        $message = $this->isCallback ? ($this->callback['message'] ?? null) : $this->message;
+        $message = $this->baseMessage();
 
-        return is_array($message) ? (int) ($message['message_id'] ?? 0) : null;
+        return $message === [] ? null : (int) ($message['message_id'] ?? 0);
     }
 
     public function text(): string

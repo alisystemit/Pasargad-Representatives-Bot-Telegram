@@ -177,12 +177,18 @@ class BotApi
 
     /**
      * پاسخ سریع به callback query.
+     *
+     * شناسهٔ callback از سمت تلگرام یک رشتهٔ عددی است، پس string پذیرفته می‌شود.
      */
-    public function answerCallback(int $callbackQueryId, string $text = '', bool $alert = false): void
+    public function answerCallback(string $callbackQueryId, string $text = '', bool $alert = false): void
     {
+        if ($callbackQueryId === '') {
+            return;
+        }
+
         $params = ['callback_query_id' => $callbackQueryId];
         if ($text !== '') {
-            $params['text']      = Str::truncate($text, 190);
+            $params['text']       = Str::truncate($text, 190);
             $params['show_alert'] = $alert;
         }
 
@@ -275,9 +281,12 @@ class BotApi
         $rows = [];
         foreach ($keyboard as $row) {
             $buttons = [];
-            foreach ($row as $button) {
-                $style = $button['style'] ?? 'default';
-                unset($button['style']);
+            foreach ((array) $row as $button) {
+                if (!is_array($button)) {
+                    continue;
+                }
+
+                $style = (string) ($button['style'] ?? 'default');
 
                 if ($style === 'url') {
                     $buttons[] = ['text' => (string) ($button['text'] ?? ''), 'url' => (string) ($button['url'] ?? '')];
@@ -285,8 +294,8 @@ class BotApi
                     $buttons[] = ['text' => (string) ($button['text'] ?? ''), 'pay' => true];
                 } else {
                     $buttons[] = [
-                        'text'           => (string) ($button['text'] ?? ''),
-                        'callback_data'  => (string) ($button['data'] ?? 'noop'),
+                        'text'          => (string) ($button['text'] ?? ''),
+                        'callback_data' => (string) ($button['data'] ?? 'noop'),
                     ];
                 }
             }
