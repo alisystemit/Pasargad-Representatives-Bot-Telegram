@@ -187,6 +187,7 @@ $order3 = $orders->create((int) $user['id'], [
 ]);
 $orders->upsertPayment((int) $order3['id'], [
     'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 5.00, 'currency' => 'USD',
     'external_id' => 'NP-CHEAP', 'status' => 'pending',
 ]);
 
@@ -194,8 +195,10 @@ $orders->upsertPayment((int) $order3['id'], [
 $cheap = signedIpn([
     'payment_id'     => 'NP-CHEAP',
     'payment_status' => 'finished',
-    'pay_amount'     => 1.0,
-    'pay_currency'   => 'usd',
+    'price_amount'   => 1.00,
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.000024,
+    'pay_currency'   => 'btc',
 ]);
 $cheapResult = $payments->handleIpn(json_decode($cheap['body'], true), $cheap['headers'], $cheap['body']);
 check('پرداخت کم‌مبلغ رد شد', !($cheapResult['ok'] ?? false), (string) ($cheapResult['message'] ?? ''));
@@ -206,13 +209,146 @@ check('سفارش کم‌مبلغ پرداخت نشد', (string) $orders->find((
 $good = signedIpn([
     'payment_id'     => 'NP-CHEAP',
     'payment_status' => 'finished',
-    'pay_amount'     => 5.09,   // ۲٪ بالاتر از ۵ دلار
-    'pay_currency'   => 'usd',
+    'price_amount'   => 5.09,   // ۲٪ بالاتر از ۵ دلار
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.000123,
+    'pay_currency'   => 'btc',
 ]);
 $goodResult = $payments->handleIpn(json_decode($good['body'], true), $good['headers'], $good['body']);
 check('مبلغ با تلورانس پذیرفته شد', $goodResult['ok'] ?? false, (string) ($goodResult['message'] ?? ''));
 
 // مبلغ بسیار متفاوت → رد
+
+// =====================================================================
+echo "\n════════════════════════════════════════";
+echo "\n  باگ: payload واقعی NOWPayments (بیت‌کوین) رد می‌شد";
+echo "\n════════════════════════════════════════\n";
+// =====================================================================
+
+// این دقیقاً شکل واقعی IPN درگاه با pay_currency = btc است:
+// price_amount = مبلغ فاکتور به دلار، pay_amount = مقدار واقعی بیت‌کوین
+$btcUser = makeUser('btc_admin');
+$btcOrder = $orders->create((int) $btcUser['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'duration_days' => 30, 'price_toman' => 500000,
+    'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
+    'payment_method' => NowPaymentsGateway::NAME,
+]);
+
+// ۵ دلار ≈ ۵۰۰۰۰۰ تومان با نرخ ۱۰۰۰۰۰
+$orders->upsertPayment((int) $btcOrder['id'], [
+    'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 5.00, 'currency' => 'USD',
+    'external_id' => 'NP-BTC-1', 'status' => 'pending',
+]);
+
+$btcPayload = signedIpn([
+    'payment_id'     => 'NP-BTC-1',
+    'order_id'       => (string) $btcOrder['code'],
+    'payment_status' => 'finished',
+    'price_amount'   => 5.00,
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.00012123,     // مقدار واقعی بیت‌کوین
+    'pay_currency'   => 'btc',
+]);
+
+$btcResult = $payments->handleIpn(
+    json_decode($btcPayload['body'], true),
+    $btcPayload['headers'],
+    $btcPayload['body']
+);
+check('پرداخت واقعی بیت‌کوین تأیید شد', $btcResult['ok'] ?? false, (string) ($btcResult['message'] ?? ''));
+
+$btcRow = $orders->find((int) $btcOrder['id']);
+check('سفارش بیت‌کوین paid شد',
+    in_array((string) $btcRow['status'], [OrderRepository::STATUS_PAID, OrderRepository::STATUS_APPLIED], true),
+    'status=' . $btcRow['status']);
+check('حجم روی پنل اعمال شد', (int) $panel->admins['btc_admin']['data_limit'] === 100 * $GB,
+    'limit=' . ((int) $panel->admins['btc_admin']['data_limit'] / $GB) . 'GB');
+
+// ---- نرخ متفاوت بین سفارش و پرداخت نباید رد شود ----
+$btc2 = makeUser('btc_rate_admin');
+$btc2Order = $orders->create((int) $btc2['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'duration_days' => 30, 'price_toman' => 500000,
+    'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
+    'payment_method' => NowPaymentsGateway::NAME,
+]);
+$orders->upsertPayment((int) $btc2Order['id'], [
+    'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 4.85,      // نرخ در لحظهٔ پرداخت عوض شده بود
+    'currency' => 'USD',
+    'external_id' => 'NP-BTC-2', 'status' => 'pending',
+]);
+$p2 = signedIpn([
+    'payment_id'     => 'NP-BTC-2',
+    'payment_status' => 'finished',
+    'price_amount'   => 4.85,
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.000119,
+    'pay_currency'   => 'btc',
+]);
+$r2b = $payments->handleIpn(json_decode($p2['body'], true), $p2['headers'], $p2['body']);
+check('نرخ متفاوت بین سفارش و پرداخت رد نشد', $r2b['ok'] ?? false, (string) ($r2b['message'] ?? ''));
+
+// ---- partially_paid (کم‌پرداختی) نباید بسته بدهد ----
+$btc3 = makeUser('btc_partial_admin');
+$btc3Order = $orders->create((int) $btc3['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'duration_days' => 30, 'price_toman' => 500000,
+    'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
+    'payment_method' => NowPaymentsGateway::NAME,
+]);
+$orders->upsertPayment((int) $btc3Order['id'], [
+    'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 5.00, 'currency' => 'USD',
+    'external_id' => 'NP-BTC-PARTIAL', 'status' => 'pending',
+]);
+$p3 = signedIpn([
+    'payment_id'     => 'NP-BTC-PARTIAL',
+    'payment_status' => 'partially_paid',
+    'price_amount'   => 5.00,
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.00002,
+    'pay_currency'   => 'btc',
+]);
+$r3 = $payments->handleIpn(json_decode($p3['body'], true), $p3['headers'], $p3['body']);
+check('پرداخت کم‌مبلغ بیت‌کوین بسته نداد', ($r3['paid'] ?? true) === false);
+check('پیام کم‌پرداختی داده شد', str_contains((string) ($r3['message'] ?? ''), 'کمتر از مبلغ'), (string) ($r3['message'] ?? ''));
+check('سفارش کم‌پرداختی در انتظار ماند',
+    (string) $orders->find((int) $btc3Order['id'])['status'] === OrderRepository::STATUS_AWAITING_PAYMENT,
+    'status=' . $orders->find((int) $btc3Order['id'])['status']);
+check('حجمی به کم‌پرداختی داده نشد', (int) $panel->admins['btc_partial_admin']['data_limit'] === 0,
+    'limit=' . $panel->admins['btc_partial_admin']['data_limit']);
+
+// ---- فاکتور کم‌بها (زیر حداقل درگاه) باید پذیرفته شود ----
+$small = makeUser('small_order_admin');
+$smallOrder = $orders->create((int) $small['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 10,
+    'duration_days' => 30, 'price_toman' => 50000,     // نیم دلار
+    'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
+    'payment_method' => NowPaymentsGateway::NAME,
+]);
+// درگاه به خاطر حداقل ۱ دلار، فاکتور را ۱ دلار می‌کند
+$orders->upsertPayment((int) $smallOrder['id'], [
+    'method' => NowPaymentsGateway::NAME, 'amount_toman' => 50000,
+    'amount_usd' => 1.00, 'currency' => 'USD',
+    'external_id' => 'NP-SMALL', 'status' => 'pending',
+]);
+$p4 = signedIpn([
+    'payment_id'     => 'NP-SMALL',
+    'payment_status' => 'finished',
+    'price_amount'   => 1.00,
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.000024,
+    'pay_currency'   => 'btc',
+]);
+$r4 = $payments->handleIpn(json_decode($p4['body'], true), $p4['headers'], $p4['body']);
+check('فاکتورِ بلندشده به حداقل درگاه پذیرفته شد', $r4['ok'] ?? false, (string) ($r4['message'] ?? ''));
 $order4 = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
     'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
@@ -221,13 +357,16 @@ $order4 = $orders->create((int) $user['id'], [
 ]);
 $orders->upsertPayment((int) $order4['id'], [
     'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 5.00, 'currency' => 'USD',
     'external_id' => 'NP-WRONG', 'status' => 'pending',
 ]);
 $wrong = signedIpn([
     'payment_id'     => 'NP-WRONG',
     'payment_status' => 'finished',
-    'pay_amount'     => 100.0,
-    'pay_currency'   => 'usd',
+    'price_amount'   => 100.00,
+    'price_currency' => 'usd',
+    'pay_amount'     => 0.0024,
+    'pay_currency'   => 'btc',
 ]);
 $wrongResult = $payments->handleIpn(json_decode($wrong['body'], true), $wrong['headers'], $wrong['body']);
 check('مبلغ ۲۰ برابر رد شد', !($wrongResult['ok'] ?? false));

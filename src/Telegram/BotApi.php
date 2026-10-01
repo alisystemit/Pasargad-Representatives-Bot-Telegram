@@ -151,22 +151,34 @@ class BotApi
      */
     private function deliver(int $chatId, string $text, array $options, bool $isFollowUp): array
     {
-        // تضمین نهایی: اگر متن هنوز از سقف رد شده بود، دوباره شکسته می‌شود.
-        // این آخرین سد دفاعی است و نباید به حذف بی‌صدای پیام منجر شود.
+        // تضمین نهایی: اگر متن هنوز از سقف رد شده بود، دوباره شکسته و **همهٔ**
+        // بخش‌ها فرستاده می‌شوند. فرستادن فقط بخش اول یعنی حذف بی‌صدای بقیهٔ
+        // پیام — دقیقاً همان چیزی که این کد باید جلویش را بگیرد.
         if (mb_strlen($text) > self::MAX_TEXT_LENGTH) {
-            // متن از سقف رد شده پس splitText حتماً بیش از یک بخش می‌دهد.
             $pieces = $this->splitText($text, self::MAX_TEXT_LENGTH);
+            $total  = count($pieces);
+            $last   = [];
 
-            Logger::warning('Message exceeded Telegram limit after split, sent first part', [
+            Logger::warning('Message exceeded Telegram limit after split', [
                 'chat_id' => $chatId,
                 'len'     => mb_strlen($text),
-                'parts'   => count($pieces),
+                'parts'   => $total,
             ]);
 
-            $retry        = $options;
-            $retry['text'] = $pieces[0];
+            foreach ($pieces as $index => $piece) {
+                $part = $options;
+                unset($part['reply_markup']);
 
-            return $this->call('sendMessage', $retry);
+                if ($index === $total - 1 && isset($options['reply_markup'])) {
+                    $part['reply_markup'] = $options['reply_markup'];
+                }
+
+                $part['text'] = ($index + 1) . '/' . $total . "\n\n" . $piece;
+
+                $last = $this->call('sendMessage', $part);
+            }
+
+            return $last;
         }
 
         $result = $this->call('sendMessage', $options);
@@ -221,7 +233,7 @@ class BotApi
      *
      * @return array<int, string>
      */
-    public function splitText(string $text, int $limit = self::MAX_TEXT_LENGTH): array
+    public function splitText(string $text, int $limit = self::MAX_TEXT_LENGTH, int $depth = 0): array
     {
         $limit = max(200, $limit);
 
@@ -229,20 +241,39 @@ class BotApi
             return [$text];
         }
 
-        // سقف کاری کمی کمتر از حد تلگرام تا جای شمارنده و برچسب‌های باز
-        // HTML در بخش‌های بعدی بماند.
+        // سقف سخت تلگرام — هیچ بخشی نباید از این رد شود.
+        $hardLimit = $limit;
+
+        // سقف کاری: جای شمارندهٔ «۳/۱۲» و برچسب‌های بستهٔ HTML که
+        // balanceFragment اضافه می‌کند باید از قبل کنار گذاشته شود.
         $limit = max(200, $limit - self::SPLIT_HEADROOM);
 
         $lines  = preg_split('/\R/u', $text) ?: [$text];
         $chunks = [];
         $buffer = '';
 
-        $flush = static function (string $part) use (&$chunks): void {
+        $flush = function (string $part, int $depth = 0) use (&$chunks, $hardLimit): void {
             if (trim($part) === '') {
                 return;
             }
 
-            $chunks[] = self::balanceFragment($part);
+            // budget: حداکثر کاراکتری که بستن برچسب‌های باز می‌تواند اضافه کند.
+            $budget   = self::SPLIT_HEADROOM;
+            $balanced = self::balanceFragment($part, $budget);
+
+            if (mb_strlen($balanced) <= $hardLimit || $depth >= 2) {
+                $chunks[] = mb_strlen($balanced) > $hardLimit
+                    ? Str::truncate($balanced, $hardLimit)
+                    : $balanced;
+
+                return;
+            }
+
+            // هنوز از سقف رد شده → یک بار دیگر با سقف کوچک‌تر تقسیم می‌کنیم.
+            // سقف `depth` جلوی بازگشت بی‌نهایت را می‌گیرد.
+            foreach ($this->splitText($balanced, $hardLimit - $budget, $depth + 1) as $piece) {
+                $chunks[] = self::balanceFragment($piece, $budget);
+            }
         };
 
         foreach ($lines as $line) {
@@ -271,7 +302,18 @@ class BotApi
 
         $flush($buffer);
 
-        return $chunks === [] ? [Str::truncate($text, $limit)] : $chunks;
+        if ($chunks === []) {
+            return [Str::truncate($text, $hardLimit)];
+        }
+
+        // آخرین تضمین: اگر باز هم بخشی از سقف سخت رد شده بود، کوتاه می‌شود.
+        foreach ($chunks as $index => $chunk) {
+            if (mb_strlen($chunk) > $hardLimit) {
+                $chunks[$index] = Str::truncate($chunk, $hardLimit);
+            }
+        }
+
+        return $chunks;
     }
 
     /**
@@ -280,6 +322,11 @@ class BotApi
      * اول از مرز کلمه استفاده می‌شود و اگر یک «کلمه» خودش از سقف بزرگ‌تر باشد
      * (مثلاً یک رشتهٔ هش بدون فاصله یا base64)، به‌اجبار کاراکتر‌به‌کاراکتر
      * بریده می‌شود تا هیچ‌وقت از سقف رد نشود.
+     *
+     * نکتهٔ حیاتی: اگر بریدن داخل یک برچسب HTML اتفاق بیفتد (مثلاً وسط
+     * `href="…"` یک لینک ۵۰۰۰ کاراکتری)، تلگرام خطای parse می‌دهد و در
+     * fallback متن ساده هم برچسب ناقص به کاربر نشان داده می‌شود. پس قبل از
+     * بریدن اجباری، برش تا آخرین `>` انجام می‌شود.
      *
      * @return array<int, string>
      */
@@ -301,7 +348,7 @@ class BotApi
                     $carry    = '';
                 }
 
-                foreach (mb_str_split($token, $limit) as $hard) {
+                foreach (self::hardSplit($token, $limit) as $hard) {
                     $pieces[] = $hard;
                 }
 
@@ -324,6 +371,74 @@ class BotApi
     }
 
     /**
+     * بریدن اجباری یک توکن بلند، بدون شکستن داخل برچسب HTML.
+     *
+     * اگر نقطهٔ برش داخل یک برچسب باز بیفتد (یعنی تعداد `>` کمتر از تعداد `<`
+     * تا آن نقطه)، برش تا نزدیک‌ترین `>` بعدی هل داده می‌شود. اگر حتی یک
+     * برچسبِ بلندتر از سقف باشد (مثلاً لینک فوق‌العاده طولانی)، برچسب به‌طور
+     * کامل حذف می‌شود تا متن قابل ارسال بماند.
+     *
+     * @return array<int, string>
+     */
+    private static function hardSplit(string $token, int $limit): array
+    {
+        $pieces = [];
+
+        while ($token !== '') {
+            if (mb_strlen($token) <= $limit) {
+                $pieces[] = $token;
+                break;
+            }
+
+            $slice    = mb_substr($token, 0, $limit);
+            $openTags = substr_count($slice, '<');
+            $closeTags = substr_count($slice, '>');
+
+            if ($openTags > $closeTags) {
+                // نقطهٔ برش داخل یک برچسب است.
+                $nextEnd = strpos($token, '>', $limit);
+
+                if ($nextEnd !== false && $nextEnd - $limit < 200) {
+                    // برچسب تا ۲۰۰ کاراکتر بعد تمام می‌شود → تا همان‌جا می‌بریم.
+                    $slice = mb_substr($token, 0, $nextEnd + 1);
+                } else {
+                    // برچسب غیرعادی بلند است → کل بلوک باز تا `>` بعدی حذف می‌شود.
+                    $scan = 0;
+                    while (($nextEnd = strpos($token, '>', $scan)) !== false && $nextEnd < $limit) {
+                        $scan = $nextEnd + 1;
+                    }
+
+                    if ($nextEnd === false) {
+                        // بسته‌شدنی در کار نیست → باقیمانده متن ساده است.
+                        $slice = $slice . "\n⚠️ بخشی از پیام به‌دلیل طول زیاد حذف شد.";
+                        $token = '';
+                        $pieces[] = $slice;
+                        break;
+                    }
+
+                    $skipTo = $nextEnd + 1;
+
+                    // متن قبل از برچسب باقی می‌ماند، برچسب حذف می‌شود.
+                    $before = mb_substr($token, 0, $scan > 0 ? $scan - 1 : 0);
+                    $before = rtrim($before);
+
+                    if ($before !== '') {
+                        $pieces[] = $before;
+                    }
+
+                    $token = (string) mb_substr($token, $skipTo);
+                    continue;
+                }
+            }
+
+            $pieces[] = $slice;
+            $token    = (string) mb_substr($token, mb_strlen($slice));
+        }
+
+        return array_values(array_filter($pieces, static fn (string $p): bool => trim($p) !== ''));
+    }
+
+    /**
      * برچسب‌های HTML مجاز در پیام‌های این ربات.
      */
     private const HTML_TAGS = 'b|i|u|s|code|pre|a|tg-spoiler|blockquote';
@@ -340,7 +455,7 @@ class BotApi
      * باعث خطای «can't parse entities: Unsupported start tag» می‌شود و
      * **کل پیام ارسال نمی‌شود** — نه فقط یک خط از آن.
      */
-    private static function balanceFragment(string $text): string
+    private static function balanceFragment(string $text, int $maxExtra = 128): string
     {
         $pattern = '#<(/?)(' . self::HTML_TAGS . ')(?:\s[^>]*)?>#i';
 
@@ -396,12 +511,80 @@ class BotApi
 
         $output .= substr($text, $lastClose);
 
-        // بستن برچسب‌هایی که تا انتهای قطعه باز مانده‌اند.
+        // ---- برچسب‌هایی که تا انتهای قطعه باز مانده‌اند ----
+        if ($stack === []) {
+            return $output;
+        }
+
+        // بستن N برچسب باز یعنی حداکثر N×۱۲ بایت اضافه. اگر این از بودجه
+        // بیشتر شود (مثلاً ۴۰۰ برچسب باز)، به‌جای سرریز کردن سقف پیام،
+        // خودِ برچسب‌های باز حذف می‌شوند — از دست رفتن یک تگ بی‌ضرر است،
+        // سرریز کردن سقف پیام یا بازگشت بی‌نهایت نه.
+        if (strlen($output) + self::closersLength($stack) > $maxExtra) {
+            return self::stripUnclosedOpens($output, $stack);
+        }
+
         for ($i = count($stack) - 1; $i >= 0; $i--) {
             $output .= '</' . $stack[$i] . '>';
         }
 
         return $output;
+    }
+
+    /**
+     * طول متنی که بستن این برچسب‌ها اضافه می‌کند.
+     *
+     * @param array<int, string> $tags
+     */
+    private static function closersLength(array $tags): int
+    {
+        $length = 0;
+
+        foreach ($tags as $tag) {
+            $length += strlen($tag) + 3;   // ‎</tag>‎
+        }
+
+        return $length;
+    }
+
+    /**
+     * حذف آخرین برچسب‌های باز از متن (وقتی بستنشان ممکن نیست).
+     *
+     * برچسب‌ها از انتهای متن و به ترتیب معکوس پشته حذف می‌شوند تا ساختار
+     * بقیهٔ متن سالم بماند.
+     *
+     * @param array<int, string> $stack
+     */
+    private static function stripUnclosedOpens(string $text, array $stack): string
+    {
+        for ($i = count($stack) - 1; $i >= 0; $i--) {
+            $tag = $stack[$i];
+
+            // آخرین occurrence برچسب بازِ این نوع را حذف می‌کنیم.
+            $position = strripos($text, '<' . $tag);
+
+            // فقط اگر باز باشد (یعنی جفت متناظر بعدش نباشد)
+            while ($position !== false) {
+                $end = strpos($text, '>', $position);
+
+                if ($end === false) {
+                    break;
+                }
+
+                $inner = substr($text, $position + strlen($tag) + 1, $end - $position - strlen($tag) - 1);
+
+                if ($inner !== '' && ($inner[0] === ' ' || $inner[0] === "\t")) {
+                    // دارای صفت است → شکل کامل <tag ...> را پیدا کن
+                    $position = strripos(substr($text, 0, $position), '<' . $tag);
+                    continue;
+                }
+
+                $text    = substr($text, 0, $position) . substr($text, $end + 1);
+                break;
+            }
+        }
+
+        return $text;
     }
 
     /**

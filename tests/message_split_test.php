@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../bootstrap.php';
 
+use Pasargad\Support\Str;
 use Pasargad\Telegram\BotApi;
 
 $passed = 0;
@@ -292,6 +293,136 @@ $normOrig   = str_replace('</b>', '', preg_replace('/\s+/u', '', $orig));
 $normJoined = str_replace('</b>', '', preg_replace('/\s+/u', '', $rejoined));
 check('محتوای گزارش پس از تقسیم حفظ شد', $normJoined === $normOrig,
     'got=' . mb_strlen($normJoined) . ' want=' . mb_strlen($normOrig));
+
+// ------------------------------------------------------------------
+echo "\n▶ بریدن نباید داخل برچسب HTML اتفاق بیفتد\n";
+// ------------------------------------------------------------------
+
+// لینکی که کل آن یک «کلمه» بدون فاصله است و از سقف بلندتر است
+$hugeLink = '<a href="https://example.com/' . str_repeat('x', 5000) . '">کلیک</a>';
+$linkSplit = $bot->splitText($hugeLink);
+
+check('لینک بلند شکسته شد', count($linkSplit) > 1, 'chunks=' . count($linkSplit));
+check('بخش‌های لینک زیر سقف‌اند', allUnder($linkSplit, $MAX), 'max=' . maxLen($linkSplit));
+
+// هیچ بخشی نباید برچسب نیمه‌کاره داشته باشد.
+// یک برچسب ناقص یعنی «<» بدون «>» متناظر در همان بخش.
+$partialTags = 0;
+foreach ($linkSplit as $chunk) {
+    $partialTags += substr_count($chunk, '<') - substr_count($chunk, '>');
+}
+check('برچسب نیمه‌کاره باقی نماند', $partialTags <= 0, 'delta=' . $partialTags);
+
+// برچسب بازِ تنها (بدون بسته‌شدن) نباید متن را نابود کند
+$unclosed = '<b>' . str_repeat('متن بدون بستن ', 800);
+$unclosedSplit = $bot->splitText($unclosed);
+check('برچسب باز متن بلند شکسته شد', count($unclosedSplit) > 1, 'chunks=' . count($unclosedSplit));
+check('بخش‌های برچسب باز زیر سقف‌اند', allUnder($unclosedSplit, $MAX), 'max=' . maxLen($unclosedSplit));
+
+$openOk = true;
+foreach ($unclosedSplit as $chunk) {
+    if (substr_count($chunk, '<b>') !== substr_count($chunk, '</b>')) {
+        $openOk = false;
+    }
+}
+check('برچسب باز در هر بخش بسته شد', $openOk);
+
+// ------------------------------------------------------------------
+echo "\n▶ تعداد زیاد برچسب باز در یک پنجره\n";
+// --------------------------------------------------------------------
+
+// ۴۰۰ برچسب باز در یک خط بلند → balanceFragment باید برچسب‌های زیادی
+// ببندد و نباید از سقف سخت رد شود.
+$manyTags = str_repeat('<b>متن', 900);
+$manyChunks = $bot->splitText($manyTags);
+check('متن با برچسب‌های زیاد شکسته شد', count($manyChunks) > 1, 'chunks=' . count($manyChunks));
+check('هیچ بخشی از سقف سخت رد نشد', allUnder($manyChunks, $MAX), 'max=' . maxLen($manyChunks));
+check('اندازهٔ بخش‌ها همه زیر سقف‌اند', maxLen($manyChunks) < $MAX,
+    'max=' . maxLen($manyChunks) . ' limit=' . $MAX);
+
+// ------------------------------------------------------------------
+echo "\n▶ Str::truncate هرگز از سقف رد نمی‌شود\n";
+// ------------------------------------------------------------------
+
+check('truncate دقیقاً سقف را رعایت می‌کند',
+    mb_strlen(Str::truncate(str_repeat('ا', 5000), $MAX)) <= $MAX,
+    'len=' . mb_strlen(Str::truncate(str_repeat('ا', 5000), $MAX)));
+
+check('truncate کوتاه‌تر از متن را دست‌نخورده می‌گذارد',
+    Str::truncate('کوتاه', 100) === 'کوتاه');
+
+check('truncate با سقف خیلی کوچک کرش نمی‌کند',
+    is_string(Str::truncate(str_repeat('ا', 100), 1)));
+
+check('truncate با سقف صفر کرش نمی‌کند',
+    is_string(Str::truncate(str_repeat('ا', 100), 0)));
+
+foreach ([10, 100, 1000, 4096] as $cap) {
+    $out = Str::truncate(str_repeat('الف', $cap * 2), $cap);
+    check("truncate با سقف {$cap} در محدوده ماند", mb_strlen($out) <= $cap, 'len=' . mb_strlen($out));
+}
+
+// ------------------------------------------------------------------
+echo "\n▶ sendMessage هیچ بخشی را حذف نمی‌کند\n";
+// ------------------------------------------------------------------
+
+$flood = new class extends BotApi {
+    public array $sent = [];
+    public function __construct() {}
+    public function call(string $method, array $params = [], int $attempts = 3): array
+    {
+        $this->sent[] = ['method' => $method] + $params;
+        return ['ok' => true, 'result' => ['message_id' => 1]];
+    }
+};
+
+// پیام با تعداد بسیار زیاد برچسب باز — سخت‌ترین حالت برای متعادل‌سازی
+$flood->sendMessage(1, str_repeat('<b>متن', 900));
+
+$maxSent = 0;
+$allOk = true;
+foreach ($flood->sent as $call) {
+    $len = mb_strlen((string) $call['text']);
+    $maxSent = max($maxSent, $len);
+
+    if ($len > $MAX) {
+        $allOk = false;
+    }
+}
+check('پیام سیل‌آسا در چند بخش رفت', count($flood->sent) > 1, 'calls=' . count($flood->sent));
+check('هیچ بخش ارسالی از سقف ۴۰۹۶ رد نشد', $allOk, 'maxSent=' . $maxSent);
+
+// با کیبورد هم نباید همهٔ بخش‌ها کیبورد بگیرند
+$flood2 = new class extends BotApi {
+    public array $sent = [];
+    public function __construct() {}
+    public function call(string $method, array $params = [], int $attempts = 3): array
+    {
+        $this->sent[] = ['method' => $method] + $params;
+        return ['ok' => true, 'result' => ['message_id' => 1]];
+    }
+};
+
+$flood2->sendMessage(1, str_repeat('<b>متن', 900), [
+    'reply_markup' => ['inline_keyboard' => [[['text' => 'x', 'callback_data' => 'y']]]],
+]);
+
+$withKb = 0;
+foreach ($flood2->sent as $call) {
+    if (isset($call['reply_markup'])) {
+        $withKb++;
+    }
+}
+check('کیبورد فقط یک بخش گرفت', $withKb === 1, 'withMarkup=' . $withKb);
+check('بخش‌های سیل‌آسا هم زیر سقف‌اند',
+    (function () use ($flood2): bool {
+        foreach ($flood2->sent as $call) {
+            if (mb_strlen((string) $call['text']) > 4096) {
+                return false;
+            }
+        }
+        return true;
+    })());
 
 echo "\n───────────────\n";
 echo "نتیجه: {$passed} موفق، {$failed} ناموفق\n";

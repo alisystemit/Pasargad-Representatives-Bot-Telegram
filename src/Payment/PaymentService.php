@@ -456,7 +456,9 @@ final class PaymentService
         // ------------------------------------------------------------------
         $remoteStatus = strtolower(trim((string) ($payload['payment_status'] ?? '')));
 
-        $paid = in_array($remoteStatus, ['finished', 'confirmed', 'partially_paid'], true);
+        // توجه: «partially_paid» در NOWPayments یعنی کمتر از مبلغ فاکتور
+        // واریز شده — یعنی پرداخت‌نشده از نظر ما. نباید بسته را فعال کند.
+        $paid = in_array($remoteStatus, ['finished', 'confirmed'], true);
 
         $this->orders->updatePayment((int) $payment['id'], [
             'status'      => $remoteStatus !== '' ? $remoteStatus : 'unknown',
@@ -465,18 +467,27 @@ final class PaymentService
 
         if (!$paid) {
             Logger::info('IPN received but payment not settled', [
-                'payment_id' => $paymentId,
-                'status'     => $remoteStatus,
+                'payment_id'     => $paymentId,
+                'status'         => $remoteStatus,
+                'underpaid'      => $remoteStatus === 'partially_paid',
+                'expected'       => (int) $order['price_toman'],
+                'actually_paid'  => $payload['pay_amount'] ?? null,
             ]);
 
-            return ['ok' => true, 'message' => 'وضعیت پرداخت: ' . ($remoteStatus !== '' ? $remoteStatus : 'نامشخص')];
+            $message = 'وضعیت پرداخت: ' . ($remoteStatus !== '' ? $remoteStatus : 'نامشخص');
+
+            if ($remoteStatus === 'partially_paid') {
+                $message = 'پرداخت کمتر از مبلغ فاکتور بود. لطفاً باقی‌مانده را واریز کنید.';
+            }
+
+            return ['ok' => true, 'paid' => false, 'message' => $message];
         }
 
         // ------------------------------------------------------------------
-        // بررسی مبلغ: بدون این، یک پرداخت ۱ دلاری می‌تواند بستهٔ ۵۰۰ هزار
-        // تومانی را فعال کند.
+        // بررسی مبلغ: بدون این، یک پرداخت ناقص یا اشتباه می‌تواند بستهٔ
+        // ۵۰۰ هزار تومانی را فعال کند.
         // ------------------------------------------------------------------
-        if (!$this->ipnAmountMatchesOrder($order, $payload)) {
+        if (!$this->ipnAmountMatchesOrder($order, $payload, $payment)) {
             Logger::error('IPN amount mismatch — payment NOT credited', [
                 'order_id'   => (int) $order['id'],
                 'payment_id' => $paymentId,
@@ -515,36 +526,69 @@ final class PaymentService
      * @param array<string, mixed> $order
      * @param array<string, mixed> $payload
      */
-    private function ipnAmountMatchesOrder(array $order, array $payload): bool
+    private function ipnAmountMatchesOrder(array $order, array $payload, ?array $paymentRow = null): bool
     {
-        $paidAmount = $payload['pay_amount'] ?? ($payload['price_amount'] ?? null);
-
-        if ($paidAmount === null || !is_numeric($paidAmount)) {
-            Logger::warning('IPN has no amount field, relying on signature only', [
-                'order_id' => (int) $order['id'],
-            ]);
-
-            return true;
-        }
-
         $expectedToman = (int) $order['price_toman'];
 
         if ($expectedToman <= 0) {
             return true;
         }
 
-        $currency = strtoupper(trim((string) ($payload['pay_currency'] ?? ($payload['price_currency'] ?? 'USD'))));
-        $paid     = (float) $paidAmount;
+        // ------------------------------------------------------------------
+        // نکتهٔ حیاتی: باید از price_amount استفاده شود، نه pay_amount.
+        //
+        // درگاه دو مبلغ متفاوت می‌فرستد:
+        //   price_amount / price_currency → مبلغ فاکتور به دلار (همان که ما
+        //                                    درخواست دادیم، مثلاً 5.00 USD)
+        //   pay_amount   / pay_currency   → مقدار واقعی پرداخت‌شده به ارز
+        //                                    دیجیتال (مثلاً 0.00012 BTC)
+        //
+        // مقایسهٔ pay_amount با قیمت تومانی یعنی 0.00012 × 100000 = 12 تومان
+        // در برابر 500000 تومان → همهٔ پرداخت‌های واقعی رد می‌شدند.
+        // ------------------------------------------------------------------
+        $invoiceAmount = $payload['price_amount'] ?? null;
 
-        // تبدیل به تومان در صورت نیاز
+        if ($invoiceAmount === null || !is_numeric($invoiceAmount)) {
+            Logger::warning('IPN has no price_amount field, relying on signature only', [
+                'order_id'   => (int) $order['id'],
+                'payment_id' => $payload['payment_id'] ?? null,
+            ]);
+
+            return true;
+        }
+
+        $currency = strtoupper(trim((string) ($payload['price_currency'] ?? 'USD')));
+        $paid     = (float) $invoiceAmount;
+
         if ($currency === 'IRR' || $currency === 'IRT' || $currency === 'TOMAN') {
             $paidToman = (int) round($paid);
         } else {
-            $rate        = Config::float('store.toman_per_usd', 100000.0);
-            $paidToman   = (int) round($paid * $rate);
+            // نرخ را از همان چیزی می‌گیریم که فاکتور با آن ساخته شد، نه از
+            // کانفیگ فعلی — چون ممکن است نرخ بین ثبت سفارش و پرداخت عوض شده
+            // باشد و در آن حالت مقایسهٔ ناعادلانه رد می‌شد.
+            $rate = (float) ($paymentRow['amount_usd'] ?? 0) > 0.0
+                ? (float) $paymentRow['amount_usd']
+                : $paid;
+
+            $paidToman = $rate > 0.0
+                ? (int) round($expectedToman * ($paid / $rate))
+                : 0;
         }
 
         $tolerance = (int) ceil($expectedToman * self::IPN_AMOUNT_TOLERANCE);
+
+        // نسبت پرداخت‌شده به مبلغ فاکتور — عدد خواناتر برای لاگ
+        $billedUsd = (float) ($paymentRow['amount_usd'] ?? 0.0);
+
+        Logger::info('IPN amount compared', [
+            'order_id'      => (int) $order['id'],
+            'expected_toman' => $expectedToman,
+            'billed_usd'    => $billedUsd,
+            'ipn_price'     => $paid,
+            'currency'      => $currency,
+            'actually_paid' => $payload['pay_amount'] ?? null,
+            'pay_currency'  => $payload['pay_currency'] ?? null,
+        ]);
 
         return abs($paidToman - $expectedToman) <= $tolerance;
     }

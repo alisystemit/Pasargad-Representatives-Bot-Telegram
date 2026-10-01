@@ -230,11 +230,32 @@ final class Str
         return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
+    /**
+     * بریدن متن به طول مشخص، با رعایت سقف نهایی.
+ *
+     * نکتهٔ مهم: طول برگشتی **شامل پسوند** است. اگر از این تابع با سقف
+     * سخت‌افزاری تلگرام (مثلاً ۴۰۹۶) استفاده شود و مقدار برگشتی ۴۰۹۷ شود،
+     * تلگرام کل پیام را رد می‌کند. برای همین اینجا جای پسوند کنار گذاشته
+     * می‌شود تا نتیجه هرگز از `$length` بیشتر نشود.
+ *
+ * @param int $length حداکثر طول نهایی خروجی (شامل پسوند)
+ */
     public static function truncate(string $text, int $length = 64, string $suffix = '…'): string
     {
-        return mb_strlen($text) > $length
-            ? mb_substr($text, 0, $length) . $suffix
-            : $text;
+        $length = max(1, $length);
+
+        if (mb_strlen($text) <= $length) {
+            return $text;
+        }
+
+        // پسوند باید داخل سقف جا شود، وگرنه متن اصلی بی‌دلیل کوتاه می‌شود.
+        $keep = $length - mb_strlen($suffix);
+
+        if ($keep <= 0) {
+            return mb_substr($suffix, 0, $length);
+        }
+
+        return rtrim(mb_substr($text, 0, $keep)) . $suffix;
     }
 
     /**
