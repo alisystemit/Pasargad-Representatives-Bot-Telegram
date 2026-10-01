@@ -19,11 +19,20 @@ final class FakePanelClient extends PasarGuardClient
 
     public string $loginError = '';
     public string $modifyError = '';
+    public string $createUserError = '';
+    public string $modifyUserError = '';
     public int $modifyCalls = 0;
     public int $loginCalls = 0;
 
     /** @var array<int, array<string, mixed>> */
     public array $modifyRequests = [];
+
+    /** @var array<int, array<string, mixed>> پنل کاربرانِ ساخته/تغییر‌یافته */
+    public array $created = [];
+    public array $modified = [];
+
+    /** @var array<string, array<string, mixed>> وضعیت کاربران در پنل قلابی */
+    public array $existingUsers = [];
 
     public function __construct()
     {
@@ -72,6 +81,61 @@ final class FakePanelClient extends PasarGuardClient
         }
 
         return $this->admins[$targetUsername];
+    }
+
+    // ------------------------------------------------------------------
+    // کاربران (برای تست اعتبار ساخت کاربر)
+    // ------------------------------------------------------------------
+
+    public function createUser(array $payload, string $username, string $password): array
+    {
+        if ($this->createUserError !== '') {
+            throw new PanelException($this->createUserError, 500);
+        }
+
+        $this->created[] = $payload;
+
+        $this->existingUsers[(string) ($payload['username'] ?? '')] = array_merge([
+            'status'       => 'active',
+            'used_traffic' => 0,
+            'data_limit'   => 0,
+            'expire'       => 0,
+        ], $payload);
+
+        return $this->existingUsers[(string) $payload['username']];
+    }
+
+    public function modifyUser(string $targetUsername, array $payload, string $username, string $password): array
+    {
+        if ($this->modifyUserError !== '') {
+            throw new PanelException($this->modifyUserError, 500);
+        }
+
+        $this->modified[] = array_merge(['username' => $targetUsername], $payload);
+
+        $this->existingUsers[$targetUsername] = array_merge(
+            $this->existingUsers[$targetUsername] ?? [],
+            $payload
+        );
+
+        return $this->existingUsers[$targetUsername];
+    }
+
+    public function getUser(string $targetUsername, string $username, string $password): array
+    {
+        if (!isset($this->existingUsers[$targetUsername])) {
+            throw new PanelException('Not found', 404);
+        }
+
+        return $this->existingUsers[$targetUsername];
+    }
+
+    public function listUsers(string $username, string $password, array $query = []): array
+    {
+        return [
+            'users' => array_values($this->existingUsers),
+            'total' => count($this->existingUsers),
+        ];
     }
 
     /**

@@ -35,6 +35,7 @@ final class Kernel
     private Settings $settings;
     private SessionStore $sessions;
     private ?\Pasargad\Panel\PasarGuardClient $panel = null;
+    private ?UserCreator $userCreator = null;
 
     public function __construct(
         ?BotApi $bot = null,
@@ -60,6 +61,22 @@ final class Kernel
         $this->payments   = $payments ?? new PaymentService($this->orders, $this->provisioner, $this->settings);
 
         $this->payments->setNotifier($this->notifier);
+    }
+
+    /**
+     * ابزار ساخت/تمدید کاربر (با اعتبار خریداری‌شده).
+     */
+    private function userCreator(): UserCreator
+    {
+        if ($this->userCreator === null) {
+            $this->userCreator = new UserCreator(
+                $this->users,
+                new \Pasargad\Store\UserProvisioner($this->users, $this->panelClient()),
+                $this->bot
+            );
+        }
+
+        return $this->userCreator;
     }
 
     public function notifier(): Notifier
@@ -133,6 +150,12 @@ final class Kernel
 
         // مسیر ورود (state machine ساده)
         if ($state !== null && $this->handleSessionState($update, $user, $state)) {
+            return;
+        }
+
+        // مسیر ساخت/تمدید کاربر با اعتبار خریداری‌شده
+        if ($state !== null && str_starts_with($state['step'] ?? '', 'user_credit:')) {
+            $this->handleUserCreatorState($update, $user, $state);
             return;
         }
 
@@ -281,6 +304,106 @@ final class Kernel
             default:
                 $this->sessions->clear($telegramId);
                 return false;
+        }
+    }
+
+    /**
+     * جریان گام‌به‌گام ساخت/تمدید کاربر با اعتبار خریداری‌شده.
+     *
+     * @param array<string, mixed> $user
+     * @param array<string, mixed> $state
+     */
+    private function handleUserCreatorState(Update $update, array $user, array $state): void
+    {
+        $chatId = (int) $update->chatId();
+        $telegramId = (int) $update->userId();
+        $text = $update->text();
+        $step = (string) ($state['step'] ?? '');
+        $mode = (string) ($state['mode'] ?? 'new');
+        $creator = $this->userCreator();
+
+        // دکمهٔ انصراف (پیام خالی) یا دستور لغو
+        if ($text === '' || $update->command() === 'cancel') {
+            $this->sessions->clear($telegramId);
+            $this->bot->sendMessage($chatId, '❌ لغو شد.');
+            return;
+        }
+
+        switch ($step) {
+            case 'user_credit:username':
+                $username = Str::toEnglishDigits(trim($text));
+                if (!Str::isValidPanelUsername($username)) {
+                    $this->bot->sendMessage($chatId, '⚠️ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد، _ و - مجاز است.');
+                    return;
+                }
+
+                $this->sessions->set($telegramId, [
+                    'step'     => 'user_credit:volume',
+                    'mode'     => $mode,
+                    'username' => $username,
+                ]);
+                $creator->handleVolume($chatId, $user, $mode, $username, '');
+                // پیام راهنمای حجم
+                $this->bot->sendMessage($chatId, "حجم مورد نیاز را به گیگابایت بفرستید.\n\n💾 اعتبار فعلی شما: <b>"
+                    . Str::formatBytes((int) $user['user_credit']) . '</b>', [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::back('user.credit', '❌ انصراف')),
+                ]);
+                return;
+
+            case 'user_credit:volume':
+                $volume = (float) Str::toEnglishDigits(trim($text));
+                if ($volume <= 0 || $volume > 10000) {
+                    $this->bot->sendMessage($chatId, '⚠️ حجم نامعتبر است. عددی بین ۱ تا ۱۰۰۰۰ بفرستید.');
+                    return;
+                }
+
+                $needed = Str::gbToBytes($volume);
+                if ($needed > (int) $user['user_credit']) {
+                    $this->bot->sendMessage($chatId, implode("\n", [
+                        '❌ اعتبار کافی ندارید.',
+                        '',
+                        '💾 نیاز: <b>' . Str::formatBytes($needed) . '</b>',
+                        '💰 موجودی: <b>' . Str::formatBytes((int) $user['user_credit']) . '</b>',
+                    ]), [
+                        'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                            [['text' => '🛒 خرید اعتبار', 'data' => BotApi::encodeData('shop', ['kind' => 'user_credit'])]],
+                            Keyboard::back('user.credit'),
+                        ])),
+                    ]);
+                    return;
+                }
+
+                $this->sessions->set($telegramId, [
+                    'step'     => 'user_credit:duration',
+                    'mode'     => $mode,
+                    'username' => (string) ($state['username'] ?? ''),
+                    'volume'   => $volume,
+                ]);
+                $this->bot->sendMessage($chatId, "مدت زمان را به روز بفرستید.\n\nمثال: <code>۳۰</code>", [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::back('user.credit', '❌ انصراف')),
+                ]);
+                return;
+
+            case 'user_credit:duration':
+                $days = (int) Str::toEnglishDigits(trim($text));
+                if ($days <= 0 || $days > 3650) {
+                    $this->bot->sendMessage($chatId, '⚠️ مدت زمان نامعتبر است. عددی بین ۱ تا ۳۶۵۰ بفرستید.');
+                    return;
+                }
+
+                $this->sessions->clear($telegramId);
+                $creator->handleDuration(
+                    $chatId,
+                    $user,
+                    $mode,
+                    (string) ($state['username'] ?? ''),
+                    (float) ($state['volume'] ?? 0),
+                    (string) $days
+                );
+                return;
+
+            default:
+                $this->sessions->clear($telegramId);
         }
     }
 
@@ -442,7 +565,24 @@ final class Kernel
 
         if ($ns === 'user.credit') {
             $this->bot->answerCallback($callbackId);
-            $this->showCreditInfo($chatId, $user);
+            $fresh = $this->users->findById((int) $user['id']) ?? $user;
+            $this->userCreator()->showMenu($chatId, $fresh);
+            return;
+        }
+
+        // ابزارهای ساخت/تمدید کاربر
+        if ($ns === 'uc.new' || $ns === 'uc.extend') {
+            $this->bot->answerCallback($callbackId);
+            $mode = $ns === 'uc.extend' ? 'extend' : 'new';
+            $this->sessions->set((int) $update->userId(), ['step' => 'user_credit:username', 'mode' => $mode]);
+            $this->userCreator()->askUsername($chatId, $mode);
+            return;
+        }
+
+        if ($ns === 'uc.list') {
+            $this->bot->answerCallback($callbackId);
+            $fresh = $this->users->findById((int) $user['id']) ?? $user;
+            $this->userCreator()->showUsers($chatId, $fresh);
             return;
         }
 
