@@ -21,6 +21,7 @@ $suites = [
     ['اعتبار ساخت کاربر',      $root . '/tests/user_credit_test.php', false],
     ['سرویس هشدارها',          $root . '/tests/alerts_test.php',      false],
     ['جریان کامل ربات',        $root . '/tests/bot_flow_test.php',  false],
+    ['امنیت و کنترل دسترسی',   $root . '/tests/security_test.php',  false],
     ['کلاینت پنل (زنده)',      $root . '/tests/panel_live_test.php', true],
 ];
 
