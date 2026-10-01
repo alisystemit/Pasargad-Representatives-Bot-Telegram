@@ -54,7 +54,11 @@ try {
             }
             $url = rtrim(Config::str('base_url'), '/') . '/bot.php';
             $bot = new \Pasargad\Telegram\BotApi(Config::str('bot_token'));
-            $secret = $options['secret'] ?? 'pasargad-hook';
+            $secret = $options['secret'] ?? Config::str('webhook_secret', '');
+            if ($secret === '' || $secret === 'CHANGE-THIS-RANDOM-SECRET') {
+                out('ابتدا webhook_secret را در config.php مقداردهی کنید.', 'warn');
+                break;
+            }
             $result = $bot->call('setWebhook', [
                 'url'             => $url,
                 'secret_token'    => $secret,
