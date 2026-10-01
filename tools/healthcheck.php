@@ -66,8 +66,17 @@ line($admins !== [] ? 'ok' : 'bad', 'سوپرادمین‌ها', count($admins) 
 $baseUrl = Config::str('base_url');
 line($baseUrl !== '' && str_starts_with($baseUrl, 'https') ? 'ok' : 'warn', 'آدرس پروژه', $baseUrl !== '' ? $baseUrl : 'تنظیم نشده (SSL لازم است)');
 
+// نکته: bot.php روی توکن تنظیم‌نشده یا مقدار نمونه «fail closed» می‌کند و ۴۰۳
+// می‌دهد. پس این مورد خطاست نه هشدار — تا وقتی درست نشود، ربات اصلاً کار نمی‌کند.
 $secret = Config::str('webhook_secret');
-line($secret !== '' && $secret !== 'CHANGE-THIS-RANDOM-SECRET' ? 'ok' : 'warn', 'توکن امنیتی وبهوک', $secret !== '' ? 'تنظیم شده' : 'تنظیم نشده');
+
+if ($secret === '' || $secret === 'CHANGE-THIS-RANDOM-SECRET') {
+    line('bad', 'توکن امنیتی وبهوک', $secret === ''
+        ? 'تنظیم نشده — وبهوک همهٔ درخواست‌ها را رد می‌کند (۴۰۳)'
+        : 'هنوز مقدار نمونه است — وبهوک همهٔ درخواست‌ها را رد می‌کند (۴۰۳)');
+} else {
+    line('ok', 'توکن امنیتی وبهوک', 'تنظیم شده');
+}
 
 try {
     Crypto::available();
@@ -159,6 +168,23 @@ line($np->isEnabled() ? 'ok' : 'warn', 'ارز دیجیتال (کانفیگ)',
 if ($np->isEnabled()) {
     line(Config::str('nowpayments.ipn_secret') !== '' ? 'ok' : 'bad',
         'کلید IPN', Config::str('nowpayments.ipn_secret') !== '' ? 'تنظیم شده' : 'بدون این کلید IPN تأیید نمی‌شود');
+
+    // نرخ تبدیل باید معنادار باشد؛ نرخ صفر یا منفی یعنی محاسبهٔ مبلغ دلاری
+    // خراب می‌شود و همهٔ سفارش‌ها به حداقل ۱ دلار می‌خورند.
+    $rate = Config::float('store.toman_per_usd', 0.0);
+    line($rate > 0 ? 'ok' : 'bad', 'نرخ تومان/دلار',
+        $rate > 0 ? (string) (int) $rate : 'store.toman_per_usd نامعتبر است');
+
+    // اگر حداقل پرداخت درگاه از کمینهٔ سفارش بیشتر باشد، هر سفارش کوچک
+    // گران‌تر از قیمت اعلام‌شده خواهد بود.
+    $minOrderToman = Config::int('store.min_order_toman', 50000);
+    $minUsd        = (float) Config::str('nowpayments.min_amount_usd', '1');
+    $minUsdToman   = (int) ceil($minUsd * max(1.0, $rate));
+
+    line($minOrderToman >= $minUsdToman ? 'ok' : 'warn', 'حداقل سفارش در برابر حداقل درگاه',
+        $minOrderToman >= $minUsdToman
+            ? 'هم‌خوان است'
+            : ('کمینهٔ سفارش ' . $minOrderToman . ' تومان کمتر از حداقل درگاه ' . $minUsdToman . ' تومان است'));
 }
 
 // ------------------------------------------------------------------

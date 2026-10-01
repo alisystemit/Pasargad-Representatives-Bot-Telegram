@@ -162,6 +162,21 @@ cp config.example.php config.php
 'bot_username'   => 'MyBot',
 ```
 
+> ⚠️ **`webhook_secret` اجباری است.** اگر خالی بماند یا همان مقدار نمونهٔ
+> `CHANGE-THIS-RANDOM-SECRET` باقی بماند، `bot.php` **همهٔ درخواست‌ها را با
+> ۴۰۳ رد می‌کند** و ربات اصلاً کار نمی‌کند. این عمدی است: بدون این توکن، هر
+> کسی می‌توانست یک update جعلی بفرستد، خود را سوپرادمین جا بزند و بسته بسازد
+> یا سفارش تأیید کند.
+>
+> برای ساخت مقدار مناسب:
+>
+> ```bash
+> php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
+> ```
+
+برای تولید `crypto_key` هم دقیقاً همین دستور را اجرا کنید — کلید رمزنگاری
+رمزهای پنل کاربران است و باید حداقل ۳۲ کاراکتر باشد.
+
 ### گام ۲ — نصب دیتابیس و بسته‌های پیش‌فرض
 
 ```bash
@@ -209,7 +224,7 @@ php tests/bot_flow_test.php
 | `bot_token` | توکن ربات از `@BotFather` |
 | `super_admins` | آیدی عددی سوپرادمین‌های ربات |
 | `base_url` | آدرس پایه پروژه روی هاست (بدون اسلش انتهایی) |
-| `webhook_secret` | توکن امنیتی وبهوک؛ در `bot.php` بررسی می‌شود |
+| `webhook_secret` | توکن امنیتی وبهوک — **اجباری**؛ خالی یا مقدار نمونه یعنی ۴۰۳ برای همهٔ درخواست‌ها |
 | `crypto_key` | کلید رمزنگاری رمز پنل‌ها — **بعد از استفاده عوضش نکنید** |
 | `db.path` | مسیر فایل SQLite |
 | `panel.base_url` | آدرس پنل (مثلاً `https://us.api-system.top`) |
@@ -220,6 +235,8 @@ php tests/bot_flow_test.php
 | `store.toman_per_usd` | نرخ تبدیل برای فاکتور ارز دیجیتال |
 | `nowpayments.api_key` | کلید API درگاه NOWPayments |
 | `nowpayments.ipn_secret` | کلید تأیید امضای IPN |
+| `nowpayments.min_amount_usd` | حداقل مبلغ پرداخت درگاه (پیش‌فرض `1`) |
+| `nowpayments.pay_currency` | ارز پرداخت (پیش‌فرض `btc`) |
 | `notifications.admin_chat` | آیدی گروه/کانال برای اعلان سوپرادمین |
 | `worker.max_attempts` | حداکثر تلاش مجدد برای اجرای بسته |
 | `log.level` | سطح لاگ: `debug` / `info` / `warning` / `error` |
