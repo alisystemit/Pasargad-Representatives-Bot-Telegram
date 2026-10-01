@@ -19,6 +19,7 @@ $suites = [
     ['هستهٔ سیستم',            $root . '/tools/selftest.php',        false],
     ['منطق خرید و اجرا',      $root . '/tests/shop_test.php',      false],
     ['اعتبار ساخت کاربر',      $root . '/tests/user_credit_test.php', false],
+    ['سرویس هشدارها',          $root . '/tests/alerts_test.php',      false],
     ['جریان کامل ربات',        $root . '/tests/bot_flow_test.php',  false],
     ['کلاینت پنل (زنده)',      $root . '/tests/panel_live_test.php', true],
 ];

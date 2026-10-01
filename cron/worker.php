@@ -17,6 +17,7 @@ if (PHP_SAPI !== 'cli') {
 require_once __DIR__ . '/../bootstrap.php';
 
 use Pasargad\Bot\SessionStore;
+use Pasargad\Store\AlertService;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\UserRepository;
@@ -57,13 +58,24 @@ try {
 
     echo 'پردازش صف: ' . json_encode($result, JSON_UNESCAPED_UNICODE) . "\n";
 
-    // ۲) پاک‌سازی نشست‌های منقضی‌شده
+    // ۲) هشدار حجم کم، اعتبار کم و نزدیک شدن انقضا
+    $alerts = (new AlertService($users))->runAll();
+    if (($alerts['low_volume'] + $alerts['low_credit'] + $alerts['expiring']) > 0) {
+        echo sprintf(
+            "هشدارها: %d حجم کم، %d اعتبار کم، %d انقضای نزدیک\n",
+            $alerts['low_volume'],
+            $alerts['low_credit'],
+            $alerts['expiring']
+        );
+    }
+
+    // ۳) پاک‌سازی نشست‌های منقضی‌شده
     $pruned = (new SessionStore($db))->prune();
     if ($pruned > 0) {
         echo "نشست‌های منقضی پاک شدند: {$pruned}\n";
     }
 
-    // ۳) گزارش کوتاه وضعیت
+    // ۴) گزارش کوتاه وضعیت
     $stats = $orders->stats();
     echo sprintf(
         "وضعیت: %d سفارش، %d اجراشده، %d ناموفق، %d در انتظار رسید\n",
