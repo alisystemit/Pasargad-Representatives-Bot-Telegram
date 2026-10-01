@@ -59,13 +59,16 @@ try {
     echo 'پردازش صف: ' . json_encode($result, JSON_UNESCAPED_UNICODE) . "\n";
 
     // ۲) هشدار حجم کم، اعتبار کم و نزدیک شدن انقضا
-    $alerts = (new AlertService($users))->runAll();
-    if (($alerts['low_volume'] + $alerts['low_credit'] + $alerts['expiring']) > 0) {
+    $alerts    = (new AlertService($users))->runAll();
+    $alertTotal = $alerts['low_volume'] + $alerts['low_credit'] + $alerts['expiring'] + $alerts['credit_expiring'];
+
+    if ($alertTotal > 0) {
         echo sprintf(
-            "هشدارها: %d حجم کم، %d اعتبار کم، %d انقضای نزدیک\n",
+            "هشدارها: %d حجم کم، %d اعتبار کم، %d انقضای بسته، %d انقضای اعتبار کاربر\n",
             $alerts['low_volume'],
             $alerts['low_credit'],
-            $alerts['expiring']
+            $alerts['expiring'],
+            $alerts['credit_expiring']
         );
     }
 

@@ -21,6 +21,20 @@ final class FakePanelClient extends PasarGuardClient
     public string $modifyError = '';
     public string $createUserError = '';
     public string $modifyUserError = '';
+
+    /**
+     * اگر مقداری داشته باشد، خطاهای ساختگی با این کد HTTP برگردانده می‌شوند.
+     * برای تست رفتار خطاهای غیرقابل تلاش مجدد (مثل ۴۰۴) لازم است.
+     */
+    public int $httpStatusOverride = 0;
+
+    /**
+     * فهرست درخواست‌های ارسال‌شده به پنل — برای بررسی اینکه چند بار
+     * فراخوانی انجام شده (مثلاً بررسی عدم اجرای دوباره).
+     *
+     * @var array<int, array{method:string, path:string}>
+     */
+    public array $loggedRequests = [];
     public int $modifyCalls = 0;
     public int $loginCalls = 0;
 
@@ -52,6 +66,7 @@ final class FakePanelClient extends PasarGuardClient
 
     public function getAdmin(string $targetUsername, string $username, string $password): array
     {
+        $this->loggedRequests[] = ['method' => 'getAdmin', 'path' => '/api/admin/' . $targetUsername];
         if ($this->loginError !== '') {
             throw new PanelException($this->loginError, 401);
         }
@@ -67,9 +82,10 @@ final class FakePanelClient extends PasarGuardClient
     {
         $this->modifyCalls++;
         $this->modifyRequests[] = $payload;
+        $this->loggedRequests[] = ['method' => 'modifyAdmin', 'path' => '/api/admin/' . $targetUsername];
 
         if ($this->modifyError !== '') {
-            throw new PanelException($this->modifyError, 500);
+            throw new PanelException($this->modifyError, $this->httpStatusOverride ?: 500);
         }
 
         if (!isset($this->admins[$targetUsername])) {
@@ -89,8 +105,10 @@ final class FakePanelClient extends PasarGuardClient
 
     public function createUser(array $payload, string $username, string $password): array
     {
+        $this->loggedRequests[] = ['method' => 'createUser', 'path' => '/api/user'];
+
         if ($this->createUserError !== '') {
-            throw new PanelException($this->createUserError, 500);
+            throw new PanelException($this->createUserError, $this->httpStatusOverride ?: 500);
         }
 
         $this->created[] = $payload;
@@ -107,8 +125,10 @@ final class FakePanelClient extends PasarGuardClient
 
     public function modifyUser(string $targetUsername, array $payload, string $username, string $password): array
     {
+        $this->loggedRequests[] = ['method' => 'modifyUser', 'path' => '/api/user/' . $targetUsername];
+
         if ($this->modifyUserError !== '') {
-            throw new PanelException($this->modifyUserError, 500);
+            throw new PanelException($this->modifyUserError, $this->httpStatusOverride ?: 500);
         }
 
         $this->modified[] = array_merge(['username' => $targetUsername], $payload);
