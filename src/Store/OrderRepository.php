@@ -312,6 +312,21 @@ final class OrderRepository
     }
 
     /**
+     * اجرای یک واحد کار در تراکنش دیتابیس.
+     *
+     * برای عملیات چندمرحله‌ای که باید اتمیک باشند؛ مثل «بررسی سقف خرید کاربر
+     * و ساخت سفارش» که بدون تراکنش در دو درخواست همزمان هر دو از سقف عبور
+     * می‌کنند.
+     *
+     * @param callable():mixed $callback
+     * @return mixed خروجی callback یا null در صورت throw
+     */
+    public function transaction(callable $callback): mixed
+    {
+        return $this->db->transaction($callback);
+    }
+
+    /**
      * سفارش‌های آمادهٔ پردازش خودکار.
      *
      * نکتهٔ امنیتی حیاتی: سفارش‌های «رد شده توسط ادمین» و «لغو شده» نباید

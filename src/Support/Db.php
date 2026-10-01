@@ -13,10 +13,12 @@ final class Db
 
     private \PDO $pdo;
     private int $txDepth = 0;
+    private string $path = '';
 
-    private function __construct(\PDO $pdo)
+    private function __construct(\PDO $pdo, string $path = '')
     {
-        $this->pdo = $pdo;
+        $this->pdo  = $pdo;
+        $this->path = $path;
     }
 
     public static function instance(): Db
@@ -26,6 +28,17 @@ final class Db
         }
 
         return self::$instance;
+    }
+
+    /**
+     * مسیر فایل دیتابیس روی دیسک.
+     *
+     * برای فایل‌های همراهی مثل قفل مایگریشن لازم است. در دیتابیس حافظه‌ای
+     * (تست‌ها) رشتهٔ خالی برمی‌گردد و یعنی «قفل فایلی وجود ندارد».
+     */
+    public function path(): string
+    {
+        return $this->path;
     }
 
     /**
@@ -59,7 +72,7 @@ final class Db
         $pdo->exec('PRAGMA foreign_keys = ON');
         $pdo->exec('PRAGMA busy_timeout = ' . ($busyTimeout * 1000));
 
-        return new self($pdo);
+        return new self($pdo, $path);
     }
 
     public function pdo(): \PDO

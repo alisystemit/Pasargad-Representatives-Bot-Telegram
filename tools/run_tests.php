@@ -18,6 +18,7 @@ $root = dirname(__DIR__);
 $suites = [
     ['هستهٔ سیستم',            $root . '/tools/selftest.php',        false],
     ['بازگشتی (باگ‌های بحرانی)', $root . '/tests/regression_test.php', false],
+    ['امنیت پرداخت',          $root . '/tests/payment_security_test.php', false],
     ['ساختار کیبورد',         $root . '/tests/keyboard_test.php',   false],
     ['تقسیم پیام بلند',       $root . '/tests/message_split_test.php', false],
     ['منطق خرید و اجرا',      $root . '/tests/shop_test.php',      false],

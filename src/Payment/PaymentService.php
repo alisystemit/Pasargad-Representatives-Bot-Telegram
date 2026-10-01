@@ -19,6 +19,16 @@ use Pasargad\Support\Str;
  */
 final class PaymentService
 {
+    /**
+     * حداکثر اختلاف مجاز بین مبلغ سفارش و مبلغ اعلام‌شده در IPN (نسبت).
+     *
+     * صفر نیست چون کارمزد درگاه و نوسان نرخ ارز بین لحظهٔ ثبت سفارش و لحظهٔ
+     * پرداخت، مبلغ نهایی را کمی جابه‌جا می‌کنند. مقدار ۲٪ برای کاربران ایرانی
+     * و ارزهای دیجیتال کافی است و در عین حال جلوی پرداخت‌های کاملاً متفاوت را
+     * می‌گیرد.
+     */
+    public const IPN_AMOUNT_TOLERANCE = 0.02;
+
     private OrderRepository $orders;
     private Provisioner $provisioner;
     private Settings $settings;
@@ -208,7 +218,40 @@ final class PaymentService
      */
     public function submitReceipt(array $order, string $fileId, ?string $reference = null): array
     {
-        $this->orders->update((int) $order['id'], [
+        $orderId = (int) $order['id'];
+
+        // ------------------------------------------------------------------
+        // محافظت امنیتی: رسید فقط برای سفارش کارت‌به‌کارت معتبر است.
+        //
+        // بدون این بررسی، کاربر می‌توانست روی سفارش ارز دیجیتالِ پرداخت‌نشده
+        // هر عکسی (حتاً یک اسکرین‌شات بی‌ربط) بفرستد، ادمین دکمهٔ «تأیید» را
+        // ببیند و بسته بدون هیچ پرداختی اعمال شود.
+        // ------------------------------------------------------------------
+        $status = (string) ($order['status'] ?? '');
+
+        if ($status !== OrderRepository::STATUS_AWAITING_PAYMENT) {
+            return [
+                'ok'      => false,
+                'message' => 'این سفارش در وضعیت «در انتظار پرداخت کارت‌به‌کارت» نیست.',
+            ];
+        }
+
+        if ((string) ($order['payment_method'] ?? '') !== CardToCardGateway::NAME) {
+            return [
+                'ok'      => false,
+                'message' => 'برای این سفارش نیازی به ارسال رسید نیست؛ پرداخت شما به‌صورت '
+                    . 'خودکار تأیید می‌شود. اگر پرداخت انجام نشده، از دکمهٔ «🔄 بررسی وضعیت» استفاده کنید.',
+            ];
+        }
+
+        if ($this->orders->isTerminal($status)) {
+            return [
+                'ok'      => false,
+                'message' => 'این سفارش نهایی شده و امکان ثبت رسید ندارد.',
+            ];
+        }
+
+        $this->orders->update($orderId, [
             'receipt_file_id'  => $fileId,
             'receipt_photo_id' => $reference,
             'updated_at'       => time(),
@@ -233,6 +276,41 @@ final class PaymentService
         $orderId = (int) $order['id'];
 
         if (!$approved) {
+            // ------------------------------------------------------------------
+            // محافظت: سفارشی که پرداختش تأیید و بسته‌اش اجرا شده نباید «رد» شود.
+            //
+            // دکمهٔ «❌ رد پرداخت» در پیام تلگرام ادمین باقی می‌ماند. اگر ادمین
+            // بعد از تأیید، روی همان دکمهٔ قدیمی کلیک کند، بدون این بررسی وضعیت
+            // به rejected می‌رفت و کاربری که بسته را تحویل گرفته بود پیام
+            // «پرداخت رد شد» می‌دید و آمارش هم صفر می‌شد.
+            // ------------------------------------------------------------------
+            $current = $this->orders->find($orderId);
+            $status  = (string) ($current['status'] ?? '');
+
+            if ($status === OrderRepository::STATUS_APPLIED) {
+                return [
+                    'ok'      => false,
+                    'message' => 'این سفارش قبلاً تأیید و بستهٔ آن روی پنل اعمال شده است؛ قابل رد کردن نیست.',
+                    'applied' => true,
+                ];
+            }
+
+            if ($status === OrderRepository::STATUS_APPLYING) {
+                return [
+                    'ok'      => false,
+                    'message' => 'این سفارش هم‌اکنون در حال اجراست؛ لطفاً چند لحظه بعد بررسی کنید.',
+                    'applied' => false,
+                ];
+            }
+
+            if ($status !== OrderRepository::STATUS_AWAITING_PAYMENT) {
+                return [
+                    'ok'      => false,
+                    'message' => 'این سفارش در وضعیت «' . $status . '» است و قابل بررسی نیست.',
+                    'applied' => false,
+                ];
+            }
+
             // «رد پرداخت» یک وضعیت پایانی است: نباید هرگز دوباره اجرا شود،
             // وگرنه کرون در اجرای بعدی بسته را بدون پرداخت به کاربر می‌دهد.
             $this->orders->markTerminal(
@@ -255,7 +333,7 @@ final class PaymentService
         }
 
         // تأیید: پرداخت paid شود و بسته خودکار اعمال گردد.
-        if (!$this->orders->markPaid($orderId, 'card2card', (string) ($order['code'] ?? ''))) {
+        if (!$this->orders->markPaid($orderId, CardToCardGateway::NAME, (string) ($order['code'] ?? ''))) {
             $current = $this->orders->find($orderId);
             $status  = (string) ($current['status'] ?? '');
 
@@ -312,16 +390,25 @@ final class PaymentService
      *
      * @param  array<string, mixed> $payload
      * @param  array<string, string> $headers
+     * @param  string                $rawBody بدنهٔ خام و دقیقاً همان بایت‌هایی که
+     *                              NOWPayments امضا کرده است. حیاتی است: اگر به‌جای
+     *                              آن از json_encode روی آرایهٔ decode‌شده استفاده شود،
+     *                              escapes یونیکد و اسلش فرق می‌کند و امضا هرگز
+     *                              مطابقت نمی‌دهد — یعنی **هیچ پرداختی** تأیید نمی‌شود.
      * @return array<string, mixed>
      */
-    public function handleIpn(array $payload, array $headers): array
+    public function handleIpn(array $payload, array $headers, string $rawBody = ''): array
     {
         $gateway = $this->gateway(NowPaymentsGateway::NAME);
         if (!$gateway instanceof NowPaymentsGateway) {
             return ['ok' => false, 'message' => 'درگاه ارز دیجیتال فعال نیست.'];
         }
 
-        if (!$gateway->verifyIpnSignature($headers, (string) json_encode($payload))) {
+        // اگر بدنهٔ خام در دسترس نیست، بازسازی آن قابل اتکا نیست (escapeها فرق
+        // می‌کنند) پس باید رد شود نه اینکه با امضای نادرست مقایسه شود.
+        $signedBody = $rawBody !== '' ? $rawBody : null;
+
+        if ($signedBody === null || !$gateway->verifyIpnSignature($headers, $signedBody)) {
             Logger::warning('IPN signature mismatch', ['headers' => array_keys($headers)]);
             return ['ok' => false, 'message' => 'امضای IPN معتبر نیست.'];
         }
@@ -329,33 +416,79 @@ final class PaymentService
         $paymentId = (string) ($payload['payment_id'] ?? '');
         $orderRef  = (string) ($payload['order_id'] ?? '');
 
-        $payment = $paymentId !== '' ? $this->orders->findPaymentByExternal($paymentId) : null;
-        $order   = null;
-
-        if ($payment !== null) {
-            $order = $this->orders->find((int) $payment['order_id']);
-        } elseif ($orderRef !== '') {
-            $order = $this->orders->findByCode($orderRef);
+        if ($paymentId === '') {
+            return ['ok' => false, 'message' => 'شناسهٔ پرداخت در اعلان وجود ندارد.'];
         }
 
+        // ------------------------------------------------------------------
+        // پیدا کردن سفارش فقط از طریق رکورد پرداخت معتبر.
+        //
+        // نباید از order_id داخل payload استفاده کرد: این رشته کنترل‌نشده است و
+        // اگر رکورد پرداخت پیدا نشود (مثلاً کاربر پرداخت را دوباره آغاز کرده و
+        // external_id بازنویسی شده) باعث می‌شد وضعیت یک پرداخت به سفارشی دیگر
+        // نسبت داده شود.
+        // ------------------------------------------------------------------
+        $payment = $this->orders->findPaymentByExternal($paymentId);
+
+        if ($payment === null) {
+            Logger::warning('IPN has no matching payment record', [
+                'payment_id' => $paymentId,
+                'order_id'   => $orderRef,
+            ]);
+
+            return ['ok' => false, 'message' => 'پرداخت مرتبط یافت نشد.'];
+        }
+
+        $order = $this->orders->find((int) $payment['order_id']);
+
         if ($order === null) {
-            Logger::warning('IPN for unknown order', ['payment_id' => $paymentId, 'order_id' => $orderRef]);
+            Logger::warning('IPN points to a missing order', ['payment_id' => $paymentId]);
             return ['ok' => false, 'message' => 'سفارش مرتبط یافت نشد.'];
         }
 
-        $status = $gateway->checkStatus(['external_id' => $paymentId]);
+        // ------------------------------------------------------------------
+        // بررسی وضعیت از خودِ payload.
+        //
+        // عمداً از checkStatus() استفاده نمی‌کنیم: آن یک درخواست شبکهٔ
+        // همگام است و اگر API درگاه در همان لحظه خطا بدهد (۵xx یا تایم‌اوت)،
+        // ما ۲۰۰ به NOWPayments برمی‌گردانیم، آن‌ها اعلان را تحویل‌شده می‌بینند
+        // و دیگر تکرار نمی‌کنند — در حالی که سفارش برای همیشه پرداخت‌نشده می‌ماند.
+        // ------------------------------------------------------------------
+        $remoteStatus = strtolower(trim((string) ($payload['payment_status'] ?? '')));
 
-        if ($payment !== null) {
-            $this->orders->updatePayment((int) $payment['id'], [
-                'status'       => $status['status'],
-                'raw_payload'  => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        $paid = in_array($remoteStatus, ['finished', 'confirmed', 'partially_paid'], true);
+
+        $this->orders->updatePayment((int) $payment['id'], [
+            'status'      => $remoteStatus !== '' ? $remoteStatus : 'unknown',
+            'raw_payload' => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        ]);
+
+        if (!$paid) {
+            Logger::info('IPN received but payment not settled', [
+                'payment_id' => $paymentId,
+                'status'     => $remoteStatus,
             ]);
+
+            return ['ok' => true, 'message' => 'وضعیت پرداخت: ' . ($remoteStatus !== '' ? $remoteStatus : 'نامشخص')];
         }
 
-        if (!$status['paid']) {
-            return ['ok' => true, 'message' => 'وضعیت پرداخت: ' . $status['message']];
+        // ------------------------------------------------------------------
+        // بررسی مبلغ: بدون این، یک پرداخت ۱ دلاری می‌تواند بستهٔ ۵۰۰ هزار
+        // تومانی را فعال کند.
+        // ------------------------------------------------------------------
+        if (!$this->ipnAmountMatchesOrder($order, $payload)) {
+            Logger::error('IPN amount mismatch — payment NOT credited', [
+                'order_id'   => (int) $order['id'],
+                'payment_id' => $paymentId,
+                'expected'   => (int) $order['price_toman'],
+                'got'        => $payload['pay_amount'] ?? $payload['price_amount'] ?? null,
+                'currency'   => $payload['pay_currency'] ?? $payload['price_currency'] ?? null,
+            ]);
+
+            return ['ok' => false, 'message' => 'مبلغ پرداخت با مبلغ سفارش مطابقت ندارد.'];
         }
 
+        // markPaid خودش compare-and-swap است، پس تکراری بودن IPN بی‌خطر است.
         if (!$this->orders->markPaid((int) $order['id'], NowPaymentsGateway::NAME, $paymentId)) {
             return ['ok' => true, 'message' => 'پرداخت قبلاً ثبت شده بود.'];
         }
@@ -367,6 +500,53 @@ final class PaymentService
             'message' => $applied['ok'] ? 'پرداخت تأیید و بسته اعمال شد.' : 'پرداخت تأیید شد. ' . $applied['message'],
             'applied' => $applied['ok'],
         ];
+    }
+
+    /**
+     * آیا مبلغ اعلام‌شده در IPN با مبلغ سفارش می‌خواند؟
+     *
+     * مقایسه با نرخ تبدیل تنظیمات انجام می‌شود و یک درصد خطای مجاز دارد، چون
+     * کارمزد درگاه و نوسان نرخ بین زمان ثبت سفارش و پرداخت، مبلغ را کمی جابه‌جا
+     * می‌کنند. بدون این تلورانس، همهٔ پرداخت‌ها رد می‌شدند.
+     *
+     * اگر هیچ مبلغی در payload نباشد، true برگردانده می‌شود تا نسخه‌های قدیمی‌تر
+     * درگاه که مبلغ را نمی‌فرستند همچنان کار کنند (امضا همچنان معتبر است).
+     *
+     * @param array<string, mixed> $order
+     * @param array<string, mixed> $payload
+     */
+    private function ipnAmountMatchesOrder(array $order, array $payload): bool
+    {
+        $paidAmount = $payload['pay_amount'] ?? ($payload['price_amount'] ?? null);
+
+        if ($paidAmount === null || !is_numeric($paidAmount)) {
+            Logger::warning('IPN has no amount field, relying on signature only', [
+                'order_id' => (int) $order['id'],
+            ]);
+
+            return true;
+        }
+
+        $expectedToman = (int) $order['price_toman'];
+
+        if ($expectedToman <= 0) {
+            return true;
+        }
+
+        $currency = strtoupper(trim((string) ($payload['pay_currency'] ?? ($payload['price_currency'] ?? 'USD'))));
+        $paid     = (float) $paidAmount;
+
+        // تبدیل به تومان در صورت نیاز
+        if ($currency === 'IRR' || $currency === 'IRT' || $currency === 'TOMAN') {
+            $paidToman = (int) round($paid);
+        } else {
+            $rate        = Config::float('store.toman_per_usd', 100000.0);
+            $paidToman   = (int) round($paid * $rate);
+        }
+
+        $tolerance = (int) ceil($expectedToman * self::IPN_AMOUNT_TOLERANCE);
+
+        return abs($paidToman - $expectedToman) <= $tolerance;
     }
 
     /**

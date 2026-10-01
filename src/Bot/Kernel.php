@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Bot;
 
+use Pasargad\Payment\NowPaymentsGateway;
 use Pasargad\Payment\PaymentService;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
@@ -384,7 +385,16 @@ final class Kernel
                 return true;
 
             default:
-                $this->sessions->clear($telegramId);
+                // نکتهٔ حیاتی: اینجا نباید نشست پاک شود.
+                //
+                // این متد فقط مراحل «ورود» را می‌شناسد، ولی Kernel برای هر
+                // نشست غیرتهی آن را صدا می‌زند. اگر اینجا clear می‌شد:
+                //   • نشست pkg:edit می‌مرد → ویرایش بسته به ساخت بستهٔ تکراری
+                //     تبدیل می‌شد (فروش با قیمت اشتباه).
+                //   • نشست user_credit:* می‌مرد → با اولین خطای اعتبارسنجی،
+                //     نام کاربری که کاربر فرستاده بود پاک می‌شد و جریان می‌شکست.
+                //
+                // پس فقط مسیرهای شناخته‌شده پیام را مصرف می‌کنند.
                 return false;
         }
     }
@@ -805,8 +815,8 @@ final class Kernel
 
     private function showShop(int $chatId, array $user, string $kind = PackageRepository::KIND_PANEL_QUOTA): void
     {
-        if (!$this->settings->bool(Settings::SHOP_OPENED, true)) {
-            $this->bot->sendMessage($chatId, '🛒 فروشگاه موقتاً بسته است.');
+        if (!$this->shopIsOpen()) {
+            $this->bot->sendMessage($chatId, Text::shopClosed());
             return;
         }
 
@@ -855,6 +865,15 @@ final class Kernel
 
     private function showPackage(int $chatId, array $user, int $packageId): void
     {
+        // کلید فروشگاه هم اینجا بررسی می‌شود، نه فقط در صفحهٔ فروشگاه.
+        // دلیل: پیام تأیید خرید قبلاً در چت کاربر مانده و دکمهٔ «خرید» روی آن
+        // هنوز کلیک‌پذیر است؛ اگر اینجا کلید بررسی نشود، بستن فروشگاه عملاً
+        // هیچ اثری روی این کاربران ندارد.
+        if (!$this->shopIsOpen()) {
+            $this->bot->sendMessage($chatId, Text::shopClosed());
+            return;
+        }
+
         $package = $this->packages->find($packageId);
         if ($package === null || (int) $package['is_active'] !== 1) {
             $this->bot->sendMessage($chatId, Text::notFound());
@@ -874,8 +893,21 @@ final class Kernel
         ]);
     }
 
+    /**
+     * آیا فروشگاه باز است؟
+     */
+    private function shopIsOpen(): bool
+    {
+        return $this->settings->bool(Settings::SHOP_OPENED, true);
+    }
+
     private function createOrder(int $chatId, array $user, int $packageId): void
     {
+        if (!$this->shopIsOpen()) {
+            $this->bot->sendMessage($chatId, Text::shopClosed());
+            return;
+        }
+
         $package = $this->packages->find($packageId);
         if ($package === null || (int) $package['is_active'] !== 1) {
             $this->bot->sendMessage($chatId, Text::notFound());
@@ -888,31 +920,50 @@ final class Kernel
             return;
         }
 
-        // بررسی سقف خرید هر کاربر
-        $maxPerUser = (int) $package['max_per_user'];
-        if ($maxPerUser > 0) {
-            $purchased = $this->packages->purchasedCount((int) $user['id'], (string) $package['kind']);
-            if ($purchased >= $maxPerUser) {
-                $this->bot->sendMessage(
-                    $chatId,
-                    '⚠️ شما حداکثر <b>' . Str::faNumber($maxPerUser) . '</b> بسته از این نوع خریده‌اید.'
-                );
-                return;
-            }
+        $order = null;
+
+        // ------------------------------------------------------------------
+        // بررسی سقف خرید و ساخت سفارش، داخل یک تراکنش.
+        //
+        // بدون تراکنش، دو کلیک سریع روی دکمهٔ خرید (که تلگرام به‌صورت دو
+        // callback_query جدا می‌فرستد و دو پروسهٔ جدا پردازش می‌کنند) هر دو
+        // مقدار یکسانی می‌خوانند، هر دو از سقف عبور می‌کنند و کاربر دو برابر
+        // حجم می‌گیرد — در حالی که max_per_user = 1 است.
+        // ------------------------------------------------------------------
+        try {
+            $this->orders->transaction(function () use ($user, $package, &$order): void {
+                $maxPerUser = (int) $package['max_per_user'];
+
+                if ($maxPerUser > 0) {
+                    $purchased = $this->packages->purchasedCount((int) $user['id'], (string) $package['kind']);
+
+                    if ($purchased >= $maxPerUser) {
+                        throw new ShopException(
+                            '⚠️ شما حداکثر <b>' . Str::faNumber($maxPerUser) . '</b> بسته از این نوع خریده‌اید.'
+                        );
+                    }
+                }
+
+                $order = $this->orders->create((int) $user['id'], [
+                    'package_id'    => (int) $package['id'],
+                    'package_title' => (string) $package['title'],
+                    'kind'          => (string) $package['kind'],
+                    'volume_gb'     => (float) $package['volume_gb'],
+                    'bonus_gb'      => (float) ($package['bonus_gb'] ?? 0),
+                    'duration_days' => (int) $package['duration_days'],
+                    'price_toman'   => (int) $package['price_toman'],
+                    'status'        => OrderRepository::STATUS_CREATED,
+                ]);
+            });
+        } catch (ShopException $e) {
+            // خطای قابل انتظار (سقف خرید) — فقط پیام را نشان می‌دهیم.
+            $this->bot->sendMessage($chatId, $e->getMessage());
+            return;
         }
 
-        $totalGb = (float) $package['volume_gb'] + (float) ($package['bonus_gb'] ?? 0);
-
-        $order = $this->orders->create((int) $user['id'], [
-            'package_id'    => (int) $package['id'],
-            'package_title' => (string) $package['title'],
-            'kind'          => (string) $package['kind'],
-            'volume_gb'     => (float) $package['volume_gb'],
-            'bonus_gb'      => (float) ($package['bonus_gb'] ?? 0),
-            'duration_days' => (int) $package['duration_days'],
-            'price_toman'   => (int) $package['price_toman'],
-            'status'        => OrderRepository::STATUS_CREATED,
-        ]);
+        if ($order === null) {
+            return;
+        }
 
         $this->users->refreshOrderStats((int) $user['id']);
         $this->showPaymentMethods($chatId, $order);
@@ -950,6 +1001,9 @@ final class Kernel
             return;
         }
 
+        // سفارش‌هایی که قبلاً ساخته شده‌اند باید قابل پرداخت بمانند، حتی اگر
+        // فروشگاه بسته شود — کاربر پولش را در راه است. فقط سفارش «جدید» متوقف
+        // می‌شود که در createOrder کنترل شده است.
         $result = $this->payments->startPayment($order, $method, $chatId);
 
         if (!($result['ok'] ?? false)) {
@@ -961,6 +1015,24 @@ final class Kernel
 
         if (!empty($result['pay_url'])) {
             $keyboard[] = Keyboard::link('💳 پرداخت در درگاه', (string) $result['pay_url']);
+        }
+
+        // اگر درگاه لینک نداده، کاربر هیچ راهی برای پرداخت ندارد. صریح بگوییم
+        // به‌جای اینکه پیام موفق نشان داده شود و دکمه بی‌صدا حذف شود.
+        if ($method === NowPaymentsGateway::NAME && $keyboard === []) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '⚠️ <b>درگاه ارز دیجیتال لینک پرداخت برنگرداند.</b>',
+                '',
+                'لطفاً روش پرداخت دیگری را انتخاب کنید یا با پشتیبانی تماس بگیرید.',
+                'اگر پولی واریز کرده‌اید، رسید را نگه دارید.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    [['text' => '🧾 جزئیات سفارش', 'data' => \Pasargad\Telegram\BotApi::encodeData('order.view', ['id' => $orderId])]],
+                    Keyboard::back('menu'),
+                ])),
+            ]);
+
+            return;
         }
 
         $keyboard[] = [['text' => '🔄 بررسی وضعیت', 'data' => \Pasargad\Telegram\BotApi::encodeData('order.check', ['id' => $orderId])]];

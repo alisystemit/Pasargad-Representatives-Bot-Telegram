@@ -58,6 +58,18 @@ final class Config
         return is_numeric($value) ? (int) $value : $default;
     }
 
+    /**
+     * خواندن مقدار اعشاری.
+     *
+     * لازم است برای نرخ‌هایی مثل نرخ تبدیل تومان به دلار؛ چون int() روی
+     * «۱۰۰۰۰۰٫۵» عدد را به ۱۰۰۰۰۰ تبدیل می‌کند که خطای مالی می‌سازد.
+     */
+    public static function float(string $key, float $default = 0.0): float
+    {
+        $value = self::get($key);
+        return is_numeric($value) ? (float) $value : $default;
+    }
+
     public static function bool(string $key, bool $default = false): bool
     {
         $value = self::get($key);

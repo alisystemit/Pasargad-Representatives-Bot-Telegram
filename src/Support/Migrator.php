@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Pasargad\Support;
 
+use Throwable;
+
 /**
  * مایگریشن دیتابیس SQLite.
  *
@@ -210,14 +212,114 @@ final class Migrator
     }
 
     /**
-     * اجرای همهٔ مایگریشن‌های اعمال‌نشده.
+     * اجرای مایگریشن‌ها با قفل انحصاری.
      *
-     * @return array<int, string> نام مایگریشن‌های اجراشده
+     * مشکلی که این حل می‌کند: دو درخواست همزمان وبهوک هر دو می‌دیدند که
+     * مایگریشن اجرا نشده و هر دو `ALTER TABLE … ADD COLUMN` را می‌زدند. یکی
+     * خطای «duplicate column name» می‌گرفت و استثنا تا بالا پرتاب می‌شد و
+     * پیام کاربر بی‌صدا از دست می‌رفت.
+     *
+     * قفل در سطح دیتابیس گرفته می‌شود تا حتی بین دو پروسهٔ PHP-FPM هم یکی
+     * فقط مالک اجرا باشد.
+     *
+     * @return array<int, string>
      */
     public function migrate(): array
     {
         $this->ensureMigrationsTable();
 
+        $lockPath = $this->lockPath();
+        $lock     = $lockPath !== null ? @fopen($lockPath, 'c') : false;
+
+        // بدون امکان قفل، یک‌بار تلاش می‌کنیم و در صورت خطا همان خطا را
+        // به لاگ می‌اندازیم و رد می‌شویم (بهتر از اجرای دوبارهٔ ALTER است).
+        if ($lock === false) {
+            Logger::warning('Migration lock unavailable, running without lock', [
+                'path' => $lockPath ?? 'n/a',
+            ]);
+
+            return $this->runPending();
+        }
+
+        try {
+            flock($lock, LOCK_EX);
+        } catch (Throwable $e) {
+            Logger::warning('Could not acquire migration lock', ['error' => $e->getMessage()]);
+
+            return [];
+        }
+
+        try {
+            // پس از گرفتن قفل باید دوباره وضعیت خوانده شود: پروسهٔ دیگری ممکن
+            // است در همین فاصله مایگریشن‌ها را اجرا کرده باشد.
+            return $this->runPending();
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    /**
+     * اجرای مایگریشن‌ها فقط اگر نسخهٔ کد جدیدتر از آخرین مایگریشن باشد.
+     *
+     * برای مسیر داغ (وبهوک، IPN) استفاده می‌شود تا هر درخواست هزینهٔ بررسی
+     * جدول migrations را نداشته باشد. مایگریشن‌ها در `cli.php migrate` اجرا
+     * می‌شوند.
+     *
+     * @return array<int, string>
+     */
+    public function migrateWhenOutdated(): array
+    {
+        $applied = $this->appliedMigrations();
+        $known   = array_keys(self::migrations());
+
+        if ($applied === []) {
+            // دیتابیس کاملاً تازه است → باید ساخته شود.
+            return $this->migrate();
+        }
+
+        $newest = (string) end($known);
+        $latest = (string) end($applied);
+
+        if ($latest !== $newest) {
+            Logger::info('Database schema outdated, migrating on hot path', [
+                'applied' => $latest,
+                'expected' => $newest,
+            ]);
+
+            return $this->migrate();
+        }
+
+        return [];
+    }
+
+    /**
+     * مسیر فایل قفل کنار دیتابیس.
+     */
+    private function lockPath(): ?string
+    {
+        $path = $this->db->path();
+
+        if ($path === '') {
+            return null;
+        }
+
+        $dir = dirname($path);
+
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        return rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . '.migrate.lock';
+    }
+
+    /**
+     * اجرای مایگریشن‌های اعمال‌نشده (بدون قفل — قفل باید از قبل گرفته شده باشد).
+     *
+     * @return array<int, string> نام مایگریشن‌های اجراشده
+     */
+    private function runPending(): array
+    {
         $applied = $this->appliedMigrations();
         $ran     = [];
 
@@ -226,15 +328,27 @@ final class Migrator
                 continue;
             }
 
-            $this->db->transaction(function () use ($name, $statements): void {
-                foreach ($statements as $sql) {
-                    $this->db->pdo()->exec($sql);
+            try {
+                $this->db->transaction(function () use ($name, $statements): void {
+                    foreach ($statements as $sql) {
+                        $this->db->pdo()->exec($sql);
+                    }
+                    $this->db->insert('migrations', [
+                        'name'       => $name,
+                        'applied_at' => time(),
+                    ]);
+                });
+            } catch (Throwable $e) {
+                // اگر پروسهٔ دیگری زودتر اجرا کرده باشد، خطای «already exists»
+                // بی‌خطر است و باید ثبت شود تا دیگر تکرار نشود.
+                if (!$this->alreadyApplied($name, $e)) {
+                    throw $e;
                 }
-                $this->db->insert('migrations', [
-                    'name'       => $name,
-                    'applied_at' => time(),
-                ]);
-            });
+
+                Logger::info('Migration already applied by another process', ['migration' => $name]);
+
+                continue;
+            }
 
             $ran[] = $name;
         }
@@ -244,6 +358,25 @@ final class Migrator
         }
 
         return $ran;
+    }
+
+    /**
+     * آیا خطای مایگریشن یعنی «قبلاً اجرا شده» است؟
+     */
+    private function alreadyApplied(string $name, Throwable $e): bool
+    {
+        $message = strtolower($e->getMessage());
+
+        $benign = str_contains($message, 'duplicate column')
+            || str_contains($message, 'already exists')
+            || str_contains($message, 'table already exists');
+
+        if (!$benign) {
+            return false;
+        }
+
+        // باید مطمئن شویم واقعاً ثبت شده، وگرنه هر بار تکرار می‌شود.
+        return in_array($name, $this->appliedMigrations(), true);
     }
 
     /**

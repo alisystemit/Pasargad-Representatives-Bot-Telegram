@@ -64,21 +64,35 @@ final class NowPaymentsGateway implements PaymentGateway
             return ['ok' => false, 'message' => 'درگاه ارز دیجیتال پیکربندی نشده است.'];
         }
 
-        $tomanPerUsd = max(1, Config::int('store.toman_per_usd', 100000));
+        $tomanPerUsd = max(1.0, Config::float('store.toman_per_usd', 100000.0));
         $amountToman = max(0, (int) $order['price_toman']);
-        $amountUsd   = round($amountToman / $tomanPerUsd, 2);
 
-        if ($amountUsd < 1) {
-            $amountUsd = 1.0;
+        // گِرد کردن به بالا تا کاربر هرگز کمتر از قیمت واقعی پرداخت نکند.
+        // گِرد کردن به پایین یا round معمولی یعنی از دست دادن پول در هر سفارش.
+        $amountUsd = ceil($amountToman / $tomanPerUsd * 100) / 100;
+
+        // حداقل قابل پرداخت در NOWPayments یک دلار است. سفارش‌های خیلی کوچک
+        // (کمتر از یک دلار) به همان یک دلار افزایش می‌یابند و مبلغ واقعی
+        // پرداختی در پیام به کاربر اعلام می‌شود تا فاکتور مبهم نباشد.
+        $minimumUsd   = (float) Config::str('nowpayments.min_amount_usd', '1');
+        $minimumUsd   = $minimumUsd > 0 ? $minimumUsd : 1.0;
+        $isBelowMinimum = $amountUsd < $minimumUsd;
+
+        if ($isBelowMinimum) {
+            $amountUsd = $minimumUsd;
         }
 
         $callbackBase = rtrim(Config::str('base_url'), '/');
         $payload      = [
             'price_amount'      => $amountUsd,
             'price_currency'    => 'usd',
-            'pay_currency'      => 'btc',
+            'pay_currency'      => Config::str('nowpayments.pay_currency', 'btc'),
             'order_id'          => (string) $order['code'],
-            'order_description' => 'Purchase ' . (string) $order['package_title'],
+            // توجه: این مقدار عمداً فقط ASCII است. دلیل: امضای HMAC که
+            // NOWPayments روی بدنهٔ خام IPN می‌سازد با هر بایت فرق می‌کند و
+            // متن یونیکد می‌تواند باعث رد شدن اعلان شود (اگرچه اکنون از
+            // بدنهٔ خام استفاده می‌کنیم، باز هم طول را بی‌جهت زیاد می‌کند).
+            'order_description' => 'Order ' . (string) $order['code'],
             'ipn_callback_url'  => $callbackBase . '/nowpayments_ipn.php',
             'success_callback_url' => 'https://t.me/' . ltrim((string) Config::str('bot_username', ''), '@'),
         ];
@@ -86,7 +100,6 @@ final class NowPaymentsGateway implements PaymentGateway
         $response = $this->call('post', '/payment', $payload);
 
         $paymentId = $response['payment_id'] ?? null;
-        $payUrl    = $response['pay_address'] ?? null;
 
         if ($response['error'] !== '' || $paymentId === null) {
             Logger::error('NowPayments create failed', ['error' => $response['error']]);
@@ -94,21 +107,56 @@ final class NowPaymentsGateway implements PaymentGateway
             return ['ok' => false, 'message' => 'ساخت فاکتور پرداخت ناموفق بود: ' . ($response['error'] ?: 'خطای نامشخص')];
         }
 
+        // نکتهٔ حیاتی: pay_address یک آدرس کیف‌پول (مثلاً bc1q…) است، نه URL!
+        // اگر همین به‌عنوان لینک دکمهٔ پرداخت استفاده شود، filter_var آن را
+        // URL نمی‌شناسد و buildMarkup دکمه را حذف می‌کند → کاربر هیچ راهی
+        // برای پرداخت نمی‌بیند ولی پیام «موفق» دریافت می‌کند.
+        //
+        // NOWPayments فیلد payment_url را مخصوصاً برای صفحهٔ پرداخت می‌فرستد.
+        $payUrl = $response['payment_url'] ?? ($response['pay_url'] ?? '');
+
+        if (!is_string($payUrl) || $payUrl === '') {
+            // نسخه‌های قدیمی‌تر فقط pay_address می‌فرستند؛ آن را هم بررسی می‌کنیم.
+            $payUrl = (string) ($response['pay_address'] ?? '');
+        }
+
         $instructions = implode("\n", [
             '🪙 <b>پرداخت با ارز دیجیتال</b>',
             '',
             '📦 بسته: <b>' . Str::escape((string) $order['package_title']) . '</b>',
-            '💰 مبلغ: <b>' . Str::formatToman($amountToman) . '</b> (حدود ' . Str::faNumber($amountUsd, 2) . ' دلار)',
+            '💰 مبلغ سفارش: <b>' . Str::formatToman($amountToman) . '</b>',
+        ]);
+
+        if ($isBelowMinimum) {
+            $instructions .= "\n⚠️ حداقل پرداخت درگاه <b>" . Str::formatToman((int) ceil($minimumUsd * $tomanPerUsd))
+                . '</b> است، بنابراین مبلغ پرداختی افزایش یافت.';
+        } else {
+            $instructions .= "\n💵 معادل: <b>" . Str::faNumber($amountUsd, 2) . ' دلار</b>';
+        }
+
+        $instructions .= implode("\n", [
             '',
             'پس از واریز، پرداخت به‌صورت <b>خودکار</b> تأیید و بسته روی پنل شما اعمال می‌شود. ✅',
             '⏱ وضعیت پرداخت را می‌توانید با دکمهٔ «🔄 بررسی وضعیت» هم بزنید.',
         ]);
 
+        if ($payUrl === '' || !filter_var($payUrl, FILTER_VALIDATE_URL)) {
+            Logger::error('NowPayments returned no usable payment URL', [
+                'payment_id' => (string) $paymentId,
+                'has_url'    => $payUrl !== '',
+            ]);
+
+            return [
+                'ok'      => false,
+                'message' => 'درگاه ارز دیجیتال آدرس پرداخت برنگرداند. لطفاً روش دیگری را انتخاب کنید.',
+            ];
+        }
+
         return [
             'ok'              => true,
             'message'         => $instructions,
             'instructions'    => $instructions,
-            'pay_url'         => is_string($payUrl) ? $payUrl : '',
+            'pay_url'         => $payUrl,
             'reference'       => (string) $paymentId,
             'amount_usd'      => $amountUsd,
             'currency'        => 'USD',
