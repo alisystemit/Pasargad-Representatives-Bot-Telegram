@@ -1,0 +1,19 @@
+# تنظیمات محلی (هرگز commit نشود)
+/config.php
+/.env
+
+# دیتابیس و لاگ‌ها
+/data/*.sqlite
+/data/*.sqlite-journal
+/data/*.sqlite-wal
+/data/*.sqlite-shm
+/data/logs/
+/data/receipts/
+/data/cache/
+
+# خروجی و ابزار
+/vendor/
+/node_modules/
+*.log
+*.bak
+*.tmp

@@ -1,0 +1,23 @@
+# جلوگیری از دسترسی مستقیم به فایل‌های حساس پروژه
+
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(src|data|tools|cron|storage)(/|$) - [F,L]
+</IfModule>
+
+<FilesMatch "\.(sqlite|sqlite-journal|sqlite-wal|sqlite-shm|db|log|env|ini|bak|key|pem)$">
+    Require all denied
+</FilesMatch>
+
+# فقط entrypointهای وب عمومی
+<Files "config.php">
+    Require all denied
+</Files>
+<Files "config.example.php">
+    Require all denied
+</Files>
+<FilesMatch "^(composer\.(json|lock)|README\.md)$">
+    Require all denied
+</FilesMatch>
