@@ -397,18 +397,28 @@ class PasarGuardClient
     }
 
     /**
+     * تبدیل پاسخ خطا به استثنا با پیام فارسی.
+     *
+     * پیام خام پنل انگلیسی است و نباید مستقیم به کاربر نمایش داده شود؛
+     * برای خطاهای شناخته‌شده پیام فارسی جایگزین می‌گردد و برای خطاهای
+     * اعتبارسنجی (422) جزئیات فنی نگه داشته می‌شود چون به رفع مشکل کمک می‌کند.
+     *
      * @param array{status:int, data:array<string, mixed>|null, raw:string, error:string} $response
      */
     private function toException(array $response, string $fallback): PanelException
     {
+        $detail = $this->detailOf($response);
+
         return new PanelException(
-            $this->detailOf($response) ?? $fallback,
+            $detail === null ? $fallback : $this->translate($detail, $response['status'], $fallback),
             $response['status'],
             $response['data']
         );
     }
 
     /**
+     * استخراج جزئیات خطا از بدنهٔ پاسخ پنل (detail یا message).
+     *
      * @param array{status:int, data:array<string, mixed>|null, raw:string, error:string} $response
      */
     private function detailOf(array $response): ?string
@@ -419,15 +429,17 @@ class PasarGuardClient
         }
 
         $detail = $data['detail'] ?? $data['message'] ?? null;
+
         if (is_string($detail) && $detail !== '') {
             return $detail;
         }
 
         if (is_array($detail)) {
             $parts = [];
-            foreach ($detail as $field => $messages) {
-                $text = is_array($messages) ? implode('، ', array_map('strval', $messages)) : (string) $messages;
-                $parts[] = $text;
+            foreach ($detail as $messages) {
+                $parts[] = is_array($messages)
+                    ? implode('، ', array_map('strval', $messages))
+                    : (string) $messages;
             }
 
             if ($parts !== []) {
@@ -439,37 +451,103 @@ class PasarGuardClient
     }
 
     /**
+     * قوانین ترجمهٔ پیام‌های پنل به فارسی.
+     *
+     * @var array<int, array{0: array<int, string>, 1: string}>
+     */
+    private const MESSAGE_RULES = [
+        [['incorrect', 'invalid credential', 'username', 'password', 'bad credentials'], 'نام کاربری یا رمز عبور اشتباه است.'],
+        [['unauthorized', 'not authenticated', 'token expired'], 'نشست شما منقضی شده است. دوباره وارد شوید.'],
+        [['forbidden', 'permission', 'not allowed'], 'دسترسی لازم برای این عملیات را ندارید.'],
+        [['not found', 'does not exist', 'no such'], 'موردی با این مشخصات پیدا نشد.'],
+        [['already exists', 'duplicate', 'is taken'], 'این مورد از قبل وجود دارد.'],
+        [['conflict'], 'این عملیات با وضعیت فعلی تداخل دارد.'],
+        [['disabled'], 'این حساب غیرفعال است.'],
+        [['limited'], 'حساب شما به دلیل اتمام حجم محدود شده است.'],
+        [['expired'], 'اعتبار این حساب به پایان رسیده است.'],
+        [['rate limit', 'too many requests'], 'درخواست‌های زیادی ارسال شده است؛ کمی بعد تلاش کنید.'],
+        [['internal server error', 'server error'], 'خطای داخلی سرور پنل. کمی بعد دوباره تلاش کنید.'],
+        [['bad gateway', 'service unavailable', 'gateway timeout', 'unreachable'], 'پنل موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید.'],
+        [['connection', 'network', 'resolve host', 'timed out'], 'ارتباط با سرور پنل برقرار نشد. اینترنت یا تنظیمات را بررسی کنید.'],
+    ];
+
+    /**
+     * تبدیل پیام انگلیسی پنل به پیام فارسی قابل فهم برای کاربر.
+     */
+    private function translate(string $detail, int $status, string $fallback): string
+    {
+        // اگر پیام از قبل فارسی باشد، دست‌نخورده می‌ماند.
+        if (preg_match('/[\x{0600}-\x{06FF}]/u', $detail) === 1) {
+            return $detail;
+        }
+
+        // خطاهای اعتبارسنجی: جزئیات فنی نگه داشته می‌شود ولی با مقدمهٔ فارسی.
+        if ($status === 422) {
+            return 'داده‌های ارسالی نامعتبر است. جزئیات: ' . $detail;
+        }
+
+        $lower = strtolower($detail);
+
+        foreach (self::MESSAGE_RULES as [$needles, $message]) {
+            if ($this->containsAny($lower, $needles)) {
+                return $message;
+            }
+        }
+
+        return $fallback;
+    }
+
+    /**
+     * آیا هر کدام از عبارت‌ها در متن وجود دارد؟
+     *
+     * @param array<int, string> $needles
+     */
+    private function containsAny(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if (str_contains($haystack, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * پیام فارسی برای خطاهای ورود.
+     *
      * @param array{status:int, data:array<string, mixed>|null, raw:string, error:string} $response
      */
     private function authErrorMessage(array $response, string $fallback): string
     {
-        if ($response['status'] === 401) {
-            return 'نام کاربری یا رمز عبور پنل اشتباه است.';
-        }
+        $fallbacks = match ($response['status']) {
+            401     => 'نام کاربری یا رمز عبور پنل اشتباه است.',
+            403     => 'این حساب اجازهٔ دسترسی به این بخش از پنل را ندارد.',
+            404     => 'این حساب در پنل پیدا نشد. نام کاربری را بررسی کنید.',
+            429     => 'درخواست‌های زیادی به پنل ارسال شده است؛ کمی بعد دوباره تلاش کنید.',
+            default => $fallback,
+        };
 
-        if ($response['status'] === 403) {
-            return 'این حساب اجازهٔ دسترسی به این بخش از پنل را ندارد (403).';
-        }
+        $detail = $this->detailOf($response);
 
-        if ($response['status'] === 429) {
-            return 'درخواست‌های زیادی به پنل ارسال شده است؛ کمی بعد دوباره تلاش کنید.';
-        }
-
-        return $this->detailOf($response) ?? $fallback;
+        return $detail === null
+            ? $fallbacks
+            : $this->translate($detail, $response['status'], $fallbacks);
     }
 
     /**
+     * پیام فارسی برای خطاهای HTTP عمومی.
+     *
      * @param array{status:int, data:array<string, mixed>|null, raw:string, error:string} $response
      */
     private function httpErrorMessage(array $response): string
     {
-        return match (true) {
-            $response['status'] === 404 => 'موردی با این مشخصات در پنل پیدا نشد.',
-            $response['status'] === 409 => 'این عملیات با وضعیت فعلی پنل تداخل دارد.',
-            $response['status'] === 422 => $this->detailOf($response) ?? 'داده‌های ارسالی نامعتبر است.',
-            $response['status'] === 429 => 'درخواست‌های زیادی به پنل ارسال شده است؛ کمی بعد دوباره تلاش کنید.',
-            default => $this->detailOf($response)
-                ?? 'خطای پنل (کد ' . $response['status'] . '). لطفاً کمی بعد دوباره تلاش کنید.',
+        return match ($response['status']) {
+            404 => 'موردی با این مشخصات در پنل پیدا نشد.',
+            409 => 'این عملیات با وضعیت فعلی پنل تداخل دارد.',
+            422 => 'داده‌های ارسالی نامعتبر است.',
+            429 => 'درخواست‌های زیادی به پنل ارسال شده است؛ کمی بعد دوباره تلاش کنید.',
+            default => 'خطای پنل (کد ' . $response['status'] . '). لطفاً کمی بعد دوباره تلاش کنید.',
         };
     }
 
