@@ -355,6 +355,7 @@ $order2 = $orders->create((int) $user['id'], [
     'duration_days' => 30,
     'price_toman'   => 500000,
     'status'        => OrderRepository::STATUS_PAID,
+    'paid_at'       => time(),
 ]);
 
 $payments = new \Pasargad\Payment\PaymentService($orders, $provisioner, $settings);

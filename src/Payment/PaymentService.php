@@ -119,6 +119,23 @@ final class PaymentService
             return ['ok' => false, 'message' => 'روش پرداخت انتخابی در دسترس نیست.'];
         }
 
+        $status = (string) ($order['status'] ?? '');
+
+        // سفارشی که قبلاً پرداخت یا نهایی شده، دوباره پرداخت نمی‌شود.
+        if (in_array($status, [
+            OrderRepository::STATUS_PAID,
+            OrderRepository::STATUS_APPLYING,
+            OrderRepository::STATUS_APPLIED,
+            OrderRepository::STATUS_REJECTED,
+            OrderRepository::STATUS_REFUNDED,
+        ], true)) {
+            return [
+                'ok'      => false,
+                'message' => 'این سفارش قبلاً پرداخت شده یا نهایی شده است.',
+                'already' => true,
+            ];
+        }
+
         // سوییچ پنل: حتی اگر در کانفیگ باشد، سوپرادمین می‌تواند آن را خاموش کند.
         if (!$this->flags->isGatewayEnabled($method)) {
             return ['ok' => false, 'message' => 'این روش پرداخت موقتاً غیرفعال شده است. لطفاً روش دیگری را انتخاب کنید.'];
@@ -134,16 +151,28 @@ final class PaymentService
             return $result;
         }
 
-        // ثبت تلاش پرداخت در دیتابیس
-        $this->orders->createPayment((int) $order['id'], [
-            'method'        => $method,
-            'amount_toman'  => (int) $order['price_toman'],
-            'amount_usd'    => $result['amount_usd'] ?? null,
-            'currency'      => $result['currency'] ?? 'IRR',
-            'external_id'   => $result['reference'] ?? null,
-            'status'        => ($result['requires_review'] ?? false) ? 'waiting' : 'pending',
-            'raw_payload'   => isset($result['raw']) ? json_encode($result['raw'], JSON_UNESCAPED_UNICODE) : null,
-        ]);
+        // ثبت تلاش پرداخت در دیتابیس.
+        // اگر برای همین سفارش و همین روش قبلاً پرداختی ثبت شده، همان را
+        // به‌روزرسانی می‌کنیم تا خطای UNIQUE رخ ندهد.
+        try {
+            $this->orders->upsertPayment((int) $order['id'], [
+                'method'        => $method,
+                'amount_toman'  => (int) $order['price_toman'],
+                'amount_usd'    => $result['amount_usd'] ?? null,
+                'currency'      => $result['currency'] ?? 'IRR',
+                'external_id'   => $result['reference'] ?? null,
+                'status'        => ($result['requires_review'] ?? false) ? 'waiting' : 'pending',
+                'raw_payload'   => isset($result['raw']) ? json_encode($result['raw'], JSON_UNESCAPED_UNICODE) : null,
+            ]);
+        } catch (\Throwable $e) {
+            Logger::error('Failed to record payment attempt', [
+                'order_id' => (int) $order['id'],
+                'method'   => $method,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return ['ok' => false, 'message' => 'ثبت تلاش پرداخت ناموفق بود. لطفاً دوباره تلاش کنید.'];
+        }
 
         // به‌روزرسانی سفارش
         $orderUpdate = [
@@ -200,13 +229,17 @@ final class PaymentService
         $orderId = (int) $order['id'];
 
         if (!$approved) {
+            // «رد پرداخت» یک وضعیت پایانی است: نباید هرگز دوباره اجرا شود،
+            // وگرنه کرون در اجرای بعدی بسته را بدون پرداخت به کاربر می‌دهد.
+            $this->orders->markTerminal(
+                $orderId,
+                OrderRepository::STATUS_REJECTED,
+                'payment_rejected',
+                $note !== '' ? $note : 'پرداخت توسط سوپرادمین رد شد.'
+            );
+
             $this->orders->update($orderId, [
-                'status'        => OrderRepository::STATUS_FAILED,
                 'review_admin_id' => $adminId,
-                'review_note'   => Str::truncate($note, 200),
-                'error'         => 'پرداخت توسط سوپرادمین رد شد.',
-                'next_attempt_at' => null,
-                'attempts'      => 99,
             ]);
 
             $payment = $this->orders->lastPayment($orderId);

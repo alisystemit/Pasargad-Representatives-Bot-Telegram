@@ -155,6 +155,51 @@ final class Migrator
             "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('shop_opened', '1', 0)",
             "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('auto_apply', '1', 0)",
             "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('low_volume_alert', '5', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('bot_enabled', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('gateway_card2card', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('gateway_nowpayments', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('renewal_enabled', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('user_tools_enabled', '1', 0)",
+        ],
+
+        // ------------------------------------------------------------------
+        // 003: تفکیک وضعیت «رد شده توسط ادمین» از «اجرای ناموفق»
+        //
+        // مشکل قبلی: هم رد شدن پرداخت و هم خطای موقت اجرا با status='failed'
+        // ذخیره می‌شد و next_attempt_at=NULL داشت. چون pendingApply این حالت را
+        // «آمادهٔ پردازش فوری» می‌فهمید، سفارش ردشده در کرون بعدی دوباره اجرا
+        // می‌شد و بسته بدون پرداخت به کاربر داده می‌شد.
+        //
+        // راه‌حل: وضعیت پایانی 'rejected' اضافه شد و فیلد terminal_reason
+        // برای تشخیص صریح سفارش‌هایی که دیگر نباید تلاش مجدد شوند.
+        // ------------------------------------------------------------------
+        '003_terminal_states' => [
+            'ALTER TABLE orders ADD COLUMN terminal_reason TEXT',
+            'ALTER TABLE orders ADD COLUMN target_limit INTEGER',
+            'ALTER TABLE orders ADD COLUMN panel_applied INTEGER NOT NULL DEFAULT 0',
+
+            // سفارش‌هایی که قبلاً با attempts=99 عمداً از صف خارج شده بودند
+            // (تلاش‌های ناموفقِ محلی) به وضعیت پایانی منتقل می‌شوند تا دیگر
+            // در صف پردازش قرار نگیرند.
+            "UPDATE orders SET status = 'rejected', terminal_reason = 'local_failure'
+             WHERE status = 'failed' AND attempts >= 99",
+
+            'CREATE INDEX IF NOT EXISTS idx_orders_terminal ON orders(terminal_reason)',
+            'CREATE INDEX IF NOT EXISTS idx_orders_panel_applied ON orders(panel_applied)',
+        ],
+
+        // ------------------------------------------------------------------
+        // 004: اعتبارسنجی قوی‌تر داده‌های پرداخت
+        // ------------------------------------------------------------------
+        '004_payment_guards' => [
+            // reference کارت‌به‌کارت کد سفارش است و برای هر سفارش تکراری می‌شود،
+            // پس یکتایی سراسری روی external_id باعث خطای UNIQUE می‌شد.
+            'DROP INDEX IF EXISTS idx_payments_external',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_order_method
+             ON payments(order_id, method)',
+
+            // جلوگیری از پذیرش مبلغ منفی
+            'CREATE INDEX IF NOT EXISTS idx_payments_amount ON payments(amount_toman)',
         ],
         ];
     }

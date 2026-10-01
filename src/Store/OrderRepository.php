@@ -20,6 +20,32 @@ final class OrderRepository
     public const STATUS_FAILED          = 'failed';
     public const STATUS_CANCELLED       = 'cancelled';
     public const STATUS_REFUNDED        = 'refunded';
+    public const STATUS_REJECTED        = 'rejected';   // پایانی: نباید دوباره اجرا شود
+
+    /**
+     * وضعیت‌هایی که یعنی سفارش «تمام شده» و هرگز نباید اجرا شود.
+     *
+     * rejected  : پرداخت توسط سوپرادمین رد شد
+     * cancelled : لغو توسط کاربر یا مدیر
+     * refunded  : بازگشت وجه
+     * applied   : با موفقیت اجرا شد
+     *
+     * @var array<int, string>
+     */
+    public const TERMINAL_STATUSES = [
+        self::STATUS_APPLIED,
+        self::STATUS_REJECTED,
+        self::STATUS_CANCELLED,
+        self::STATUS_REFUNDED,
+    ];
+
+    /**
+     * آیا این وضعیت پایانی است (اجرای دوباره ممنوع)؟
+     */
+    public function isTerminal(string $status): bool
+    {
+        return in_array($status, self::TERMINAL_STATUSES, true);
+    }
 
     private Db $db;
 
@@ -107,7 +133,10 @@ final class OrderRepository
     {
         return $this->db->run(
             'UPDATE orders SET status = :status, updated_at = :t
-             WHERE id = :id AND status IN (:s1, :s2)',
+             WHERE id = :id
+               AND status IN (:s1, :s2)
+               AND terminal_reason IS NULL
+               AND panel_applied = 0',
             [
                 'status' => self::STATUS_APPLYING,
                 't'      => time(),
@@ -123,20 +152,13 @@ final class OrderRepository
      */
     public function markPaid(int $id, ?string $paymentMethod = null, ?string $paymentRef = null): bool
     {
-        $current = $this->find($id);
-        if ($current === null) {
-            return false;
-        }
-
-        if (in_array((string) $current['status'], [self::STATUS_PAID, self::STATUS_APPLIED], true)) {
-            return false;   // قبلاً پرداخت شده — از دوباره اعمال نکن
-        }
-
         $payload = [
-            'status'         => self::STATUS_PAID,
-            'paid_at'        => time(),
-            'updated_at'     => time(),
-            'error'          => null,
+            'status'      => self::STATUS_PAID,
+            'paid_at'     => time(),
+            'updated_at'  => time(),
+            'error'       => null,
+            // پاک کردن هر دلیل پایانی قبلی تا این سفارش دوباره پردازش شود.
+            'terminal_reason' => null,
         ];
 
         if ($paymentMethod !== null) {
@@ -146,9 +168,39 @@ final class OrderRepository
             $payload['payment_ref'] = $paymentRef;
         }
 
-        $this->db->update('orders', $payload, ['id' => $id]);
+        // شرط در همان UPDATE اعمال می‌شود تا دو درخواست همزمان
+        // (مثلاً دو بار رسیدن IPN) هرگز هر دو true برنگردانند.
+        $sets      = [];
+        $params    = [];
+        foreach ($payload as $column => $value) {
+            $sets[]              = $column . ' = :set_' . $column;
+            $params['set_' . $column] = $value;
+        }
+        $params['id'] = $id;
 
-        return true;
+        return $this->db->run(
+            'UPDATE orders SET ' . implode(', ', $sets) . '
+             WHERE id = :id
+               AND status NOT IN (\'paid\', \'applied\', \'applying\', \'rejected\', \'cancelled\', \'refunded\')',
+            $params
+        )->rowCount() > 0;
+    }
+
+    /**
+     * علامت‌گذاری سفارش با وضعیت پایانی (رد شده / لغو شده / بازگشت وجه).
+     *
+     * terminal_reason پر می‌شود تا حتی اگر کسی اشتباهاً status را عوض کند،
+     * pendingApply دیگر آن را برنمی‌دارد.
+     */
+    public function markTerminal(int $id, string $status, string $reason = '', ?string $note = null): void
+    {
+        $this->db->update('orders', [
+            'status'          => $status,
+            'terminal_reason' => $reason !== '' ? $reason : $status,
+            'next_attempt_at' => null,
+            'error'           => Str::truncate($note ?? $reason, 500),
+            'updated_at'      => time(),
+        ], ['id' => $id]);
     }
 
     /**
@@ -231,7 +283,40 @@ final class OrderRepository
     }
 
     /**
-     * سفارش‌های آمادهٔ پردازش خودکار (paid یا failed با تلاش مجدد).
+     * ذخیرهٔ اتمیک سقف هدف — اگر قبلاً ثبت شده باشد false برمی‌گرداند.
+     *
+     * compare-and-swap تضمین می‌کند دو پروسهٔ همزمان هرگز دو هدف متفاوت
+     * برای یک سفارش ننویسند (وگرنه حجم می‌توانست دوباره اعمال شود).
+     */
+    public function reserveTargetLimit(int $orderId, int $targetLimit): bool
+    {
+        return $this->db->run(
+            'UPDATE orders SET target_limit = :t, updated_at = :now
+             WHERE id = :id AND target_limit IS NULL',
+            ['t' => $targetLimit, 'now' => time(), 'id' => $orderId]
+        )->rowCount() > 0;
+    }
+
+    /**
+     * علامت‌گذاری اینکه بسته روی پنل (یا اعتبار) اعمال شده است.
+     *
+     * اگر قبلاً علامت خورده باشد false برمی‌گرداند تا از اجرای دوباره جلوگیری شود.
+     */
+    public function markPanelApplied(int $orderId, int $afterLimit): bool
+    {
+        return $this->db->run(
+            'UPDATE orders SET panel_applied = 1, after_limit = :a, updated_at = :now
+             WHERE id = :id AND panel_applied = 0',
+            ['a' => $afterLimit, 'now' => time(), 'id' => $orderId]
+        )->rowCount() > 0;
+    }
+
+    /**
+     * سفارش‌های آمادهٔ پردازش خودکار.
+     *
+     * نکتهٔ امنیتی حیاتی: سفارش‌های «رد شده توسط ادمین» و «لغو شده» نباید
+     * هرگز از این مسیر عبور کنند. همچنین سفارشی که قبلاً روی پنل اعمال شده
+     * (panel_applied = 1) نباید دوباره اجرا شود حتی اگر وضعیتش عوض شود.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -240,12 +325,19 @@ final class OrderRepository
         return $this->db->all(
             "SELECT * FROM orders
              WHERE status IN ('paid','failed')
+               AND terminal_reason IS NULL
+               AND panel_applied = 0
+               AND attempts < :max_attempts
+               AND paid_at IS NOT NULL
                AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
              ORDER BY
                CASE WHEN status = 'paid' THEN 0 ELSE 1 END ASC,
                id ASC
              LIMIT " . max(1, min($limit, 50)),
-            ['now' => time()]
+            [
+                'now'          => time(),
+                'max_attempts' => \Pasargad\Support\Config::int('worker.max_attempts', 5),
+            ]
         );
     }
 
@@ -289,6 +381,31 @@ final class OrderRepository
             'created_at'   => $now,
             'updated_at'   => $now,
         ], $data));
+    }
+
+    /**
+     * ثبت یا به‌روزرسانی تلاش پرداخت برای یک سفارش و روش.
+     *
+     * به‌جای createPayment استفاده می‌شود چون کاربر ممکن است چند بار روی
+     * دکمهٔ پرداخت بزند؛ ثبت تکراری نباید خطای UNIQUE بدهد.
+     *
+     * @param  array<string, mixed> $data
+     * @return int شناسهٔ رکورد پرداخت
+     */
+    public function upsertPayment(int $orderId, array $data): int
+    {
+        $existing = $this->db->first(
+            'SELECT id FROM payments WHERE order_id = ? AND method = ? LIMIT 1',
+            [$orderId, (string) ($data['method'] ?? '')]
+        );
+
+        if ($existing !== null) {
+            $data['updated_at'] = time();
+            $this->db->update('payments', $data, ['id' => (int) $existing['id']]);
+            return (int) $existing['id'];
+        }
+
+        return $this->createPayment($orderId, $data);
     }
 
     /**

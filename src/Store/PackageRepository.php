@@ -126,22 +126,42 @@ final class PackageRepository
      */
     public function update(int $id, array $data): void
     {
-        $allowed = [
-            'title', 'description', 'kind', 'volume_gb', 'duration_days',
-            'price_toman', 'bonus_gb', 'sort_order', 'is_active', 'max_per_user', 'slug',
-        ];
-
         $payload = ['updated_at' => time()];
-        foreach ($allowed as $field) {
-            if (!array_key_exists($field, $data)) {
-                continue;
+
+        // فیلدهای عددی صحیح — فقط is_active بولی است، بقیه عدد واقعی‌اند.
+        // (اشتباه قبلی: (int)(bool) قیمت ۵۰۰۰۰۰ را به ۱ تبدیل می‌کرد.)
+        $intFields = ['duration_days', 'price_toman', 'sort_order', 'max_per_user'];
+
+        // فیلدهای اعشاری
+        $floatFields = ['volume_gb', 'bonus_gb'];
+
+        // فیلدهای رشته‌ای
+        $stringFields = ['title', 'description', 'kind'];
+
+        foreach ($intFields as $field) {
+            if (array_key_exists($field, $data)) {
+                $payload[$field] = max(0, (int) $data[$field]);
             }
-            $payload[$field] = match ($field) {
-                'volume_gb', 'bonus_gb' => (float) $data[$field],
-                'duration_days', 'price_toman', 'sort_order', 'max_per_user', 'is_active' => (int) (bool) $data[$field],
-                'slug'  => $this->uniqueSlug((string) $data[$field], $id),
-                default => $data[$field],
-            };
+        }
+
+        foreach ($floatFields as $field) {
+            if (array_key_exists($field, $data)) {
+                $payload[$field] = max(0.0, (float) $data[$field]);
+            }
+        }
+
+        foreach ($stringFields as $field) {
+            if (array_key_exists($field, $data)) {
+                $payload[$field] = (string) $data[$field];
+            }
+        }
+
+        if (array_key_exists('is_active', $data)) {
+            $payload['is_active'] = (int) (bool) $data['is_active'];
+        }
+
+        if (array_key_exists('slug', $data)) {
+            $payload['slug'] = $this->uniqueSlug((string) $data['slug'], $id);
         }
 
         if (count($payload) === 1) {

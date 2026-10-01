@@ -137,13 +137,25 @@ final class UserRepository
      */
     public function syncPanelState(int $userId, array $adminDetails): void
     {
-        $this->db->update('users', [
-            'panel_status'     => $this->mapPanelStatus((string) ($adminDetails['status'] ?? 'active')),
-            'panel_data_limit' => (int) ($adminDetails['data_limit'] ?? 0),
-            'panel_used'       => (int) ($adminDetails['used_traffic'] ?? 0),
-            'panel_synced_at'  => time(),
-            'updated_at'       => time(),
-        ], ['id' => $userId]);
+        // فقط فیلدهایی که واقعاً در پاسخ پنل آمده‌اند به‌روز می‌شوند.
+        // پاسخ PUT ممکن است ناقص باشد؛ اگر کلیدی نبود نباید مقدار قبلی صفر شود
+        // چون «نامحدود» تلقی می‌شود و هشدار حجم از کار می‌افتد.
+        $payload = [
+            'panel_synced_at' => time(),
+            'updated_at'      => time(),
+        ];
+
+        if (isset($adminDetails['status'])) {
+            $payload['panel_status'] = $this->mapPanelStatus((string) $adminDetails['status']);
+        }
+        if (isset($adminDetails['data_limit']) && is_numeric($adminDetails['data_limit'])) {
+            $payload['panel_data_limit'] = (int) $adminDetails['data_limit'];
+        }
+        if (isset($adminDetails['used_traffic']) && is_numeric($adminDetails['used_traffic'])) {
+            $payload['panel_used'] = (int) $adminDetails['used_traffic'];
+        }
+
+        $this->db->update('users', $payload, ['id' => $userId]);
     }
 
     public function unlinkPanel(int $userId): void
@@ -164,65 +176,82 @@ final class UserRepository
      */
     public function addGrantedVolume(int $userId, int $bytes, ?int $expireAt = null): array
     {
-        return $this->db->transaction(function () use ($userId, $bytes, $expireAt): array {
-            $user = $this->findById($userId);
-            if ($user === null) {
-                throw new \RuntimeException('کاربر یافت نشد.');
-            }
+        if ($bytes <= 0) {
+            throw new \RuntimeException('مقدار حجم هدیه‌شده باید بزرگ‌تر از صفر باشد.');
+        }
 
-            $granted = (int) $user['granted_volume'] + $bytes;
-            $currentExpire = $user['granted_expire_at'] !== null ? (int) $user['granted_expire_at'] : 0;
+        if ($expireAt !== null) {
+            $this->db->run(
+                'UPDATE users
+                 SET granted_volume    = granted_volume + :b,
+                     granted_expire_at = CASE
+                         WHEN granted_expire_at IS NULL OR granted_expire_at < :e THEN :e
+                         ELSE granted_expire_at
+                     END,
+                     updated_at        = :now
+                 WHERE id = :id',
+                ['b' => $bytes, 'e' => $expireAt, 'now' => time(), 'id' => $userId]
+            );
+        } else {
+            $this->db->run(
+                'UPDATE users SET granted_volume = granted_volume + :b, updated_at = :now WHERE id = :id',
+                ['b' => $bytes, 'now' => time(), 'id' => $userId]
+            );
+        }
 
-            // اعتبار از سقف اعتبار فعلی و زمان جدید محاسبه می‌شود.
-            $newExpire = $expireAt !== null ? max($currentExpire, $expireAt) : ($currentExpire ?: null);
-
-            $this->db->update('users', [
-                'granted_volume'    => $granted,
-                'granted_expire_at' => $newExpire,
-                'updated_at'        => time(),
-            ], ['id' => $userId]);
-
-            $row = $this->findById($userId);
-
-            return $row ?? [];
-        });
+        return $this->findById($userId) ?? [];
     }
 
     /**
-     * کسر اعتبار ساخت کاربر (بایت) — با بررسی موجودی.
+     * کسر اعتبار ساخت کاربر (بایت) به‌صورت اتمیک.
+     *
+     * شرط موجودی داخل خودِ UPDATE است تا دو درخواست همزمان (مثلاً دو بار
+     * زدن دکمه یا همزمانی وبهوک و کرون) نتوانند بیش از موجودی خرج کنند.
+     * برمی‌گرداند true اگر کسر انجام شد.
      */
     public function consumeUserCredit(int $userId, int $bytes): bool
     {
-        return $this->db->transaction(function () use ($userId, $bytes): bool {
-            $user = $this->findById($userId);
-            if ($user === null || (int) $user['user_credit'] < $bytes) {
-                return false;
-            }
+        if ($bytes <= 0) {
+            return false;
+        }
 
-            $this->db->update('users', [
-                'user_credit' => (int) $user['user_credit'] - $bytes,
-                'updated_at'   => time(),
-            ], ['id' => $userId]);
-
-            return true;
-        });
+        return $this->db->run(
+            'UPDATE users SET user_credit = user_credit - :b, updated_at = :now
+             WHERE id = :id AND user_credit >= :b',
+            ['b' => $bytes, 'now' => time(), 'id' => $userId]
+        )->rowCount() > 0;
     }
 
+    /**
+     * افزودن اعتبار ساخت کاربر به‌صورت اتمیک.
+     */
     public function addUserCredit(int $userId, int $bytes, ?int $expireAt = null): void
     {
-        $user = $this->findById($userId);
-        if ($user === null) {
+        if ($bytes <= 0) {
             return;
         }
 
-        $currentExpire = $user['user_credit_expire'] !== null ? (int) $user['user_credit_expire'] : 0;
-        $newExpire = $expireAt !== null ? max($currentExpire, $expireAt) : ($currentExpire ?: null);
+        // افزایش حجم و تمدید انقضا در یک دستور تا خواندن-نوشتنِ جداگانه لازم نباشد.
+        if ($expireAt !== null) {
+            $this->db->run(
+                'UPDATE users
+                 SET user_credit        = user_credit + :b,
+                     user_credit_expire  = CASE
+                         WHEN user_credit_expire IS NULL OR user_credit_expire < :e THEN :e
+                         ELSE user_credit_expire
+                     END,
+                     updated_at          = :now
+                 WHERE id = :id',
+                ['b' => $bytes, 'e' => $expireAt, 'now' => time(), 'id' => $userId]
+            );
 
-        $this->db->update('users', [
-            'user_credit'        => (int) $user['user_credit'] + $bytes,
-            'user_credit_expire' => $newExpire,
-            'updated_at'         => time(),
-        ], ['id' => $userId]);
+            return;
+        }
+
+        $this->db->run(
+            'UPDATE users SET user_credit = user_credit + :b, updated_at = :now WHERE id = :id',
+            ['b' => $bytes, 'now' => time(), 'id' => $userId]
+        );
     }
 
     public function setBlocked(int $userId, bool $blocked, string $reason = ''): void

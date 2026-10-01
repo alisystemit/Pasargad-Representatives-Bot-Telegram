@@ -21,6 +21,20 @@ use Pasargad\Support\Str;
 final class UserProvisioner
 {
     private PasarGuardClient $panel;
+    /**
+     * حداقل حجم قابل سفارش (بایت) — یک گیگابایت.
+     *
+     * چرا؟ مقدار data_limit صفر در پنل یعنی «نامحدود». اگر کاربر عددی مثل
+     * 0.0000000001 بفرستد، تبدیل به بایت صفر می‌شود، بررسی اعتبار رد نمی‌شود
+     * (چون 0 > 0 غلط است) و کاربر نامحدود را رایگان می‌گیرد.
+     */
+    public const MIN_BYTES = 1073741824;
+
+    /**
+     * حداکثر حجم قابل سفارش در یک درخواست (۱۰ ترابایت).
+     */
+    public const MAX_BYTES = 10995116277760;
+
     private UserRepository $users;
 
     public function __construct(UserRepository $users, ?PasarGuardClient $panel = null)
@@ -48,8 +62,21 @@ final class UserProvisioner
             return ['ok' => false, 'message' => 'نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد، _ و - مجاز است.'];
         }
 
-        if ($volumeGb <= 0 || $days <= 0) {
-            return ['ok' => false, 'message' => 'حجم یا مدت زمان باید بزرگ‌تر از صفر باشد.'];
+        // اعتبارسنجی بر اساس بایتِ نهایی، نه عدد اعشاری ورودی.
+        // عددی مثل 0.0000000001 به صفر بایت تبدیل می‌شود که در پنل
+        // «نامحدود» است، پس باید همین‌جا رد شود.
+        $needed = Str::gbToBytes($volumeGb);
+
+        if ($needed < self::MIN_BYTES) {
+            return ['ok' => false, 'message' => 'حداقل حجم قابل سفارش ۱ گیگابایت است.'];
+        }
+
+        if ($needed > self::MAX_BYTES) {
+            return ['ok' => false, 'message' => 'حداکثر حجم در یک درخواست ۱۰ ترابایت است.'];
+        }
+
+        if ($days <= 0) {
+            return ['ok' => false, 'message' => 'مدت زمان باید بزرگ‌تر از صفر باشد.'];
         }
 
         // اتصال پنل قبل از بررسی اعتبار بررسی می‌شود تا پیام درستی به کاربر برسد.
@@ -60,8 +87,7 @@ final class UserProvisioner
 
         [$panelUsername, $password] = $credentials;
 
-        $needed = Str::gbToBytes($volumeGb);
-        $credit = (int) $adminUser['user_credit'];
+        $credit = $this->availableCredit($adminUser);
 
         if ($credit < $needed) {
             return [
@@ -132,8 +158,18 @@ final class UserProvisioner
             return ['ok' => false, 'message' => 'نام کاربری نامعتبر است.'];
         }
 
-        if ($volumeGb <= 0 && $days <= 0) {
+        $additional = Str::gbToBytes($volumeGb);
+
+        if ($volumeGb != 0.0 && ($additional < self::MIN_BYTES || $additional > self::MAX_BYTES)) {
+            return ['ok' => false, 'message' => 'حجم باید بین ۱ گیگابایت تا ۱۰ ترابایت باشد.'];
+        }
+
+        if ($additional === 0 && $days <= 0) {
             return ['ok' => false, 'message' => 'حجم یا مدت زمان باید بزرگ‌تر از صفر باشد.'];
+        }
+
+        if ($days < 0) {
+            return ['ok' => false, 'message' => 'مدت زمان نمی‌تواند منفی باشد.'];
         }
 
         // اتصال پنل قبل از بررسی اعتبار بررسی می‌شود تا پیام درستی به کاربر برسد.
@@ -144,8 +180,7 @@ final class UserProvisioner
 
         [$panelUsername, $password] = $credentials;
 
-        $additional = Str::gbToBytes($volumeGb);
-        $credit     = (int) $adminUser['user_credit'];
+        $credit = $this->availableCredit($adminUser);
 
         if ($additional > $credit) {
             return [
@@ -158,12 +193,17 @@ final class UserProvisioner
             $existing = $this->panel->getUser($username, $panelUsername, $password);
 
             $currentLimit = (int) ($existing['data_limit'] ?? 0);
+            $currentUsed  = (int) ($existing['used_traffic'] ?? 0);
             $currentExpire = (int) ($existing['expire'] ?? 0);
 
             $payload = [];
 
             if ($additional > 0) {
-                $payload['data_limit'] = $currentLimit + $additional;
+                // سقف صفر یعنی «نامحدود». اگر کاربر نامحدود بود و حجم اضافه
+                // می‌کنیم، باید از مصرف فعلی شروع کنیم نه از صفر، وگرنه سقف
+                // جدید زیر مصرف واقعی می‌افتد و کاربر سرویسش قطع می‌شود.
+                $base = $currentLimit > 0 ? $currentLimit : $currentUsed;
+                $payload['data_limit'] = $base + $additional;
             }
 
             if ($days > 0) {
@@ -247,6 +287,26 @@ final class UserProvisioner
         $users = is_array($response['users'] ?? null) ? $response['users'] : [];
 
         return ['ok' => true, 'message' => '', 'users' => $users];
+    }
+
+    /**
+     * اعتبار قابل استفادهٔ کاربر، با در نظر گرفتن انقضا.
+     *
+     * اگر اعتبار منقضی شده باشد، صفر برگردانده می‌شود تا کاربر نتواند از
+     * اعتبار Consumed-شدهٔ قدیمی استفاده کند.
+     *
+     * @param array<string, mixed> $adminUser
+     */
+    private function availableCredit(array $adminUser): int
+    {
+        $credit = (int) ($adminUser['user_credit'] ?? 0);
+        $expire = $adminUser['user_credit_expire'] ?? null;
+
+        if ($expire !== null && (int) $expire <= time()) {
+            return 0;
+        }
+
+        return max(0, $credit);
     }
 
     /**

@@ -428,8 +428,7 @@ final class Kernel
                     'mode'     => $mode,
                     'username' => $username,
                 ]);
-                $creator->handleVolume($chatId, $user, $mode, $username, '');
-                // پیام راهنمای حجم
+
                 $this->bot->sendMessage($chatId, "حجم مورد نیاز را به گیگابایت بفرستید.\n\n💾 اعتبار فعلی شما: <b>"
                     . Str::formatBytes((int) $user['user_credit']) . '</b>', [
                     'reply_markup' => $this->bot->buildMarkup(Keyboard::back('user.credit', '❌ انصراف')),
@@ -438,12 +437,21 @@ final class Kernel
 
             case 'user_credit:volume':
                 $volume = (float) Str::toEnglishDigits(trim($text));
-                if ($volume <= 0 || $volume > 10000) {
-                    $this->bot->sendMessage($chatId, '⚠️ حجم نامعتبر است. عددی بین ۱ تا ۱۰۰۰۰ بفرستید.');
+
+                // اعتبارسنجی بر اساس بایت نهایی: عددی مثل 0.0000000001 به صفر
+                // بایت تبدیل می‌شود که در پنل «نامحدود» است.
+                $needed = Str::gbToBytes($volume);
+
+                if ($needed < \Pasargad\Store\UserProvisioner::MIN_BYTES) {
+                    $this->bot->sendMessage($chatId, '⚠️ حداقل حجم قابل سفارش ۱ گیگابایت است.');
                     return;
                 }
 
-                $needed = Str::gbToBytes($volume);
+                if ($needed > \Pasargad\Store\UserProvisioner::MAX_BYTES) {
+                    $this->bot->sendMessage($chatId, '⚠️ حداکثر حجم در یک درخواست ۱۰ ترابایت است.');
+                    return;
+                }
+
                 if ($needed > (int) $user['user_credit']) {
                     $this->bot->sendMessage($chatId, implode("\n", [
                         '❌ اعتبار کافی ندارید.',
@@ -676,6 +684,23 @@ final class Kernel
             // تمدید کاربر جداگانه کنترل می‌شود تا بتوان آن را خاموش کرد.
             if ($isExtend && !$this->flags->isRenewalEnabled()) {
                 $this->bot->sendMessage($chatId, '⏸️ قابلیت تمدید کاربر موقتاً غیرفعال است.');
+                return;
+            }
+
+            // بدون اعتبار، ساخت/تمدید کاربر معنا ندارد. این بررسی لازم است چون
+            // کاربر ممکن است دکمهٔ قدیمی را در چت اسکرول‌شده نگه داشته باشد.
+            $fresh = $this->users->findById((int) $user['id']) ?? $user;
+            if ((int) ($fresh['user_credit'] ?? 0) <= 0) {
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    '⚠️ اعتبار کافی ندارید.',
+                    '',
+                    'برای ساخت یا تمدید کاربر باید ابتدا بستهٔ «اعتبار کاربر» بخرید.',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        [['text' => '🛒 خرید اعتبار', 'data' => BotApi::encodeData('shop', ['kind' => PackageRepository::KIND_USER_CREDIT])]],
+                        Keyboard::back('menu'),
+                    ])),
+                ]);
                 return;
             }
 

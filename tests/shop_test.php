@@ -109,6 +109,7 @@ $order = $orders->create($userId, [
     'price_toman'   => (int) $pkg['price_toman'],
     'status'        => OrderRepository::STATUS_PAID,
     'paid_at'       => time(),
+    'paid_at'       => time(),
 ]);
 check('سفارش paid ایجاد شد', (string) $order['status'] === OrderRepository::STATUS_PAID);
 check('کد سفارش ساخته شد', str_starts_with((string) $order['code'], 'ORD-'));
@@ -146,6 +147,7 @@ $creditOrder = $orders->create($userId, [
     'price_toman'   => (int) $creditPkg['price_toman'],
     'status'        => OrderRepository::STATUS_PAID,
     'paid_at'       => time(),
+    'paid_at'       => time(),
 ]);
 
 $result2 = $provisioner->provision($creditOrder);
@@ -174,11 +176,13 @@ $orphanOrder = $orders->create($orphanId, [
     'duration_days' => 30,
     'price_toman'   => 100000,
     'status'        => OrderRepository::STATUS_PAID,
+    'paid_at'       => time(),
 ]);
 $orphanResult = $provisioner->provision($orphanOrder);
 check('کاربر قطع‌شده ناموفق بود', !$orphanResult['ok']);
 check('پیام مناسب برای کاربر قطع‌شده', str_contains($orphanResult['message'], 'قطع'), $orphanResult['message']);
-check('سفارش failed شد', (string) $orders->find((int) $orphanOrder['id'])['status'] === OrderRepository::STATUS_FAILED);
+check('سفارش قطع‌شده وضعیت پایانی گرفت', (string) $orders->find((int) $orphanOrder['id'])['status'] === OrderRepository::STATUS_FAILED);
+check('سفارش قطع‌شده terminal_reason دارد', $orders->find((int) $orphanOrder['id'])['terminal_reason'] !== null);
 
 // کاربر مسدود
 $blockedId = $users->upsertByTelegram(555555, [
@@ -196,6 +200,7 @@ $blockedOrder = $orders->create($blockedId, [
     'duration_days' => 30,
     'price_toman'   => 100000,
     'status'        => OrderRepository::STATUS_PAID,
+    'paid_at'       => time(),
 ]);
 $blockedResult = $provisioner->provision($blockedOrder);
 check('کاربر مسدود سرویس نگرفت', !$blockedResult['ok']);
@@ -223,6 +228,7 @@ $retryOrder = $orders->create($retryUser, [
     'duration_days' => 30,
     'price_toman'   => 200000,
     'status'        => OrderRepository::STATUS_PAID,
+    'paid_at'       => time(),
 ]);
 
 $retryResult = $provisioner->provision($retryOrder);
@@ -243,6 +249,7 @@ check('سفارش در backoff زمان‌بندی شد', (int) $orders->find((i
 $panel->modifyError = '';
 $db->run('UPDATE orders SET next_attempt_at = ? WHERE id = ?', [time() - 1, (int) $retryOrder['id']]);
 
+echo 'DEBUG pending: ' . json_encode(array_map(fn($o)=>['id'=>$o['id'],'st'=>$o['status'],'att'=>$o['attempts'],'na'=>$o['next_attempt_at'],'tr'=>(int)($o['terminal_reason']!==null),'pa'=>(int)$o['panel_applied'],'paid'=>(int)($o['paid_at']!==null)], $orders->pendingApply(20))) . PHP_EOL;
 $queueResult = $provisioner->processQueue(10);
 check('پردازش صف انجام شد', $queueResult['processed'] >= 1);
 $retryRow2 = $orders->find((int) $retryOrder['id']);
@@ -272,12 +279,15 @@ $authOrder = $orders->create($authUser, [
     'duration_days' => 30,
     'price_toman'   => 50000,
     'status'        => OrderRepository::STATUS_PAID,
+    'paid_at'       => time(),
 ]);
 
 $authResult = $provisioner->provision($authOrder);
 check('خطای 401 ناموفق برگرداند', !$authResult['ok']);
 $authRow = $orders->find((int) $authOrder['id']);
-check('سفارش failed شد', (string) $authRow['status'] === OrderRepository::STATUS_FAILED);
+check('سفارش 401 وضعیت پایانی گرفت', (string) $authRow['status'] === OrderRepository::STATUS_FAILED);
+check('سفارش 401 دیگر تلاش مجدد نمی‌شود', $authRow['terminal_reason'] === 'auth_error', 'reason=' . $authRow['terminal_reason']);
+check('سفارش 401 از صف اجرا خارج شد', !in_array((int) $authOrder['id'], array_map(static fn(array $o): int => (int) $o['id'], $orders->pendingApply(50)), true));
 $authUserRow = $users->findById($authUser);
 check('کاربر revoked شد', (string) $authUserRow['panel_status'] === 'revoked');
 check('پیام «دوباره وارد شود» دارد', str_contains($authResult['message'], 'دوباره'), $authResult['message']);
