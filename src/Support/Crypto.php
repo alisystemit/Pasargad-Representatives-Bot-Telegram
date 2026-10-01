@@ -89,7 +89,7 @@ final class Crypto
     }
 
     /**
-     * هش کلید از رشتهٔ خام کانفیگ می‌سازد (طول دقیق ۳۲ بایت).
+     * کلید مشتق‌شده از رشتهٔ خام کانفیگ، با طول دقیق ۳۲ بایت.
      */
     public static function normalizeKey(?string $key = null): string
     {
@@ -102,5 +102,26 @@ final class Crypto
         }
 
         return hash('sha256', $key, true);
+    }
+
+    /**
+     * base64 امن برای URL (بدون padding و کاراکترهای +/=).
+     */
+    public static function base64UrlEncode(string $raw): string
+    {
+        return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+    }
+
+    public static function base64UrlDecode(string $encoded): ?string
+    {
+        $normalized = strtr($encoded, '-_', '+/');
+        $padding    = strlen($normalized) % 4;
+        if ($padding !== 0) {
+            $normalized .= str_repeat('=', 4 - $padding);
+        }
+
+        $decoded = base64_decode($normalized, true);
+
+        return $decoded === false ? null : $decoded;
     }
 }

@@ -32,13 +32,29 @@ final class Str
     }
 
     /**
+     * نگاشت ارقام فارسی/عربی به ارقام انگلیسی (طول هر دو رشته برابر است).
+     *
+     * @return array<string, string>
+     */
+    private static function digitMap(): array
+    {
+        static $map = null;
+
+        if ($map === null) {
+            $from   = array_merge(self::PERSIAN_DIGITS, self::ARABIC_DIGITS);
+            $to     = array_merge(range('0', '9'), range('0', '9'));
+            $map    = array_combine($from, $to);
+        }
+
+        return $map;
+    }
+
+    /**
      * تبدیل ارقام فارسی/عربی به انگلیسی (برای ورودی‌های عددی کاربر).
      */
     public static function toEnglishDigits(string $input): string
     {
-        $out = strtr($input, self::PERSIAN_DIGITS, '0123456789');
-
-        return strtr($out, self::ARABIC_DIGITS, '0123456789');
+        return strtr($input, self::digitMap());
     }
 
     /**
@@ -46,8 +62,13 @@ final class Str
      */
     public static function toPersianDigits(string $input): string
     {
-        return strtr($input, ['0' => '۰', '1' => '۱', '2' => '۲', '3' => '۳', '4' => '۴',
-            '5' => '۵', '6' => '۶', '7' => '۷', '8' => '۸', '9' => '۹']);
+        static $map = null;
+
+        if ($map === null) {
+            $map = array_combine(range('0', '9'), self::PERSIAN_DIGITS);
+        }
+
+        return strtr($input, $map);
     }
 
     /**
