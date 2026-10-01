@@ -70,9 +70,20 @@ class PasarGuardClient
         $token = $response['data']['access_token'] ?? null;
 
         if (!is_string($token) || $token === '') {
-            throw $this->toException(
+            // علامت‌گذاری: این خطا از مسیر صدور توکن آمده، پس ۴۰۳ اینجا
+            // واقعاً یعنی اطلاعات ورود غلط است (برخلاف ۴۰۳ روی مسیرهای
+            // عملیاتی که فقط یعنی «نقش کاربر اجازه ندارد»).
+            $exception = $this->toException(
                 $response,
                 $this->authErrorMessage($response, 'ورود به پنل ناموفق بود. نام کاربری یا رمز عبور را بررسی کنید.')
+            );
+
+            throw new PanelException(
+                $exception->getMessage(),
+                $exception->httpStatus(),
+                $exception->payload(),
+                $exception,
+                true   // onTokenEndpoint
             );
         }
 

@@ -124,10 +124,21 @@ final class OrderRepository
     }
 
     /**
-     * انتقال وضعیت سفارش به «در حال اعمال».
+     * انتقال وضعیت سفارش به «در حال اعمال» — تنها دروازهٔ ورود به اجرای بسته.
      *
-     * فقط سفارش‌هایی که هنوز اجرا نشده‌اند پذیرفته می‌شوند؛ سفارش
-     * applied دوباره اجرا نمی‌شود تا حجم دو بار اضافه نشود.
+     * این متد **مرجع نهایی** تصمیم «آیا این سفارش قابل اجرا است؟» است و
+     * compare-and-swap است، بنابراین دو پروسهٔ همزمان فقط یکی موفق می‌شوند.
+     *
+     * شرط‌های لازم (همه باید برقرار باشند):
+     *   • status ∈ (paid, failed)     — نه created و نه awaiting_payment
+     *   • terminal_reason IS NULL     — سفارش با دلیل پایانی متوقف نشده باشد
+     *   • panel_applied = 0           — قبلاً روی پنل اعمال نشده باشد
+     *   • paid_at IS NOT NULL         — **واقعاً پرداخت شده باشد**
+     *
+     * شرط `paid_at` حیاتی است: pendingApply آن را دارد، اما provision() هم
+     * مستقیم از مسیر «اجرای دستی ادمین» و «پس از پرداخت» صدا زده می‌شود.
+     * بدون آن، سفارشی که فقط status=paid دارد ولی paid_at ندارد (یعنی
+     * پرداخت نشده) می‌توانست بستهٔ رایگان بگیرد.
      */
     public function markApplying(int $id): bool
     {
@@ -136,7 +147,8 @@ final class OrderRepository
              WHERE id = :id
                AND status IN (:s1, :s2)
                AND terminal_reason IS NULL
-               AND panel_applied = 0',
+               AND panel_applied = 0
+               AND paid_at IS NOT NULL',
             [
                 'status' => self::STATUS_APPLYING,
                 't'      => time(),

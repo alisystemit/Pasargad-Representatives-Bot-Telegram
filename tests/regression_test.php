@@ -401,6 +401,89 @@ echo "\n════════════════════════
 echo "\n  نتیجهٔ بازگشتی";
 echo "\n════════════════════════════════════════\n";
 
+echo "\n════════════════════════════════════════";
+echo "\n  باگ ۱۱: اجرای دستی سفارش نهایی بستهٔ رایگان می‌داد";
+echo "\n════════════════════════════════════════\n";
+
+$retryUser = makeUser('retry_terminal_admin');
+$panel->addAdmin('retry_terminal_admin', ['data_limit' => 0, 'used_traffic' => 0]);
+
+$retryOrder = $orders->create((int) $retryUser['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بسته',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'duration_days' => 30, 'price_toman' => 500000,
+    'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
+]);
+
+// سفارش با دلیل نهایی شکست می‌خورد (مثلاً کاربر مسدود شده)
+$db->run(
+    "UPDATE orders SET status = ?, terminal_reason = ?, panel_applied = 0 WHERE id = ?",
+    [OrderRepository::STATUS_FAILED, 'user_blocked', (int) $retryOrder['id']]
+);
+
+$retryResult = $prov->provision($orders->find((int) $retryOrder['id']));
+check('اجرای سفارش terminal ناموفق بود', !$retryResult['ok'], (string) $retryResult['message']);
+check('حجمی اعمال نشد', (int) $panel->admins['retry_terminal_admin']['data_limit'] === 0,
+    'limit=' . $panel->admins['retry_terminal_admin']['data_limit']);
+check('panel_applied علامت نخورد', (int) $orders->find((int) $retryOrder['id'])['panel_applied'] === 0);
+check('دلیل پایانی تغییر نکرد',
+    (string) $orders->find((int) $retryOrder['id'])['terminal_reason'] === 'user_blocked',
+    'reason=' . (string) $orders->find((int) $retryOrder['id'])['terminal_reason']);
+
+// حتی اگر status را به paid برگردانند، terminal_reason جلویش را می‌گیرد
+$db->run('UPDATE orders SET status = ? WHERE id = ?', [OrderRepository::STATUS_PAID, (int) $retryOrder['id']]);
+$retryResult2 = $prov->provision($orders->find((int) $retryOrder['id']));
+check('اجرای سفارش paid-با-دلیل-پایانی ناموفق بود', !$retryResult2['ok']);
+check('باز هم حجمی اعمال نشد', (int) $panel->admins['retry_terminal_admin']['data_limit'] === 0);
+
+// سفارش بدون paid_at (یعنی پرداخت‌نشده) نباید اجرا شود
+$unpaid = $orders->create((int) $retryUser['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بسته',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'duration_days' => 30, 'price_toman' => 300000,
+    'status' => OrderRepository::STATUS_PAID,
+]);
+$db->run('UPDATE orders SET paid_at = NULL WHERE id = ?', [(int) $unpaid['id']]);
+
+$unpaidResult = $prov->provision($orders->find((int) $unpaid['id']));
+check('اجرای سفارش بدون paid_at ناموفق بود', !$unpaidResult['ok'], (string) $unpaidResult['message']);
+check('حجمی برای سفارش بدون پرداخت اعمال نشد',
+    (int) $panel->admins['retry_terminal_admin']['data_limit'] === 0,
+    'limit=' . $panel->admins['retry_terminal_admin']['data_limit']);
+
+echo "\n════════════════════════════════════════";
+echo "\n  باگ ۱۲: خطای دسترسی (۴۰۳) حساب کاربر را قطع می‌کرد";
+echo "\n════════════════════════════════════════\n";
+
+$permUser = makeUser('perm_admin');
+$panel->addAdmin('perm_admin', ['data_limit' => 0, 'used_traffic' => 0]);
+
+$permOrder = $orders->create((int) $permUser['id'], [
+    'package_id' => $pkgId, 'package_title' => 'بسته',
+    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'duration_days' => 30, 'price_toman' => 500000,
+    'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
+]);
+
+// ۴۰۳ روی مسیر عملیاتی = نقش کاربر اجازه ندارد (نه اطلاعات ورود خراب)
+$panel->modifyError = 'Forbidden';
+$panel->httpStatusOverride = 403;
+
+$permResult = $prov->provision($orders->find((int) $permOrder['id']));
+check('خطای ۴۰۳ ناموفق برگشت', !$permResult['ok']);
+
+$permRow = $orders->find((int) $permOrder['id']);
+check('دلیل permission_denied ثبت شد', (string) $permRow['terminal_reason'] === 'permission_denied',
+    'reason=' . (string) $permRow['terminal_reason']);
+
+$permUserRow = $users->findById((int) $permUser['id']);
+check('حساب کاربر قطع نشد', (string) $permUserRow['panel_status'] !== 'revoked',
+    'status=' . $permUserRow['panel_status']);
+check('پیام راهنمای دسترسی دارد', str_contains((string) $permResult['message'], 'پشتیبانی'), (string) $permResult['message']);
+
+$panel->modifyError = '';
+$panel->httpStatusOverride = 0;
+
 echo "  {$passed} موفق، {$failed} ناموفق\n";
 
 exit($failed === 0 ? 0 : 1);

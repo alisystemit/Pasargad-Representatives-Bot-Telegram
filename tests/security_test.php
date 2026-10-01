@@ -295,6 +295,7 @@ $doubleOrder = $orders->create($userRow, [
     'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_PAID,
+    'paid_at' => time(),
 ]);
 
 $limitBefore = (int) $panel->admins['normaluser']['data_limit'];

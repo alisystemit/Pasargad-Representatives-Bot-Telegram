@@ -86,17 +86,57 @@ final class Provisioner
             return $this->failTerminal($orderId, 'user_blocked', 'این کاربر مسدود شده است و سرویسی برایش اعمال نمی‌شود.');
         }
 
-        // قفل کردن سفارش تا دو درخواست همزمان دوباره اعمال نکنند.
+        // ------------------------------------------------------------------
+        // قفل اتمیک سفارش — و دروازهٔ ایمنی این تابع.
+        //
+        // markApplying() فقط وقتی true می‌دهد که سفارش واقعاً «پرداخت‌شده و
+        // آمادهٔ اجرا» باشد: status ∈ (paid, failed) و بدون terminal_reason و
+        // بدون panel_applied و با paid_at.
+        //
+        // نباید در صورت false ادامه داد: هر دلیل دیگری برای false یعنی
+        // سفارش از یکی از این حالت‌ها خارج است (نهایی‌شده، در حال اجرا،
+        // بدون paid_at، یا قبلاً روی پنل اعمال شده). عبور از این نقطه در آن
+        // حالت‌ها یعنی اعمال بستهٔ رایگان.
+        //
+        // تنها استثنا: اگر قبلاً روی پنل اعمال شده ولی ثبت نهایی ناتمام مانده،
+        // اجازه داریم فقط کارتابلی را نهایی کنیم (بدون ارسال دوبارهٔ درخواست).
+        // ------------------------------------------------------------------
         if (!$this->orders->markApplying($orderId)) {
             $current = $this->orders->find($orderId);
-            $status  = (string) ($current['status'] ?? 'unknown');
 
-            if ($this->orders->isTerminal($status) || $status === OrderRepository::STATUS_APPLYING) {
-                return ['ok' => false, 'message' => 'سفارش در حال پردازش است یا قبلاً اجرا شده.', 'details' => ['status' => $status]];
+            if ($current === null) {
+                return [
+                    'ok'      => false,
+                    'message' => 'سفارش یافت نشد.',
+                    'details' => [],
+                ];
             }
+
+            // تازه از پایگاه‌داده خوانده می‌شود، نه از آرایهٔ کهنهٔ فراخوان.
+            if ((int) ($current['panel_applied'] ?? 0) === 1) {
+                return $this->finalizeAlreadyApplied($current, $orderId);
+            }
+
+            $status = (string) ($current['status'] ?? 'unknown');
+
+            Logger::info('Provision skipped — order not in applyable state', [
+                'order_id' => $orderId,
+                'status'   => $status,
+                'reason'   => $current['terminal_reason'] ?? null,
+            ]);
+
+            return [
+                'ok'      => false,
+                'message' => $status === OrderRepository::STATUS_APPLYING
+                    ? 'این سفارش هم‌اکنون در حال اجراست.'
+                    : 'این سفارش قابل اجرا نیست.',
+                'details' => ['status' => $status, 'reason' => $current['terminal_reason'] ?? null],
+            ];
         }
 
-        // اگر قبلاً روی پنل اعمال شده، فقط کارتابلی را نهایی می‌کنیم.
+        // اگر قبلاً روی پنل اعمال شده بود، فقط کارتابلی را نهایی می‌کنیم.
+        // (برای سفارشی که تازه قفل گرفته، این فقط در حالت panel_applied رخ می‌دهد
+        // که معمولاً در شاخهٔ بالا گرفته شده است.)
         if ((int) ($order['panel_applied'] ?? 0) === 1) {
             return $this->finalizeAlreadyApplied($order, $orderId);
         }
@@ -446,6 +486,28 @@ final class Provisioner
                 'ok'      => false,
                 'message' => 'اطلاعات ورود پنل نامعتبر شده است. کاربر باید دوباره وارد شود.',
                 'details' => ['need_relogin' => true],
+            ];
+        }
+
+        // خطای دسترسی (۴۰۳ روی مسیر عملیاتی): اطلاعات ورود سالم است، فقط
+        // نقش کاربر اجازهٔ این عملیات را ندارد.
+        //
+        // نباید کاربر را از حساب پنل قطع کنیم (isAuthError این کار را می‌کند و
+        // کاربر بی‌دلیل از فروشگاه بیرون می‌افتد) و نباید بی‌نهایت تلاش مجدد
+        // کنیم چون تا وقتی نقش عوض نشود نتیجه فرقی نمی‌کند.
+        if ($e->isPermissionError()) {
+            $this->orders->markTerminal(
+                $orderId,
+                OrderRepository::STATUS_FAILED,
+                'permission_denied',
+                'خطای پنل: ' . $e->getMessage()
+            );
+
+            return [
+                'ok'      => false,
+                'message' => 'حساب پنل شما اجازهٔ این عملیات را ندارد: ' . $e->getMessage()
+                    . ' لطفاً با پشتیبانی تماس بگیرید.',
+                'details' => ['permission_denied' => true],
             ];
         }
 

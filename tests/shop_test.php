@@ -163,7 +163,12 @@ echo "\n▶ رفتارهای لبه: تکرار، حجم نامحدود، کار
 
 // اعمال مجدد همان سفارش نباید حجم را دوباره اضافه کند
 $replay = $provisioner->provision($order);
-check('اعمال تکراری نادیده گرفته شد', !$replay['ok'], 'نباید حجم دوباره اضافه شود');
+check('اعمال تکراری حجم دوباره اضافه نکرد',
+    (int) $panel->admins['rep1']['data_limit'] === 1073741824 * 110,
+    'limit=' . ((int) $panel->admins['rep1']['data_limit'] / 1073741824) . 'GB');
+check('سفارش همچنان applied است',
+    (string) $orders->find((int) $order['id'])['status'] === OrderRepository::STATUS_APPLIED);
+check('پیام «قبلاً اجرا شده» داده شد', str_contains((string) $replay['message'], 'قبلاً'), $replay['message']);
 check('تعداد فراخوانی modify تغییر نکرد', $panel->modifyCalls === 1);
 
 // کاربر بدون اتصال پنل

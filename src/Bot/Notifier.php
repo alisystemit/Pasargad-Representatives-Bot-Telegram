@@ -106,25 +106,50 @@ final class Notifier
     {
         $keyboard = $button !== null ? [[$button]] : [];
 
-        if ($this->adminIds() === []) {
+        // نکتهٔ حیاتی: عکس باید به **همهٔ** ادمین‌ها برسد، نه فقط اولی.
+        //
+        // دلیل: خودِ عکس مدرکی است که برای تأیید لازم است. اگر فقط به ادمین اول
+        // برسد و او ربات را بلاک کرده باشد یا آیدی‌اش stale باشد، هیچ‌کس دیگری
+        // نمی‌تواند سفارش را بررسی کند — در حالی که متن رسید به همه می‌رسد.
+        // نتیجه: سفارش برای همیشه در انتظار می‌ماند در حالی که کاربر پول داده.
+        $targets = $this->adminIds();
+        $chat    = Config::int('notifications.admin_chat');
+
+        if ($chat > 0) {
+            $targets[] = $chat;
+        }
+
+        if ($targets === []) {
+            Logger::warning('No admin targets configured for receipt notification');
+
             return;
         }
 
-        $result = $this->bot->sendPhoto(
-            $this->adminIds()[0],
-            $fileId,
-            $caption,
-            $keyboard
-        );
+        $delivered = 0;
 
-        if (!($result['ok'] ?? false)) {
-            Logger::warning('Failed to send receipt to admin', [
-                'admin_id' => $this->adminIds()[0],
+        foreach ($targets as $adminId) {
+            $result = $this->bot->sendPhoto($adminId, $fileId, $caption, $keyboard);
+
+            if ($result['ok'] ?? false) {
+                $delivered++;
+                continue;
+            }
+
+            Logger::warning('Failed to send receipt photo to admin', [
+                'admin_id' => $adminId,
                 'error'    => $result['description'] ?? 'unknown',
             ]);
 
-            // اگر ارسال عکس شکست خورد، پیام متنی بفرست تا دست‌کم اطلاعات برسد.
-            $this->notifyAdmins($caption . "\n\n(تصویر رسید ارسال نشد)", $button);
+            // برای این مقصد، پیام متنی بفرست تا دست‌کم اطلاعات سفارش برسد.
+            $this->bot->sendMessage($adminId, $caption . "\n\n(تصویر رسید ارسال نشد)", [
+                'reply_markup' => $this->bot->buildMarkup($keyboard),
+            ]);
+        }
+
+        if ($delivered === 0) {
+            Logger::error('Receipt photo reached nobody — order cannot be reviewed', [
+                'targets' => count($targets),
+            ]);
         }
     }
 
