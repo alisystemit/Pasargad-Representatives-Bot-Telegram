@@ -12,18 +12,33 @@ class PanelException extends \RuntimeException
     private int $httpStatus;
     private ?array $payload;
     private bool $onTokenEndpoint;
+    private bool $budgetExhausted;
 
     public function __construct(
         string $message,
         int $httpStatus = 0,
         ?array $payload = null,
         ?\Throwable $previous = null,
-        bool $onTokenEndpoint = false
+        bool $onTokenEndpoint = false,
+        bool $budgetExhausted = false
     ) {
         parent::__construct($message, $httpStatus, $previous);
         $this->httpStatus     = $httpStatus;
         $this->payload        = $payload;
         $this->onTokenEndpoint = $onTokenEndpoint;
+        $this->budgetExhausted = $budgetExhausted;
+    }
+
+    /**
+     * خطای ناشی از تمام شدن مهلت پردازش (نه خطای شبکه).
+     *
+     * سازندهٔ جدا لازم است چون این حالت هم وضعیت ۰ دارد ولی تلاش مجددش بی‌فایده
+     * است؛ بدون پرچم اختصاصی، `isRetryable()` آن را اشتباهی قابل‌تلاش‌مجدد
+     * می‌دید و هر بار دوباره همان لحظه شکست می‌خورد.
+     */
+    public static function budgetExceeded(string $message, string $path = ''): self
+    {
+        return new self($message, 0, $path === '' ? null : ['path' => $path], null, false, true);
     }
 
     public function httpStatus(): int
@@ -77,11 +92,33 @@ class PanelException extends \RuntimeException
 
     /**
      * آیا خطای موقت شبکه/سرور است و ارزش تلاش مجدد دارد؟
+     *
+     * ⚠️ **۰۵ باید از این فهرست بیرون باشد.**
+     * وقتی بودجهٔ زمانی تماس با پنل تمام می‌شود، کلاینت با وضعیت ۰ استثنا
+     * می‌پرتابد تا یک خطای اختصاصی بسازد — ولی ۰ در این فهرست یعنی «ارتباط
+     * شبکه برقرار نشد، دوباره تلاش کن». تلاش مجدد در آن حالت قطعاً شکست می‌خورد
+     * چون وقتی وجود ندارد. پس پیش از این بررسی، پرچم مخصوص را می‌سنجیم.
      */
     public function isRetryable(): bool
     {
+        if ($this->budgetExhausted) {
+            return false;
+        }
+
         return $this->httpStatus === 0
             || $this->httpStatus === 429
             || ($this->httpStatus >= 500 && $this->httpStatus < 600);
+    }
+
+    /**
+     * آیا این خطا فقط به‌خاطر تمام شدن مهلت پردازش ساخته شده؟
+     *
+     * تفکیک این دو حالت حیاتی است چون هر دو وضعیت ۰ دارند ولی رفتارشان فرق
+     * دارد: خطای شبکه با تلاش مجدد شاید درست شود، ولی تمام شدن بودجه با تلاش
+     * مجدد فقط ربات را دیرتر جواب می‌دهد.
+     */
+    public function isBudgetExhausted(): bool
+    {
+        return $this->budgetExhausted;
     }
 }

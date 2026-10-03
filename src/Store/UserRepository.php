@@ -10,10 +10,17 @@ use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
 
 /**
- * مخزن کاربران ربات (نمایندگان/ادمین‌های پنل).
+ * مخزن کاربران ربات (نمایندگان).
  *
- * چون ربات باید بستهٔ خریداری‌شده را خودکار روی پنل اعمال کند، رمز عبور پنل
- * هر کاربر رمزنگاری و در همین جدول ذخیره می‌شود.
+ * این جدول فقط **هویت رباتی** کاربر را نگه می‌دارد: آیدی تلگرام، نام، وضعیت
+ * مسدودی و آمار خرید.
+ *
+ * پنل‌ها جدا نگهداری می‌شوند (جدول `panels`) چون هر نماینده می‌تواند **چند پنل**
+ * داشته باشد و حجم/انقضا/هشدار هر پنل مستقل است. اطلاعات ورود پنل قبلاً روی
+ * همین جدول بود و در مایگریشن ۵ به `panels` منتقل شد.
+ *
+ * ستون‌های `panel_*` و `user_credit` برای سازگاری با داده‌های قدیمی باقی
+ * مانده‌اند ولی دیگر منبع حقیقت نیستند.
  */
 final class UserRepository
 {
@@ -41,6 +48,8 @@ final class UserRepository
     }
 
     /**
+     * پیدا کردن کاربری که این پنل به او تعلق دارد (بدون حساسیت به حروف بزرگ).
+     *
      * @return array<string, mixed>|null
      */
     public function findByPanelUsername(string $panelUsername): ?array
@@ -102,19 +111,20 @@ final class UserRepository
     }
 
     /**
-     * اتصال حساب پنل به کاربر تلگرام (پس از ورود موفق).
+     * به‌روزرسانی وضعیت پنل کاربر (از مسیرهای قدیمی که کلید کاربر می‌دادند).
+     *
+     * نگه داشته شده برای سازگاری، ولی فقط **اولین** پنل کاربر را تغییر می‌دهد.
+     * مسیر درست، استفاده از PanelRepository است.
      *
      * @param array<string, mixed> $adminDetails پاسخ GET /api/admin/{username}
      */
     public function linkPanel(int $userId, string $panelUsername, string $password, array $adminDetails): void
     {
-        $status = $this->mapPanelStatus((string) ($adminDetails['status'] ?? 'active'));
-
         $this->db->update('users', [
             'panel_username'   => $panelUsername,
             'panel_password'   => Crypto::encrypt($password),
             'panel_user_id'    => $this->extractId($adminDetails),
-            'panel_status'     => $status,
+            'panel_status'     => PanelRepository::mapStatus((string) ($adminDetails['status'] ?? 'active')),
             'panel_data_limit' => (int) ($adminDetails['data_limit'] ?? 0),
             'panel_used'       => (int) ($adminDetails['used_traffic'] ?? 0),
             'panel_role'       => isset($adminDetails['role']['name']) ? (string) $adminDetails['role']['name'] : null,
@@ -123,41 +133,20 @@ final class UserRepository
             'updated_at'       => time(),
         ], ['id' => $userId]);
 
+        // هم‌زمان در جدول پنل‌ها هم ثبت می‌شود تا از این لحظه موجود باشد.
+        (new PanelRepository($this->db))->upsertFromPanel($userId, $panelUsername, $password, $adminDetails);
+
         Logger::info('Panel account linked', [
             'user_id'        => $userId,
             'panel_username' => $panelUsername,
-            'status'         => $status,
         ]);
     }
 
     /**
-     * به‌روزرسانی اطلاعات پنل پس از همگام‌سازی.
+     * قطع اتصال پنل (از مسیر قدیمی /logout).
      *
-     * @param array<string, mixed> $adminDetails
+     * پنل‌های واقعی حذف نمی‌شوند — فقط ربات دیگر آن‌ها را مدیریت نمی‌کند.
      */
-    public function syncPanelState(int $userId, array $adminDetails): void
-    {
-        // فقط فیلدهایی که واقعاً در پاسخ پنل آمده‌اند به‌روز می‌شوند.
-        // پاسخ PUT ممکن است ناقص باشد؛ اگر کلیدی نبود نباید مقدار قبلی صفر شود
-        // چون «نامحدود» تلقی می‌شود و هشدار حجم از کار می‌افتد.
-        $payload = [
-            'panel_synced_at' => time(),
-            'updated_at'      => time(),
-        ];
-
-        if (isset($adminDetails['status'])) {
-            $payload['panel_status'] = $this->mapPanelStatus((string) $adminDetails['status']);
-        }
-        if (isset($adminDetails['data_limit']) && is_numeric($adminDetails['data_limit'])) {
-            $payload['panel_data_limit'] = (int) $adminDetails['data_limit'];
-        }
-        if (isset($adminDetails['used_traffic']) && is_numeric($adminDetails['used_traffic'])) {
-            $payload['panel_used'] = (int) $adminDetails['used_traffic'];
-        }
-
-        $this->db->update('users', $payload, ['id' => $userId]);
-    }
-
     public function unlinkPanel(int $userId): void
     {
         $this->db->update('users', [
@@ -167,91 +156,6 @@ final class UserRepository
             'panel_synced_at' => null,
             'updated_at'     => time(),
         ], ['id' => $userId]);
-    }
-
-    /**
-     * افزودن حجم هدیه‌شده (بایت) به حساب کاربر.
-     *
-     * @return array<string, mixed> کاربر به‌روزشده
-     */
-    public function addGrantedVolume(int $userId, int $bytes, ?int $expireAt = null): array
-    {
-        if ($bytes <= 0) {
-            throw new \RuntimeException('مقدار حجم هدیه‌شده باید بزرگ‌تر از صفر باشد.');
-        }
-
-        if ($expireAt !== null) {
-            $this->db->run(
-                'UPDATE users
-                 SET granted_volume    = granted_volume + :b,
-                     granted_expire_at = CASE
-                         WHEN granted_expire_at IS NULL OR granted_expire_at < :e THEN :e
-                         ELSE granted_expire_at
-                     END,
-                     updated_at        = :now
-                 WHERE id = :id',
-                ['b' => $bytes, 'e' => $expireAt, 'now' => time(), 'id' => $userId]
-            );
-        } else {
-            $this->db->run(
-                'UPDATE users SET granted_volume = granted_volume + :b, updated_at = :now WHERE id = :id',
-                ['b' => $bytes, 'now' => time(), 'id' => $userId]
-            );
-        }
-
-        return $this->findById($userId) ?? [];
-    }
-
-    /**
-     * کسر اعتبار ساخت کاربر (بایت) به‌صورت اتمیک.
-     *
-     * شرط موجودی داخل خودِ UPDATE است تا دو درخواست همزمان (مثلاً دو بار
-     * زدن دکمه یا همزمانی وبهوک و کرون) نتوانند بیش از موجودی خرج کنند.
-     * برمی‌گرداند true اگر کسر انجام شد.
-     */
-    public function consumeUserCredit(int $userId, int $bytes): bool
-    {
-        if ($bytes <= 0) {
-            return false;
-        }
-
-        return $this->db->run(
-            'UPDATE users SET user_credit = user_credit - :b, updated_at = :now
-             WHERE id = :id AND user_credit >= :b',
-            ['b' => $bytes, 'now' => time(), 'id' => $userId]
-        )->rowCount() > 0;
-    }
-
-    /**
-     * افزودن اعتبار ساخت کاربر به‌صورت اتمیک.
-     */
-    public function addUserCredit(int $userId, int $bytes, ?int $expireAt = null): void
-    {
-        if ($bytes <= 0) {
-            return;
-        }
-
-        // افزایش حجم و تمدید انقضا در یک دستور تا خواندن-نوشتنِ جداگانه لازم نباشد.
-        if ($expireAt !== null) {
-            $this->db->run(
-                'UPDATE users
-                 SET user_credit        = user_credit + :b,
-                     user_credit_expire  = CASE
-                         WHEN user_credit_expire IS NULL OR user_credit_expire < :e THEN :e
-                         ELSE user_credit_expire
-                     END,
-                     updated_at          = :now
-                 WHERE id = :id',
-                ['b' => $bytes, 'e' => $expireAt, 'now' => time(), 'id' => $userId]
-            );
-
-            return;
-        }
-
-        $this->db->run(
-            'UPDATE users SET user_credit = user_credit + :b, updated_at = :now WHERE id = :id',
-            ['b' => $bytes, 'now' => time(), 'id' => $userId]
-        );
     }
 
     public function setBlocked(int $userId, bool $blocked, string $reason = ''): void
@@ -319,12 +223,45 @@ final class UserRepository
     }
 
     /**
+     * کاربرانی که حداقل یک پنل متصل دارند.
+     *
      * @return array<int, array<string, mixed>>
      */
     public function listLinkedAdmins(): array
     {
         return $this->db->all(
-            "SELECT * FROM users WHERE panel_username IS NOT NULL AND panel_status IN ('active','limited')"
+            "SELECT u.* FROM users u
+             INNER JOIN panels p ON p.user_id = u.id
+             WHERE u.is_blocked = 0
+             GROUP BY u.id"
+        );
+    }
+
+    /**
+     * نماینده‌هایی که پنلشان رو به اتمام یا منقضی شده است.
+     *
+     * برای داشبورد مدیریت استفاده می‌شود تا ادمین بدون گشتن بین صفحه‌ها بفهمد
+     * کدام نماینده‌ها نیاز به تمدید دارند.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listAtRiskRepresentatives(int $limit = 20): array
+    {
+        return $this->db->all(
+            "SELECT u.id, u.telegram_id, u.username, u.first_name,
+                    COUNT(p.id) AS panel_count,
+                    SUM(CASE WHEN p.access_expire_at IS NOT NULL
+                              AND p.access_expire_at <= :now THEN 1 ELSE 0 END) AS expired_count,
+                    MIN(p.access_expire_at) AS soonest_expire
+             FROM users u
+             INNER JOIN panels p ON p.user_id = u.id
+             WHERE u.is_blocked = 0
+             GROUP BY u.id
+             HAVING expired_count > 0
+                OR soonest_expire <= :soon
+             ORDER BY soonest_expire ASC
+             LIMIT " . max(1, min($limit, 100)),
+            ['now' => time(), 'soon' => time() + 7 * 86400]
         );
     }
 
@@ -342,16 +279,119 @@ final class UserRepository
         return null;
     }
 
+    // ------------------------------------------------------------------
+    // کیف پول 💰
+    // ------------------------------------------------------------------
+
     /**
-     * تبدیل وضعیت پنل به وضعیت داخلی ربات.
+     * موجودی کیف پول کاربر (تومان).
      */
-    private function mapPanelStatus(string $status): string
+    public function walletBalance(int $userId): int
     {
-        return match ($status) {
-            'active'   => 'active',
-            'limited'  => 'limited',
-            'disabled' => 'disabled',
-            default    => 'pending',
-        };
+        $row = $this->db->first('SELECT wallet_balance FROM users WHERE id = ?', [$userId]);
+
+        return (int) ($row['wallet_balance'] ?? 0);
+    }
+
+    /**
+     * شارژ/کسر کیف پول + ثبت در تاریخچه.
+     *
+     * `$kind` دلیل تراکنش را جدا می‌کند تا تاریخچه قابل تفکیک باشد:
+     * `manual` (ادمین)، `referral` (پاداش معرفی)، `wallet_pay` (پرداخت با
+     * کیف پول).
+     *
+     * @return array{ok:bool, message:string, balance:int}
+     */
+    public function adjustWallet(int $userId, int $amount, string $note = '', int $adminId = 0, string $kind = 'manual'): array
+    {
+        if ($amount === 0) {
+            return ['ok' => false, 'message' => 'مبلغ صفر است.', 'balance' => $this->walletBalance($userId)];
+        }
+
+        $balance = 0;
+
+        $this->db->transaction(function () use ($userId, $amount, $note, $adminId, $kind, &$balance): void {
+            $current = $this->walletBalance($userId);
+            $balance = $current + $amount;
+
+            // موجودی منفی نمی‌شود — به‌جای بدهکار کردن، تا صفر کم می‌شود
+            if ($balance < 0) {
+                $amount = -$current;
+                $balance = 0;
+            }
+
+            $this->db->run(
+                'UPDATE users SET wallet_balance = wallet_balance + :a, updated_at = :t WHERE id = :id',
+                ['a' => $amount, 't' => time(), 'id' => $userId]
+            );
+
+            $this->db->insert('wallet_txns', [
+                'user_id'    => $userId,
+                'amount'     => $amount,
+                'kind'       => in_array($kind, ['manual', 'referral', 'wallet_pay'], true) ? $kind : 'manual',
+                'note'       => Str::truncate($note !== '' ? $note : ($amount > 0 ? 'شارژ توسط مدیریت' : 'کسر توسط مدیریت'), 300),
+                'admin_id'   => $adminId > 0 ? $adminId : null,
+                'created_at' => time(),
+            ]);
+        });
+
+        return [
+            'ok'      => true,
+            'message' => $amount > 0 ? 'کیف پول شارژ شد.' : 'از کیف پول کسر شد.',
+            'balance' => $balance,
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function walletHistory(int $userId, int $limit = 15): array
+    {
+        if (!$this->db->tableExists('wallet_txns')) {
+            return [];
+        }
+
+        return $this->db->all(
+            'SELECT * FROM wallet_txns WHERE user_id = ? ORDER BY id DESC LIMIT ' . max(1, min($limit, 30)),
+            [$userId]
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // کد تخفیف فعال
+    // ------------------------------------------------------------------
+
+    /**
+     * کد تخفیف فعال کاربر (خالی یعنی ندارد).
+     */
+    public function couponCode(int $userId): string
+    {
+        $row = $this->db->first('SELECT coupon_code FROM users WHERE id = ?', [$userId]);
+
+        return trim((string) ($row['coupon_code'] ?? ''));
+    }
+
+    public function setCouponCode(int $userId, string $code): void
+    {
+        $code = strtoupper(trim($code));
+
+        $this->db->run(
+            'UPDATE users SET coupon_code = :c, updated_at = :t WHERE id = :id',
+            ['c' => $code !== '' ? $code : null, 't' => time(), 'id' => $userId]
+        );
+    }
+
+    /**
+     * @return bool آیا کدی بود که حذف شد؟
+     */
+    public function clearCouponCode(int $userId): bool
+    {
+        if ($this->couponCode($userId) === '') {
+            return false;
+        }
+
+        $this->setCouponCode($userId, '');
+
+        return true;
     }
 }

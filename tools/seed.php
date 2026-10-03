@@ -29,67 +29,76 @@ $repo = new PackageRepository($db);
 
 /**
  * بسته‌های پیش‌فرض.
- * قیمت‌ها به تومان هستند و از نسبت حجم/قیمت پروژه‌های مشابه گرفته شده‌اند.
+ *
+ * دو خانواده:
+ *   • `agency` — خرید پنل نمایندگی تازه (حساب اپراتور جدید ساخته می‌شود).
+ *     قیمت‌ها بالاتر است چون شامل راه‌اندازی حساب می‌شود.
+ *   • `topup`  — شارژ/تمدید پنل‌های موجود؛ ارزان‌تر چون حساب از قبل هست.
+ *
+ * قیمت‌ها به تومان‌اند و نمونه‌اند؛ حتماً قبل از فروش واقعی بازبینی‌شوند.
+ *
+ * نکتهٔ مهم: `max_per_user` روی ۰ (نامحدود) گذاشته شده تا هر نماینده بتواند
+ * چند پنل بخرد. اگر محدودیت می‌خواهید، این عدد را در پنل مدیریت تغییر دهید.
  */
 $defaults = [
-    // ---- بسته‌های افزایش مستقیم حجم پنل ----
+    // ---- خرید پنل نمایندگی ----
     [
-        'title'         => '🥉 بسته برنزی',
-        'kind'          => PackageRepository::KIND_PANEL_QUOTA,
+        'title'         => '🥉 پنل نمایندگی برنزی',
+        'kind'          => PackageRepository::KIND_AGENCY,
+        'volume_gb'     => 100,
+        'duration_days' => 30,
+        'price_toman'   => 750000,
+        'sort_order'    => 10,
+        'description'   => 'پنل نمایندگی تازه با نقش اپراتور، ۱۰۰ گیگابایت و اعتبار ۳۰ روز.',
+    ],
+    [
+        'title'         => '🥈 پنل نمایندگی نقره‌ای',
+        'kind'          => PackageRepository::KIND_AGENCY,
+        'volume_gb'     => 300,
+        'duration_days' => 30,
+        'price_toman'   => 1800000,
+        'sort_order'    => 20,
+        'description'   => 'پنل نمایندگی با نقش اپراتور، ۳۰۰ گیگابایت و اعتبار ۳۰ روز.',
+    ],
+    [
+        'title'         => '🥇 پنل نمایندگی طلایی',
+        'kind'          => PackageRepository::KIND_AGENCY,
+        'volume_gb'     => 700,
+        'duration_days' => 60,
+        'bonus_gb'      => 100,
+        'price_toman'   => 3900000,
+        'sort_order'    => 30,
+        'description'   => 'پنل نمایندگی با ۷۰۰ گیگابایت (۱۰۰ گیگ هدیه) و اعتبار ۶۰ روز.',
+    ],
+
+    // ---- شارژ / تمدید پنل موجود ----
+    [
+        'title'         => '⚡️ شارژ ۵۰ گیگابایت',
+        'kind'          => PackageRepository::KIND_TOPUP,
         'volume_gb'     => 50,
         'duration_days' => 30,
         'price_toman'   => 350000,
-        'sort_order'    => 10,
-        'description'   => 'افزایش ۵۰ گیگابایت به حجم حساب پنل شما با اعتبار ۳۰ روز.',
+        'sort_order'    => 110,
+        'description'   => 'افزودن ۵۰ گیگابایت و ۳۰ روز اعتبار به یکی از پنل‌های شما.',
     ],
     [
-        'title'         => '🥈 بسته نقره‌ای',
-        'kind'          => PackageRepository::KIND_PANEL_QUOTA,
-        'volume_gb'     => 100,
+        'title'         => '⚡️ شارژ ۱۵۰ گیگابایت',
+        'kind'          => PackageRepository::KIND_TOPUP,
+        'volume_gb'     => 150,
         'duration_days' => 30,
-        'price_toman'   => 600000,
-        'sort_order'    => 20,
-        'description'   => 'افزایش ۱۰۰ گیگابایت به حجم حساب پنل شما با اعتبار ۳۰ روز.',
+        'price_toman'   => 850000,
+        'sort_order'    => 120,
+        'description'   => 'افزودن ۱۵۰ گیگابایت و ۳۰ روز اعتبار به یکی از پنل‌های شما.',
     ],
     [
-        'title'         => '🥇 بسته طلایی',
-        'kind'          => PackageRepository::KIND_PANEL_QUOTA,
-        'volume_gb'     => 200,
-        'duration_days' => 30,
-        'price_toman'   => 1100000,
-        'sort_order'    => 30,
-        'description'   => 'افزایش ۲۰۰ گیگابایت به حجم حساب پنل شما با اعتبار ۳۰ روز.',
-    ],
-    [
-        'title'         => '💎 بسته الماس',
-        'kind'          => PackageRepository::KIND_PANEL_QUOTA,
+        'title'         => '⚡️ شارژ ۵۰۰ گیگابایت',
+        'kind'          => PackageRepository::KIND_TOPUP,
         'volume_gb'     => 500,
         'duration_days' => 60,
         'bonus_gb'      => 50,
-        'price_toman'   => 2400000,
-        'sort_order'    => 40,
-        'description'   => 'افزایش ۵۰۰ گیگابایت با ۵۰ گیگابایت هدیه و اعتبار ۶۰ روز.',
-    ],
-
-    // ---- بسته‌های اعتبار ساخت کاربر ----
-    [
-        'title'         => '🎁 اعتبار کاربر ۵۰ گیگ',
-        'kind'          => PackageRepository::KIND_USER_CREDIT,
-        'volume_gb'     => 50,
-        'duration_days' => 30,
-        'price_toman'   => 320000,
-        'sort_order'    => 110,
-        'description'   => 'اعتبار ساخت یا تمدید کاربران مشتریان با ۵۰ گیگابایت.',
-    ],
-    [
-        'title'         => '🎁 اعتبار کاربر ۲۰۰ گیگ',
-        'kind'          => PackageRepository::KIND_USER_CREDIT,
-        'volume_gb'     => 200,
-        'duration_days' => 60,
-        'bonus_gb'      => 20,
-        'price_toman'   => 1150000,
-        'sort_order'    => 120,
-        'description'   => 'اعتبار ساخت یا تمدید کاربران با ۲۰۰ گیگابایت و ۲۰ گیگابایت هدیه.',
+        'price_toman'   => 2500000,
+        'sort_order'    => 130,
+        'description'   => 'افزودن ۵۰۰ گیگابایت (۵۰ گیگ هدیه) و ۶۰ روز اعتبار.',
     ],
 ];
 
@@ -124,15 +133,15 @@ function slugify(string $text): string
 {
     // تبدیل عنوان فارسی به یک کلید لاتین پایدار برای جلوگیری از تکرار
     $map = [
-        'بسته'   => 'package',
-        'اعتبار' => 'credit',
-        'کاربر'  => 'user',
-        'گیگ'    => 'gb',
-        'برنزی'  => 'bronze',
-        'نقره‌ای' => 'silver',
-        'نقره ای' => 'silver',
-        'طلایی'  => 'gold',
-        'الماس'  => 'diamond',
+        'پنل'      => 'panel',
+        'نمایندگی' => 'agency',
+        'بسته'     => 'package',
+        'گیگابایت' => 'gb',
+        'شارژ'     => 'topup',
+        'برنزی'    => 'bronze',
+        'نقره‌ای'   => 'silver',
+        'نقره ای'  => 'silver',
+        'طلایی'    => 'gold',
     ];
 
     foreach ($map as $fa => $en) {

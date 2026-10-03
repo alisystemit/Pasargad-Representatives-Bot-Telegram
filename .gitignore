@@ -10,6 +10,7 @@
 /data/logs/
 /data/receipts/
 /data/cache/
+/data/backups/
 
 # خروجی و ابزار
 /vendor/

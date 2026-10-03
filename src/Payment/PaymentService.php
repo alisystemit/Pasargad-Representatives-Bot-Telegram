@@ -53,6 +53,7 @@ final class PaymentService
         $this->users      = $users ?? new UserRepository();
 
         $this->registerGateway(new CardToCardGateway());
+        $this->registerGateway(new AutoCardGateway());
         $this->registerGateway(new NowPaymentsGateway());
     }
 
@@ -130,7 +131,7 @@ final class PaymentService
         $gateway = $this->gateway($method);
 
         if ($gateway === null || !$gateway->isEnabled()) {
-            return ['ok' => false, 'message' => 'روش پرداخت انتخابی در دسترس نیست.'];
+            return ['ok' => false, 'message' => 'روش پرداخت انتخابی در دسترس نیست! 😔'];
         }
 
         $status = (string) ($order['status'] ?? '');
@@ -145,7 +146,7 @@ final class PaymentService
         ], true)) {
             return [
                 'ok'      => false,
-                'message' => 'این سفارش قبلاً پرداخت شده یا نهایی شده است.',
+                'message' => 'این سفارش قبلاً پرداخت شده یا نهایی شده است! ✅',
                 'already' => true,
             ];
         }
@@ -156,7 +157,7 @@ final class PaymentService
         }
 
         if ((int) $order['price_toman'] < 1) {
-            return ['ok' => false, 'message' => 'مبلغ سفارش نامعتبر است.'];
+            return ['ok' => false, 'message' => 'مبلغ سفارش نامعتبر است! 😔❌'];
         }
 
         $result = $gateway->start($order, $chatId);
@@ -171,7 +172,8 @@ final class PaymentService
         try {
             $this->orders->upsertPayment((int) $order['id'], [
                 'method'        => $method,
-                'amount_toman'  => (int) $order['price_toman'],
+                // درگاه می‌تواند مبلغ نهایی (مثلاً مبلغ یکتای خودکار) را برگرداند.
+                'amount_toman'  => isset($result['amount_toman']) ? (int) $result['amount_toman'] : (int) $order['price_toman'],
                 'amount_usd'    => $result['amount_usd'] ?? null,
                 'currency'      => $result['currency'] ?? 'IRR',
                 'external_id'   => $result['reference'] ?? null,
@@ -185,7 +187,7 @@ final class PaymentService
                 'error'    => $e->getMessage(),
             ]);
 
-            return ['ok' => false, 'message' => 'ثبت تلاش پرداخت ناموفق بود. لطفاً دوباره تلاش کنید.'];
+            return ['ok' => false, 'message' => 'ثبت تلاش پرداخت ناموفق بود! 😔 لطفاً دوباره تلاش کنید. 🔄🙏'];
         }
 
         // به‌روزرسانی سفارش
@@ -672,11 +674,11 @@ final class PaymentService
             return;
         }
 
-        $message = "🛒 <b>سفارش جدید</b>\n\n"
-            . 'کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
-            . 'بسته: ' . Str::escape((string) $order['package_title']) . "\n"
-            . 'مبلغ: <b>' . Str::formatToman((int) $order['price_toman']) . "</b>\n"
-            . 'روش پرداخت: ' . Str::escape($method);
+        $message = "🛒✨ <b>سفارش جدید 🆕</b>\n\n"
+            . '🔖 کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
+            . '📦🎁 بسته: ' . Str::escape((string) $order['package_title']) . "\n"
+            . '💰💵 مبلغ: <b>' . Str::formatToman((int) $order['price_toman']) . "</b>\n"
+            . '💳 روش پرداخت: ' . Str::escape($method) . ' ✨';
 
         $this->notifier->notifyAdmins($message, [
             'text' => '🧾 سفارش‌ها',
@@ -693,9 +695,9 @@ final class PaymentService
             return;
         }
 
-        $message = "🧾 <b>رسید جدید برای تأیید</b>\n\n"
-            . 'کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
-            . 'مبلغ: <b>' . Str::formatToman((int) $order['price_toman']) . "</b>";
+        $message = "🧾✨ <b>رسید جدید برای تأیید ✅</b>\n\n"
+            . '🔖 کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
+            . '💰💵 مبلغ: <b>' . Str::formatToman((int) $order['price_toman']) . "</b> 🧾";
 
         if ($reference !== null && $reference !== '') {
             $message .= "\nشمارهٔ پیگیری: <code>" . Str::escape($reference) . '</code>';
@@ -734,9 +736,9 @@ final class PaymentService
         }
 
         $details = (array) ($result['details'] ?? []);
-        $message = "✅ <b>بستهٔ شما با موفقیت اجرا شد</b>\n\n"
-            . 'کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
-            . 'بسته: ' . Str::escape((string) $order['package_title']) . "\n";
+        $message = "✅🎉 <b>بستهٔ شما با موفقیت اجرا شد! 🚀</b>\n\n"
+            . '🔖 کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
+            . '📦🎁 بسته: ' . Str::escape((string) $order['package_title']) . "\n";
 
         if (isset($details['after_limit'])) {
             $message .= 'حجم جدید حساب شما: <b>' . Str::formatBytes((int) $details['after_limit']) . "</b>\n";
@@ -779,9 +781,9 @@ final class PaymentService
             return;
         }
 
-        $text = "⚠️ <b>اجرای خودکار بسته ناموفق بود</b>\n\n"
-            . 'کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
-            . 'خطا: ' . Str::escape($message);
+        $text = "⚠️🔧 <b>اجرای خودکار بسته ناموفق بود! 😔</b>\n\n"
+            . '🔖 کد سفارش: <code>' . Str::escape((string) $order['code']) . "</code>\n"
+            . '📝 خطا: ' . Str::escape($message);
 
         $this->notifier->notifyAdmins($text, [
             'text' => '🔁 تلاش دوباره',

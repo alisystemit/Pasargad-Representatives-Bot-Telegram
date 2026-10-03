@@ -685,6 +685,61 @@ class BotApi
     }
 
     /**
+     * ارسال فایل (سند) با آپلود multipart — برای بکاپ دیتابیس.
+     *
+     * BotApi::call فقط urlencoded می‌فرستد و برای آپلود فایل مناسب نیست،
+     * پس اینجا مستقیم با cURL ارسال می‌شود.
+     *
+     * @param  array<int, array<int, array<string, mixed>>> $keyboard
+     * @return array<string, mixed>
+     */
+    public function sendDocument(int $chatId, string $filePath, string $caption = '', array $keyboard = []): array
+    {
+        if (!is_file($filePath) || !function_exists('curl_init')) {
+            return ['ok' => false, 'description' => 'فایل یا cURL در دسترس نیست.'];
+        }
+
+        $url = self::API_BASE . $this->token . '/sendDocument';
+
+        $params = [
+            'chat_id' => (string) $chatId,
+            'caption' => Str::truncate($caption, self::MAX_CAPTION_LENGTH),
+            'parse_mode' => 'HTML',
+            'document' => new \CURLFile($filePath, 'application/x-sqlite3', basename($filePath)),
+        ];
+
+        $markup = $this->buildMarkup($keyboard);
+        if ($markup !== null) {
+            $params['reply_markup'] = json_encode($markup, JSON_UNESCAPED_UNICODE);
+        }
+
+        $curl = curl_init();
+        if ($curl === false) {
+            return ['ok' => false, 'description' => 'راه‌اندازی cURL ناموفق بود.'];
+        }
+
+        curl_setopt_array($curl, [
+            CURLOPT_URL            => $url,
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => $this->timeout,
+            CURLOPT_POSTFIELDS     => $params,
+        ]);
+
+        $raw = curl_exec($curl);
+        $err = curl_error($curl);
+        curl_close($curl);
+
+        if (!is_string($raw) || $raw === '') {
+            return ['ok' => false, 'description' => $err !== '' ? $err : 'ارسال فایل ناموفق بود.'];
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? $decoded : ['ok' => false, 'description' => 'پاسخ نامعتبر از تلگرام.'];
+    }
+
+    /**
      * پاسخ سریع به callback query.
      *
      * شناسهٔ callback از سمت تلگرام یک رشتهٔ عددی است، پس string پذیرفته می‌شود.

@@ -13,6 +13,7 @@ require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/TestDb.php';
 require_once __DIR__ . '/FakePanelClient.php';
 require_once __DIR__ . '/FakeBotApi.php';
+require_once __DIR__ . '/Fixture.php';
 
 use Pasargad\Bot\Kernel;
 use Pasargad\Bot\Notifier;
@@ -21,12 +22,12 @@ use Pasargad\Panel\FakePanelClient;
 use Pasargad\Payment\PaymentService;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
+use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestDb;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
-use Pasargad\Support\Crypto;
 use Pasargad\Support\Migrator;
 use Pasargad\Telegram\FakeBotApi;
 use Pasargad\Telegram\Update;
@@ -41,15 +42,16 @@ $panel    = new FakePanelClient();
 $bot      = new FakeBotApi();
 $settings = new Settings($db);
 $users    = new UserRepository($db);
+$panels   = new PanelRepository($db);
 $packages = new PackageRepository($db);
 $orders   = new OrderRepository($db);
 
-$provisioner = new Provisioner($panel, $orders, $users, $settings);
+$provisioner = new Provisioner($panel, $orders, $users, $settings, $panels);
 $payments    = new PaymentService($orders, $provisioner, $settings);
 
 $kernel = new Kernel(
     $bot, new Notifier($bot), $users, $packages, $orders,
-    $provisioner, $payments, $settings, new SessionStore($db), $panel
+    $provisioner, $payments, $settings, new SessionStore($db), $panel, null, $panels
 );
 
 $passed = 0;
@@ -99,25 +101,15 @@ echo "\n▶ سناریو: ادمین و کاربر عادی\n";
 // ------------------------------------------------------------------
 
 $adminId = 999;
-$adminRow = $users->upsertByTelegram($adminId, [
+[$adminRow, $adminPanel] = makeRep('superadmin', $panel, $users, $panels, [
     'telegram_id' => $adminId,
     'first_name'  => 'سوپرادمین',
-    'panel_username' => 'superadmin',
-    'panel_password' => Crypto::encrypt('admin-pass'),
-    'panel_status'   => 'active',
-])['id'];
-
-$panel->addAdmin('superadmin', ['data_limit' => 0, 'used_traffic' => 0]);
+]);
 
 $userId = 1111;
-$userRow = $users->upsertByTelegram($userId, [
-    'telegram_id'    => $userId,
-    'panel_username' => 'normaluser',
-    'panel_password' => Crypto::encrypt('user-pass'),
-    'panel_status'   => 'active',
-])['id'];
-
-$panel->addAdmin('normaluser', ['data_limit' => 0, 'used_traffic' => 0]);
+[$userRow, $userPanel] = makeRep('normaluser', $panel, $users, $panels, [
+    'telegram_id' => $userId,
+]);
 
 // ------------------------------------------------------------------
 echo "\n▶ کاربر عادی به پنل مدیریت دسترسی ندارد\n";
@@ -145,14 +137,14 @@ echo "\n▶ کاربر عادی نمی‌تواند سفارش دیگران را
 // ------------------------------------------------------------------
 
 $pkgId = $packages->create([
-    'title' => 'بستهٔ تست', 'kind' => PackageRepository::KIND_PANEL_QUOTA,
+    'title' => 'بستهٔ تست', 'kind' => PackageRepository::KIND_TOPUP,
     'volume_gb' => 50, 'duration_days' => 30, 'price_toman' => 300000,
     'sort_order' => 1, 'is_active' => true,
 ]);
 
-$otherOrder = $orders->create($adminRow, [
+$otherOrder = $orders->create((int) $adminRow["id"], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_PAID,
 ]);
@@ -170,14 +162,14 @@ echo "\n▶ کاربر عادی نمی‌تواند کاربر دیگری را �
 // ------------------------------------------------------------------
 
 $bot->reset();
-$kernel->handle(cb($userId, ['n' => 'admin.user.block', 'id' => (int) $userRow]));
+$kernel->handle(cb($userId, ['n' => 'admin.user.block', 'id' => (int) $userRow['id']]));
 check('مسدودسازی از مسیر عادی انجام نشد', (int) $users->findByTelegramId($adminId)['is_blocked'] === 0);
 
 // سوپرادمین می‌تواند
 $bot->reset();
-$kernel->handle(cb($adminId, ['n' => 'admin.user.block', 'id' => (int) $userRow]));
+$kernel->handle(cb($adminId, ['n' => 'admin.user.block', 'id' => (int) $userRow['id']]));
 check('سوپرادمین می‌تواند مسدود کند', (int) $users->findByTelegramId($userId)['is_blocked'] === 1);
-$kernel->handle(cb($adminId, ['n' => 'admin.user.block', 'id' => (int) $userRow]));
+$kernel->handle(cb($adminId, ['n' => 'admin.user.block', 'id' => (int) $userRow['id']]));
 check('سوپرادمین می‌تواند رفع مسدودی کند', (int) $users->findByTelegramId($userId)['is_blocked'] === 0);
 
 // ------------------------------------------------------------------
@@ -244,20 +236,25 @@ check('جدول‌های اصلی سالم هستند', $db->tableExists('users'
 echo "\n▶ XSS و HTML injection در متن‌ها\n";
 // ------------------------------------------------------------------
 
-$xssUser = $users->upsertByTelegram(2222, [
-    'telegram_id'    => 2222,
-    'first_name'     => '<script>alert(1)</script>',
-    'panel_username' => 'xss_test',
-    'panel_password' => Crypto::encrypt('pass'),
-    'panel_status'   => 'active',
-    'note'           => '<b>تزریق</b>',
-])['id'];
+// نام کاربر با اسکریپت در پیام‌ها escape می‌شود
+makeRep('xss_test', $panel, $users, $panels, [
+    'telegram_id' => 2222,
+    'first_name'  => '<script>alert(1)</script>',
+]);
 
 $bot->reset();
 $kernel->handle(cb(2222, ['n' => 'user.account']));
 $accountText = $bot->allText();
 check('نام کاربر escape شد', !str_contains($accountText, '<script>'), $accountText);
 check('تگ اسکریپت خنثی شد', str_contains($accountText, '&lt;script&gt;') || !str_contains($accountText, 'script>'));
+
+// نام کاربری پنل هم باید escape شود (چون در صفحهٔ جزئیات پنل نمایش داده می‌شود)
+$panels->update((int) $panels->findByPanelUsername('xss_test')['id'], [
+    'panel_username' => 'xss<b>injected</b>',
+]);
+$bot->reset();
+$kernel->handle(cb(2222, ['n' => 'panel.view', 'id' => (int) $panels->findByPanelUsername('xss<b>injected</b>')['id']]));
+check('نام کاربری پنل escape شد', !str_contains($bot->allText(), 'xss<b>injected</b>'), $bot->allText());
 
 // نام بسته با HTML
 $packages->update($pkgId, ['title' => '<b>بسته</b> & "خطر"']);
@@ -279,20 +276,19 @@ foreach ($invalidUsernames as $name) {
 check('نام کاربری معتبر پذیرفته شد', \Pasargad\Support\Str::isValidPanelUsername('admin_123'));
 check('نام کاربری با نقطه پذیرفته شد', \Pasargad\Support\Str::isValidPanelUsername('admin.name'));
 
-// ورود نام کاربری نامعتبر در جریان ورود
+// ورود نام کاربری نامعتبر در جریان «من پنل دارم»
 $bot->reset();
-$kernel->handle(msg(3333, 'a b c!'));
-$kernel->handle(cb(3333, ['n' => 'user.login']));
+$kernel->handle(cb(3333, ['n' => 'panel.self']));
 $kernel->handle(msg(3333, 'bad name!'));
-check('ورودی نامعتبر در جریان ورود رد شد', str_contains($bot->allText(), 'نامعتبر'), $bot->allText());
+check('ورودی نامعتبر در جریان ثبت پنل رد شد', str_contains($bot->allText(), 'نامعتبر'), $bot->allText());
 
 // ------------------------------------------------------------------
 echo "\n▶ محدودیت نرخ و عدم تکرار اجرا\n";
 // ------------------------------------------------------------------
 
-$doubleOrder = $orders->create($userRow, [
+$doubleOrder = $orders->create((int) $userRow["id"], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_PAID,
     'paid_at' => time(),

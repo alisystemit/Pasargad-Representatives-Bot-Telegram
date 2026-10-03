@@ -8,8 +8,8 @@ declare(strict_types=1);
  * باگ اصلی: `handleSessionState` برای هر نشستِ غیرتهی صدا زده می‌شد و در
  * شاخهٔ `default` نشست را پاک می‌کرد. نتیجه:
  *   • جریان «✏️ ویرایش بسته» می‌مرد → بستهٔ تکراری با قیمت جدید ساخته می‌شد.
- *   • جریان «ساخت کاربر با اعتبار» با اولین خطای اعتبارسنجی می‌شکست و
- *     نام کاربری که کاربر فرستاده بود پاک می‌شد.
+ *   • جریان «ثبت پنل» با اولین خطای اعتبارسنجی می‌شکست و نام کاربری که کاربر
+ *     فرستاده بود پاک می‌شد.
  *
  * این تست‌ها هر دو مسیر را قفل می‌کنند.
  */
@@ -18,18 +18,18 @@ require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/TestDb.php';
 require_once __DIR__ . '/FakePanelClient.php';
 require_once __DIR__ . '/FakeBotApi.php';
+require_once __DIR__ . '/Fixture.php';
 
 use Pasargad\Bot\Kernel;
 use Pasargad\Bot\SessionStore;
 use Pasargad\Payment\PaymentService;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
+use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestDb;
-use Pasargad\Store\UserProvisioner;
 use Pasargad\Store\UserRepository;
-use Pasargad\Support\Crypto;
 use Pasargad\Support\Migrator;
 use Pasargad\Telegram\FakeBotApi;
 use Pasargad\Panel\FakePanelClient;
@@ -38,14 +38,15 @@ use Pasargad\Telegram\Update;
 $db = TestDb::boot();
 (new Migrator($db))->migrate();
 
-$panel    = new \Pasargad\Panel\FakePanelClient();
+$panel    = new FakePanelClient();
 $bot      = new FakeBotApi();
 $settings = new Settings($db);
 $packages = new PackageRepository($db);
 $orders   = new OrderRepository($db);
 $users    = new UserRepository($db);
+$panels   = new PanelRepository($db);
 
-$provisioner = new Provisioner($panel, $orders, $users, $settings);
+$provisioner = new Provisioner($panel, $orders, $users, $settings, $panels);
 $sessions    = new SessionStore($db);
 
 $kernel = new Kernel(
@@ -58,7 +59,9 @@ $kernel = new Kernel(
     new PaymentService($orders, $provisioner, $settings),
     $settings,
     $sessions,
-    $panel
+    $panel,
+    null,
+    $panels
 );
 
 $passed = 0;
@@ -128,7 +131,7 @@ $settings->set('super_admins', (string) $superAdmin);
 \Pasargad\Support\Config::set('super_admins', [$superAdmin]);
 
 $pkgId = $packages->create([
-    'title' => 'بستهٔ اصلی', 'kind' => PackageRepository::KIND_PANEL_QUOTA,
+    'title' => 'بستهٔ اصلی', 'kind' => PackageRepository::KIND_TOPUP,
     'volume_gb' => 100, 'duration_days' => 30, 'price_toman' => 500000, 'is_active' => true,
 ]);
 
@@ -152,7 +155,7 @@ check('قیمت قبل از ویرایش ۵۰۰۰۰۰ است', (int) $rowBefore[
 
 // حالا ادمین مشخصات جدید را می‌فرستد
 $kernel->handle(new Update(textUpdate($superAdmin,
-    'بستهٔ ویرایش‌شده | panel_quota | 250 | 60 | 750000', 11)));
+    'بستهٔ ویرایش‌شده | topup | 250 | 60 | 750000', 11)));
 
 $after = count($packages->allPackages());
 check('بستهٔ جدیدی ساخته نشد', $after === $before, "before=$before after=$after");
@@ -179,85 +182,71 @@ check('بستهٔ تکراری با قیمت جدید ساخته نشد', $dupli
     $duplicate !== null ? ('id=' . $duplicate['id'] . ' title=' . $duplicate['title']) : '');
 
 // =====================================================================
-echo "\n▶ سناریو ۲: جریان اعتبار کاربر با خطای اعتبارسنجی نباید بشکند\n";
+echo "\n▶ سناریو ۲: جریان ثبت پنل با خطای اعتبارسنجی نباید بشکند\n";
 // =====================================================================
 
 $buyerId = 800001;
-$buyer = $users->upsertByTelegram($buyerId, [
-    'telegram_id'    => $buyerId,
-    'panel_username' => 'buyer_admin',
-    'panel_password' => Crypto::encrypt('pass'),
-    'panel_status'   => 'active',
-    'user_credit'    => 100 * 1073741824,
-])['id'];
+[$buyer, $buyerPanel] = makeRep('buyer_admin', $panel, $users, $panels, [
+    'telegram_id' => $buyerId,
+]);
 
-$panel->addAdmin('buyer_admin', ['data_limit' => 0, 'used_traffic' => 0]);
-
-// کاربر وارد جریان ساخت کاربر می‌شود
+// کاربر وارد جریان «من پنل دارم» می‌شود
 $kernel->handle(new Update(callbackUpdate($buyerId,
-    json_encode(['n' => 'uc.new'], JSON_UNESCAPED_UNICODE), 20)));
+    json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 20)));
 
 $state = $sessions->get($buyerId);
-check('مرحلهٔ نام کاربری شروع شد', ($state['step'] ?? '') === 'user_credit:username', 'step=' . ($state['step'] ?? 'null'));
-
-// نام کاربری معتبر می‌فرستد
-$kernel->handle(new Update(textUpdate($buyerId, 'customer_one', 21)));
-
-$state = $sessions->get($buyerId);
-check('به مرحلهٔ حجم رفت', ($state['step'] ?? '') === 'user_credit:volume', 'step=' . ($state['step'] ?? 'null'));
-check('نام کاربری در نشست ماند', (string) ($state['username'] ?? '') === 'customer_one',
-    'username=' . ($state['username'] ?? 'null'));
-
-// ---- حجم نامعتبر (زیر حداقل) → نباید نشست را از بین ببرد ----
-$kernel->handle(new Update(textUpdate($buyerId, '0.5', 22)));
-
-check('پیام حداقل حجم داده شد', str_contains($bot->lastTextFor($buyerId), '۱ گیگابایت'), $bot->lastTextFor($buyerId));
-
-$state = $sessions->get($buyerId);
-check('نشست بعد از خطای حجم باقی ماند', $state !== null, 'null');
-check('نام کاربری بعد از خطا حفظ شد', (string) ($state['username'] ?? '') === 'customer_one',
-    'username=' . ($state['username'] ?? 'null'));
-check('مرحله همچنان حجم است', ($state['step'] ?? '') === 'user_credit:volume', 'step=' . ($state['step'] ?? 'null'));
-
-// ---- حجم بیش از اعتبار → نباید نشست را از بین ببرد ----
-$bot->reset();
-$kernel->handle(new Update(textUpdate($buyerId, '5000', 23)));
-
-check('پیام اعتبار ناکافی داده شد', str_contains($bot->lastTextFor($buyerId), 'اعتبار کافی ندارید'),
-    $bot->lastTextFor($buyerId));
-
-$state = $sessions->get($buyerId);
-check('نشست بعد از خطای اعتبار باقی ماند', $state !== null);
-check('نام کاربری بعد از خطای اعتبار حفظ شد', (string) ($state['username'] ?? '') === 'customer_one',
-    'username=' . ($state['username'] ?? 'null'));
-
-// ---- حالا حجم درست → باید جلو برود ----
-$bot->reset();
-$kernel->handle(new Update(textUpdate($buyerId, '10', 24)));
-
-$state = $sessions->get($buyerId);
-check('به مرحلهٔ مدت رفت', ($state['step'] ?? '') === 'user_credit:duration', 'step=' . ($state['step'] ?? 'null'));
-check('حجم در نشست ذخیره شد', (float) ($state['volume'] ?? 0) === 10.0, 'volume=' . ($state['volume'] ?? 'null'));
-check('نام کاربری حفظ شد', (string) ($state['username'] ?? '') === 'customer_one');
-
-// ---- مدت زمان نامعتبر → نشست بماند ----
-$kernel->handle(new Update(textUpdate($buyerId, '0', 25)));
-$state = $sessions->get($buyerId);
-check('نشست بعد از مدت نامعتبر باقی ماند', ($state['step'] ?? '') === 'user_credit:duration',
+check('مرحلهٔ نام کاربری شروع شد', ($state['step'] ?? '') === 'panel:username',
     'step=' . ($state['step'] ?? 'null'));
 
-// ---- مدت درست → کاربر ساخته شود ----
+// ---- نام کاربری نامعتبر → نشست نباید بماند، ولی نباید هم به مرحلهٔ بعد برود ----
+$kernel->handle(new Update(textUpdate($buyerId, 'bad name!', 21)));
+check('نام کاربری نامعتبر رد شد', str_contains($bot->lastTextFor($buyerId), 'نامعتبر'), $bot->lastTextFor($buyerId));
+
+$state = $sessions->get($buyerId);
+check('نشست در مرحلهٔ نام کاربری ماند', ($state['step'] ?? '') === 'panel:username',
+    'step=' . ($state['step'] ?? 'null'));
+
+// ---- نام کاربری معتبر → مرحلهٔ رمز ----
+$kernel->handle(new Update(textUpdate($buyerId, 'buyer_admin', 22)));
+
+$state = $sessions->get($buyerId);
+check('به مرحلهٔ رمز رفت', ($state['step'] ?? '') === 'panel:password',
+    'step=' . ($state['step'] ?? 'null'));
+check('نام کاربری در نشست ماند', (string) ($state['username'] ?? '') === 'buyer_admin',
+    'username=' . ($state['username'] ?? 'null'));
+
+// ---- رمز اشتباه → کاربر باید پیام خطا بگیرد و بتواند دوباره تلاش کند ----
+$panel->loginError = 'نام کاربری یا رمز اشتباه';
 $bot->reset();
-$kernel->handle(new Update(textUpdate($buyerId, '30', 26)));
+$kernel->handle(new Update(textUpdate($buyerId, 'wrong-pass', 23)));
+$panel->loginError = '';
 
-check('کاربر روی پنل ساخته شد', isset($panel->existingUsers['customer_one']),
-    'existing=' . implode(',', array_keys($panel->existingUsers)));
-check('سقف ۱۰ گیگ اعمال شد', (int) ($panel->existingUsers['customer_one']['data_limit'] ?? 0) === 10 * 1073741824,
-    'limit=' . ($panel->existingUsers['customer_one']['data_limit'] ?? 0));
+check('به کاربر پیام خطا داده شد', str_contains($bot->lastTextFor($buyerId), 'درست نیست'),
+    $bot->lastTextFor($buyerId));
+check('دکمهٔ تلاش مجدد هست', $bot->hasButton('تلاش مجدد'));
 
-$creditLeft = (int) $users->findById($buyer)['user_credit'];
-check('اعتبار کسر شد', $creditLeft === 90 * 1073741824,
-    'credit=' . ($creditLeft / 1073741824) . 'GB');
+check('نشست بعد از خطا پاک شد', $sessions->get($buyerId) === null,
+    'step=' . ($sessions->get($buyerId)['step'] ?? 'null'));
+
+$kernel->handle(new Update(callbackUpdate($buyerId,
+    json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 24)));
+check('تلاش مجدد جریان را از نو شروع کرد',
+    ($sessions->get($buyerId)['step'] ?? '') === 'panel:username');
+
+// ---- رمز درست → پنل ثبت می‌شود ----
+// نام متفاوت از جریان قبلی استفاده می‌شود چون FloodGuard پیام‌های *کاملاً
+// یکسان* را در پنجرهٔ کوتاه رد می‌کند و جریان «تلاش مجدد» دقیقاً همان
+// نام کاربری را دوباره می‌فرستد. فقط روی پنل جعلی ساخته می‌شود (نه در
+// دیتابیس) تا جریان «من پنل دارم» واقعاً ثبت تازه انجام دهد.
+$panel->addAdmin('retry_admin');
+
+$kernel->handle(new Update(textUpdate($buyerId, 'retry_admin', 25)));
+$kernel->handle(new Update(textUpdate($buyerId, 'retry-pass', 26)));
+
+check('پنل ثبت‌شده برای کاربر موجود است',
+    $panels->findByPanelUsername('retry_admin') !== null);
+check('پنل تکراری ساخته نشد', count($panels->listByUser((int) $buyer['id'])) === 2,
+    'n=' . count($panels->listByUser((int) $buyer['id'])));
 check('نشست بعد از اتمام پاک شد', $sessions->get($buyerId) === null);
 
 // =====================================================================
@@ -265,11 +254,11 @@ echo "\n▶ سناریو ۳: لغو جریان با دکمهٔ انصراف\n";
 // =====================================================================
 
 $kernel->handle(new Update(callbackUpdate($buyerId,
-    json_encode(['n' => 'uc.new'], JSON_UNESCAPED_UNICODE), 30)));
-check('جریان تازه شروع شد', ($sessions->get($buyerId)['step'] ?? '') === 'user_credit:username');
+    json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 30)));
+check('جریان تازه شروع شد', ($sessions->get($buyerId)['step'] ?? '') === 'panel:username');
 
-$kernel->handle(new Update(textUpdate($buyerId, '', 31)));   // پیام خالی = انصراف
-check('با پیام خالی لغو شد', $sessions->get($buyerId) === null,
+$kernel->handle(new Update(textUpdate($buyerId, '/cancel', 31)));
+check('با /cancel لغو شد', $sessions->get($buyerId) === null,
     'step=' . ($sessions->get($buyerId)['step'] ?? 'null'));
 
 // =====================================================================
@@ -277,29 +266,28 @@ echo "\n▶ سناریو ۴: نشست یک کاربر به کاربر دیگر �
 // =====================================================================
 
 $otherId = 800002;
-$users->upsertByTelegram($otherId, [
-    'telegram_id'    => $otherId,
-    'panel_username' => 'other_admin',
-    'panel_password' => Crypto::encrypt('pass'),
-    'panel_status'   => 'active',
-    'user_credit'    => 50 * 1073741824,
+[$otherUser] = makeRep('other_admin', $panel, $users, $panels, [
+    'telegram_id' => $otherId,
 ]);
-$panel->addAdmin('other_admin', ['data_limit' => 0, 'used_traffic' => 0]);
 
 $kernel->handle(new Update(callbackUpdate($buyerId,
-    json_encode(['n' => 'uc.new'], JSON_UNESCAPED_UNICODE), 40)));
-$kernel->handle(new Update(textUpdate($buyerId, 'leaked_user', 41)));
+    json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 40)));
+$kernel->handle(new Update(textUpdate($buyerId, 'other_admin', 41)));
 
-check('نشست خریدار مراحل را طی کرد', ($sessions->get($buyerId)['step'] ?? '') === 'user_credit:volume',
+check('نشست خریدار مراحل را طی کرد', ($sessions->get($buyerId)['step'] ?? '') === 'panel:password',
     'step=' . ($sessions->get($buyerId)['step'] ?? 'null'));
 
 $otherState = $sessions->get($otherId);
 check('کاربر دوم نشستی ندارد', $otherState === null, json_encode($otherState));
 
 // کاربر دوم نباید بتواند از مرحلهٔ کاربر اول رد شود
-$kernel->handle(new Update(textUpdate($otherId, '10', 42)));
+$kernel->handle(new Update(textUpdate($otherId, 'anything', 42)));
 check('کاربر دوم نشستی نساخت', $sessions->get($otherId) === null,
     'step=' . ($sessions->get($otherId)['step'] ?? 'null'));
+
+$kernel->handle(new Update(textUpdate($buyerId, 'pass', 43)));
+check('خریدار توانست جریان خودش را کامل کند',
+    $panels->findByPanelUsername('buyer_admin') !== null);
 
 // =====================================================================
 echo "\n▶ سناریو ۵: نشست ناشناختهٔ pkg:edit پاک نمی‌شود بی‌دلیل\n";
@@ -321,11 +309,9 @@ echo "\n▶ سناریو ۶: بستن فروشگاه با دکمهٔ قدیمی 
 // =====================================================================
 
 $shopId = 800003;
-$shopUser = $users->upsertByTelegram($shopId, [
-    'telegram_id' => $shopId, 'panel_username' => 'shop_admin',
-    'panel_password' => Crypto::encrypt('pass'), 'panel_status' => 'active',
+[$shopUser] = makeRep('shop_admin', $panel, $users, $panels, [
+    'telegram_id' => $shopId,
 ]);
-$panel->addAdmin('shop_admin', ['data_limit' => 0, 'used_traffic' => 0]);
 
 // صفحهٔ بسته باز می‌شود (فروشگاه باز است)
 $bot->reset();

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Store;
 
+use Pasargad\Payment\AutoCardGateway;
 use Pasargad\Payment\CardToCardGateway;
 use Pasargad\Payment\NowPaymentsGateway;
 
@@ -88,6 +89,7 @@ final class FeatureFlags
         return match ($gatewayName) {
             CardToCardGateway::NAME   => Settings::GATEWAY_CARD2CARD,
             NowPaymentsGateway::NAME => Settings::GATEWAY_NOWPAYMENTS,
+            AutoCardGateway::NAME    => Settings::GATEWAY_AUTOCARD,
             default                  => null,
         };
     }
@@ -129,6 +131,7 @@ final class FeatureFlags
         $configured = [
             CardToCardGateway::NAME   => \Pasargad\Support\Config::str('store.card_number') !== '',
             NowPaymentsGateway::NAME => \Pasargad\Support\Config::str('nowpayments.api_key') !== '',
+            AutoCardGateway::NAME    => AutoCardGateway::isConfigured(),
         ];
 
         $result = [];
@@ -172,14 +175,97 @@ final class FeatureFlags
         $this->settings->set(Settings::RENEWAL_ENABLED, $enabled ? '1' : '0');
     }
 
-    public function isUserToolsEnabled(): bool
+    // ------------------------------------------------------------------
+    // پنل‌های نمایندگی
+    // ------------------------------------------------------------------
+
+    /** همگام‌سازی خودکار پنل‌ها از API توسط کرون */
+    public function isPanelSyncEnabled(): bool
     {
-        return $this->settings->bool(Settings::USER_TOOLS, true);
+        return $this->settings->bool(Settings::PANEL_SYNC, true);
     }
 
-    public function setUserToolsEnabled(bool $enabled): void
+    public function setPanelSyncEnabled(bool $enabled): void
     {
-        $this->settings->set(Settings::USER_TOOLS, $enabled ? '1' : '0');
+        $this->settings->set(Settings::PANEL_SYNC, $enabled ? '1' : '0');
+    }
+
+    /** دریافت تست کانفیگ */
+    public function isTestConfigEnabled(): bool
+    {
+        return $this->settings->bool(Settings::TEST_CONFIG_ENABLED, true);
+    }
+
+    public function setTestConfigEnabled(bool $enabled): void
+    {
+        $this->settings->set(Settings::TEST_CONFIG_ENABLED, $enabled ? '1' : '0');
+    }
+
+    /** پس از انقضا، درخواست قطع دسترسی کاربران پنل داده شود */
+    public function isCutoffOnExpireEnabled(): bool
+    {
+        return $this->settings->bool(Settings::CUTOFF_ON_EXPIRE, true);
+    }
+
+    public function setCutoffOnExpireEnabled(bool $enabled): void
+    {
+        $this->settings->set(Settings::CUTOFF_ON_EXPIRE, $enabled ? '1' : '0');
+    }
+
+    /** عضویت کانال برای کاربران عادی اجباری باشد */
+    public function isChannelEnforced(): bool
+    {
+        return $this->settings->bool(Settings::CHANNEL_ENFORCED, false);
+    }
+
+    public function setChannelEnforced(bool $enforced): void
+    {
+        $this->settings->set(Settings::CHANNEL_ENFORCED, $enforced ? '1' : '0');
+    }
+
+    // ------------------------------------------------------------------
+    // تخفیف، معرفی و تیکت
+    // ------------------------------------------------------------------
+
+    /** کدهای تخفیف فعال باشند */
+    public function isCouponsEnabled(): bool
+    {
+        return $this->settings->bool(Settings::COUPONS_ENABLED, true);
+    }
+
+    public function setCouponsEnabled(bool $enabled): void
+    {
+        $this->settings->set(Settings::COUPONS_ENABLED, $enabled ? '1' : '0');
+    }
+
+    /** سیستم معرفی کاربر فعال باشد */
+    public function isReferralEnabled(): bool
+    {
+        return $this->settings->bool(Settings::REFERRAL_ENABLED, true);
+    }
+
+    public function setReferralEnabled(bool $enabled): void
+    {
+        $this->settings->set(Settings::REFERRAL_ENABLED, $enabled ? '1' : '0');
+    }
+
+    /** تیکت پشتیبانی داخل ربات فعال باشد */
+    public function isTicketsEnabled(): bool
+    {
+        return $this->settings->bool(Settings::TICKETS_ENABLED, true);
+    }
+
+    public function setTicketsEnabled(bool $enabled): void
+    {
+        $this->settings->set(Settings::TICKETS_ENABLED, $enabled ? '1' : '0');
+    }
+
+    /**
+     * مهلت ارفاقی پس از انقضا (روز). صفر یعنی بدون مهلت.
+     */
+    public function graceDays(): int
+    {
+        return max(0, $this->settings->int(Settings::EXPIRE_GRACE_DAYS, 3));
     }
 
     /**
@@ -211,9 +297,16 @@ final class FeatureFlags
         return [
             'bot'          => $this->isBotEnabled(),
             'card2card'     => $this->isGatewayEnabled(CardToCardGateway::NAME),
+            'autocard'      => $this->isGatewayEnabled(AutoCardGateway::NAME),
             'nowpayments'   => $this->isGatewayEnabled(NowPaymentsGateway::NAME),
             'renewal'       => $this->isRenewalEnabled(),
-            'user_tools'    => $this->isUserToolsEnabled(),
+            'panel_sync'    => $this->isPanelSyncEnabled(),
+            'test_config'   => $this->isTestConfigEnabled(),
+            'cutoff'        => $this->isCutoffOnExpireEnabled(),
+            'channel'       => $this->isChannelEnforced(),
+            'coupons'       => $this->isCouponsEnabled(),
+            'referral'      => $this->isReferralEnabled(),
+            'tickets'       => $this->isTicketsEnabled(),
             'shop'          => $this->settings->bool(Settings::SHOP_OPENED, true),
             'auto_apply'    => $this->settings->bool(Settings::AUTO_APPLY, true),
         ];

@@ -12,17 +12,17 @@ declare(strict_types=1);
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/TestDb.php';
 require_once __DIR__ . '/FakePanelClient.php';
+require_once __DIR__ . '/Fixture.php';
 
 use Pasargad\Panel\FakePanelClient;
 use Pasargad\Payment\PaymentService;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
+use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestDb;
-use Pasargad\Store\UserProvisioner;
 use Pasargad\Store\UserRepository;
-use Pasargad\Support\Crypto;
 use Pasargad\Support\Migrator;
 
 $db = TestDb::boot();
@@ -31,9 +31,10 @@ $db = TestDb::boot();
 $panel    = new FakePanelClient();
 $orders   = new OrderRepository($db);
 $users    = new UserRepository($db);
+$panels   = new PanelRepository($db);
 $packages = new PackageRepository($db);
 $settings = new Settings($db);
-$prov     = new Provisioner($panel, $orders, $users, $settings);
+$prov     = new Provisioner($panel, $orders, $users, $settings, $panels);
 $payments = new PaymentService($orders, $prov, $settings);
 
 $GB = 1073741824;
@@ -54,42 +55,33 @@ function check(string $label, bool $condition, string $detail = ''): void
 }
 
 /**
- * ساخت کاربر متصل به پنل قلابی با آیدی یکتا و مثبت.
+ * ساخت کاربر متصل به یک پنل قلابی با آیدی یکتا و مثبت.
+ *
+ * @param array<string, mixed> $options
  */
-function makeUser(string $panelUser, int $credit = 0): array
+function makeUser(string $panelUser, array $options = []): array
 {
-    global $users, $panel, $GB;
+    global $users, $panel, $panels;
 
-    // آیدی مثبت و یکتا از نام (crc32 می‌تواند منفی یا صفر شود)
-    $telegramId = 900000 + (crc32($panelUser) % 90000);
+    [$user] = makeRep($panelUser, $panel, $users, $panels, $options);
 
-    $id = $users->upsertByTelegram($telegramId, [
-        'telegram_id'       => $telegramId,
-        'panel_username'    => $panelUser,
-        'panel_password'    => Crypto::encrypt('pass'),
-        'panel_status'      => 'active',
-        'user_credit'       => $credit,
-    ])['id'];
-
-    $panel->addAdmin($panelUser, ['data_limit' => 0, 'used_traffic' => 0]);
-
-    return $users->findById($id);
+    return $user;
 }
 
 echo "\n════════════════════════════════════════";
 echo "\n  باگ ۱: سفارش ردشده نباید اجرا شود";
 echo "\n════════════════════════════════════════\n";
 
-$user = makeUser('reject_admin', 0);
+$user = makeUser('reject_admin');
 
 $pkgId = $packages->create([
-    'title' => 'بسته', 'kind' => PackageRepository::KIND_PANEL_QUOTA,
+    'title' => 'بسته', 'kind' => PackageRepository::KIND_TOPUP,
     'volume_gb' => 100, 'duration_days' => 30, 'price_toman' => 500000, 'is_active' => true,
 ]);
 
 $order = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
 ]);
@@ -138,7 +130,7 @@ $panel->addAdmin('idempotent_admin', ['data_limit' => 10 * $GB, 'used_traffic' =
 
 $order2 = $orders->create((int) $user2['id'], [
     'package_id' => $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
 ]);
@@ -171,32 +163,44 @@ check('کرون حجم را دوباره اضافه نکرد', (int) $panel->adm
     'limit=' . ($panel->admins['idempotent_admin']['data_limit'] / $GB) . 'GB');
 
 echo "\n════════════════════════════════════════";
-echo "\n  باگ ۳: حجم زیر یک بایت نباید نامحدود بدهد";
+echo "\n  باگ ۳: حجم زیر یک بایت نباید پنل نامحدود بدهد";
 echo "\n════════════════════════════════════════\n";
 
-$user3 = makeUser('tiny_admin', 10 * $GB);
-$up = new UserProvisioner($users, $panel);
+// در پنل، data_limit = 0 یعنی «نامحدود». یک بستهٔ با حجم کوچکِ
+// اعشاری (مثلاً 0.0000000001 گیگ) در تبدیل به بایت صفر می‌شود و اگر رد
+// نشود، نماینده یک پنل **نامحدود** رایگان می‌گیرد.
+$user3 = makeUser('tiny_admin');
+$panelsBefore = $panels->countByUser((int) $user3['id']);
+check('نماینده یک پنل اولیه دارد', $panelsBefore === 1, 'n=' . $panelsBefore);
 
-foreach ([0.0000000001, 0.0001, 0.5, 0.9] as $tiny) {
-    $res = $up->createUser($user3, 'tiny_' . str_replace('.', '_', (string) $tiny), $tiny, 30);
-    check("حجم {$tiny} گیگ رد شد", !$res['ok'], (string) $res['message']);
-    check("پیام حداقل حجم برای {$tiny}", str_contains((string) $res['message'], '۱ گیگابایت'), (string) $res['message']);
-}
+$tinyPkg = $packages->create([
+    'title' => 'بستهٔ ناچیز', 'kind' => PackageRepository::KIND_AGENCY,
+    'volume_gb' => 0.0000000001, 'duration_days' => 30, 'price_toman' => 500000, 'is_active' => true,
+]);
 
-check('هیچ کاربر نامحدودی ساخته نشد', $panel->created === [], 'created=' . count($panel->created));
-check('اعتبار دست‌نخورده ماند', (int) $users->findById((int) $user3['id'])['user_credit'] === 10 * $GB);
+$tinyOrder = $orders->create((int) $user3['id'], [
+    'package_id' => (int) $tinyPkg, 'package_title' => 'بستهٔ ناچیز',
+    'kind' => PackageRepository::KIND_AGENCY, 'volume_gb' => 0.0000000001,
+    'duration_days' => 30, 'price_toman' => 500000,
+    'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
+]);
 
-// حداقل معتبر
-$ok = $up->createUser($user3, 'valid_user', 1, 30);
-check('حجم ۱ گیگ پذیرفته شد', $ok['ok'], (string) $ok['message']);
-check('سقف ۱ گیگ روی پنل رفت', (int) ($panel->created[0]['data_limit'] ?? 0) === 1 * $GB);
+$tinyResult = $prov->provision($orders->find((int) $tinyOrder['id']));
+check('بستهٔ با حجم صفر رد شد', !$tinyResult['ok'], (string) $tinyResult['message']);
+check('دلیل نامعتبر بودن حجم ثبت شد',
+    (string) $orders->find((int) $tinyOrder['id'])['terminal_reason'] === 'invalid_volume',
+    'reason=' . var_export($orders->find((int) $tinyOrder['id'])['terminal_reason'], true));
+check('هیچ پنل **تازه‌ای** ساخته نشد', $panels->countByUser((int) $user3['id']) === $panelsBefore,
+    'n=' . $panels->countByUser((int) $user3['id']));
+check('هیچ ادمینی روی پنل ساخته نشد', count($panel->createdAdmins) === 0,
+    'created=' . count($panel->createdAdmins));
 
 echo "\n════════════════════════════════════════";
 echo "\n  باگ ۴: قیمت بسته نباید به ۱ تومان تبدیل شود";
 echo "\n════════════════════════════════════════\n";
 
 $pkgId = $packages->create([
-    'title' => 'بستهٔ ویرایش', 'kind' => PackageRepository::KIND_PANEL_QUOTA,
+    'title' => 'بستهٔ ویرایش', 'kind' => PackageRepository::KIND_TOPUP,
     'volume_gb' => 100, 'duration_days' => 30, 'price_toman' => 500000, 'is_active' => true,
 ]);
 
@@ -217,48 +221,63 @@ check('ترتیب درست', (int) $edited['sort_order'] === 5, 'sort=' . $edite
 check('وضعیت فعال حفظ شد', (int) $edited['is_active'] === 1);
 
 echo "\n════════════════════════════════════════";
-echo "\n  باگ ۵: کسر اعتبار باید اتمیک و بدون منفی شدن باشد";
+echo "\n  باگ ۵: شارژ هرگز نباید سقف را زیر مصرف ببرد";
 echo "\n════════════════════════════════════════\n";
 
-$user5 = makeUser('credit_admin', 10 * $GB);
-$uid5 = (int) $user5['id'];
+// اگر سقف یک پنل (مثلاً به‌دلیل دستکاری دستی یا باگ پنل) از مصرف
+// واقعی‌اش کمتر شده باشد، جمع سادهٔ «سقف + حجم خریداری‌شده» می‌تواند سقف
+// جدید را باز هم زیر مصرف نگه دارد. نتیجه: نماینده پول داده ولی سرویس
+// مشتریانش قطع است. پس پایه همیشه max(سقف، مصرف) است.
+$user5 = makeUser('below_usage_admin', [
+    'data_limit'   => 10 * $GB,
+    'used_traffic' => 40 * $GB,   // مصرف بیشتر از سقف!
+]);
 
-// تلاش برای کسر بیش از موجودی
-check('کسر بیش از موجودی رد شد', !$users->consumeUserCredit($uid5, 20 * $GB));
-check('موجودی منفی نشد', (int) $users->findById($uid5)['user_credit'] === 10 * $GB, 'credit=' . $users->findById($uid5)['user_credit']);
+$topup5Id = $packages->create([
+    'title' => 'شارژ ۱۰ گیگ', 'kind' => PackageRepository::KIND_TOPUP,
+    'volume_gb' => 10, 'duration_days' => 30, 'price_toman' => 300000, 'is_active' => true,
+]);
+$topup5 = $packages->find($topup5Id);
 
-// کسر دقیق موجودی
-check('کسر دقیق انجام شد', $users->consumeUserCredit($uid5, 10 * $GB));
-check('موجودی صفر شد', (int) $users->findById($uid5)['user_credit'] === 0);
+$order5 = makePaidOrder($orders, (int) $user5['id'], $topup5, [
+    'panel_id' => primaryPanelId($panels, $user5),
+]);
 
-// کسر صفر یا منفی نباید انجام شود
-check('کسر صفر رد شد', !$users->consumeUserCredit($uid5, 0));
-check('کسر منفی رد شد', !$users->consumeUserCredit($uid5, -100));
+$r5 = $prov->provision($order5);
+check('شارژ موفق بود', $r5['ok'], (string) $r5['message']);
 
-// افزودن اتمیک
-$users->addUserCredit($uid5, 5 * $GB);
-check('افزودن اعتبار کار کرد', (int) $users->findById($uid5)['user_credit'] === 5 * $GB);
-check('صفر رد شد', (function () use ($users, $uid5) { $users->addUserCredit($uid5, 0); return true; })());
-check('مقدار تغییر نکرد', (int) $users->findById($uid5)['user_credit'] === 5 * $GB);
+$limit5 = (int) $panel->admins['below_usage_admin']['data_limit'];
+check('سقف جدید بالاتر از مصرف است', $limit5 > 40 * $GB,
+    'limit=' . ($limit5 / $GB) . 'GB');
+check('سقف = مصرف + حجم خریداری‌شده', $limit5 === 50 * $GB, 'limit=' . ($limit5 / $GB) . 'GB');
+
+// دوباره اجرا نباید حجم را دوباره جمع کند
+$prov->provision($order5);
+check('اجرای دوباره سقف را دوبرابر نکرد',
+    (int) $panel->admins['below_usage_admin']['data_limit'] === 50 * $GB,
+    'limit=' . ($panel->admins['below_usage_admin']['data_limit'] / $GB) . 'GB');
 
 echo "\n════════════════════════════════════════";
 echo "\n  باگ ۶: پاسخ ناقص پنل نباید حجم را صفر کند";
 echo "\n════════════════════════════════════════\n";
 
-$user6 = makeUser('partial_admin');
-$users->update((int) $user6['id'], ['panel_data_limit' => 100 * $GB, 'panel_used' => 40 * $GB]);
+[$user6, $panel6] = makeRep('partial_admin', $panel, $users, $panels, [
+    'data_limit'   => 100 * $GB,
+    'used_traffic' => 40 * $GB,
+]);
+$panel6Id = (int) $panel6['id'];
 
 // پاسخ PUT ناقص (بدون data_limit و used_traffic)
-$users->syncPanelState((int) $user6['id'], ['status' => 'active']);
-$after6 = $users->findById((int) $user6['id']);
-check('حجم صفر نشد', (int) $after6['panel_data_limit'] === 100 * $GB, 'limit=' . $after6['panel_data_limit']);
-check('مصرف صفر نشد', (int) $after6['panel_used'] === 40 * $GB, 'used=' . $after6['panel_used']);
+$panels->syncFromPanel($panel6Id, ['status' => 'active']);
+$after6 = $panels->find($panel6Id);
+check('حجم صفر نشد', (int) $after6['data_limit'] === 100 * $GB, 'limit=' . $after6['data_limit']);
+check('مصرف صفر نشد', (int) $after6['used_traffic'] === 40 * $GB, 'used=' . $after6['used_traffic']);
 check('وضعیت به‌روز شد', (string) $after6['panel_status'] === 'active');
 
 // پاسخ کامل باید بازنویسی کند
-$users->syncPanelState((int) $user6['id'], ['status' => 'limited', 'data_limit' => 50 * $GB, 'used_traffic' => 50 * $GB]);
-$after6b = $users->findById((int) $user6['id']);
-check('حجم جدید اعمال شد', (int) $after6b['panel_data_limit'] === 50 * $GB);
+$panels->syncFromPanel($panel6Id, ['status' => 'limited', 'data_limit' => 50 * $GB, 'used_traffic' => 50 * $GB]);
+$after6b = $panels->find($panel6Id);
+check('حجم جدید اعمال شد', (int) $after6b['data_limit'] === 50 * $GB);
 check('وضعیت limited ثبت شد', (string) $after6b['panel_status'] === 'limited');
 
 echo "\n════════════════════════════════════════";
@@ -271,7 +290,7 @@ $user7 = makeUser('doublepay_admin');
 
 $order7 = $orders->create((int) $user7['id'], [
     'package_id' => (int) $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_CREATED,
 ]);
@@ -319,7 +338,7 @@ $panel->httpStatusOverride = 404;
 
 $order8 = $orders->create((int) $user8['id'], [
     'package_id' => (int) $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
 ]);
@@ -355,47 +374,51 @@ check('سفارش پرداخت‌شده از صف خارج شد', in_array((stri
 
 
 echo "\n════════════════════════════════════════";
-echo "\n  باگ ۹: اعتبار منقضی نباید قابل استفاده باشد";
+echo "\n  باگ ۹: پنل منقضی نباید فعال به نظر برسد";
 echo "\n════════════════════════════════════════\n";
 
-$user9 = makeUser('expired_credit', 50 * $GB);
-$uid9 = (int) $user9['id'];
-$users->update($uid9, ['user_credit_expire' => time() - 86400]);   // یک روز پیش منقضی شده
+[$user9, $panel9] = makeRep('expired_panel', $panel, $users, $panels, [
+    'data_limit' => 50 * $GB,
+    'expire_at'  => time() - 86400,   // یک روز پیش منقضی شده
+]);
 
-$up9 = new UserProvisioner($users, $panel);
-$res9 = $up9->createUser($users->findById($uid9), 'expired_user', 10, 30);
-check('اعتبار منقضی رد شد', !$res9['ok'], (string) $res9['message']);
-check('پیام اعتبار کافی دارد', str_contains((string) $res9['message'], 'اعتبار'), (string) $res9['message']);
-check('کاربری ساخته نشد', !isset($panel->existingUsers['expired_user']));
+check('پنل منقضی تشخیص داده می‌شود', \Pasargad\Store\PanelRepository::isExpired($panel9));
+check('پنل منقضی قابل استفاده نیست', !\Pasargad\Store\PanelRepository::isUsable($panel9));
 
-// تمدید اعتبار
-// تمدید اعتبار: تاریخ انقضا جلو می‌رود و اعتبار قابل استفاده می‌شود
-$db->run('UPDATE users SET user_credit_expire = ? WHERE id = ?', [time() + 30 * 86400, $uid9]);
-$res9b = $up9->createUser($users->findById($uid9), 'renewed_user', 10, 30);
-check('بعد از تمدید کار می‌کند', $res9b['ok'], (string) $res9b['message']);
+// پنل‌های فعال = پنل‌هایی که کاربر می‌تواند رویشان تست بگیرد/شارژ کند
+$active = $panels->listActiveByUser((int) $user9['id']);
+check('پنل منقضی در فهرست فعال نیست', count($active) === 0, 'n=' . count($active));
+
+// پس از تمدید دوباره فعال می‌شود
+$panels->extendExpiry((int) $panel9['id'], time() + 30 * 86400);
+$revived = $panels->find((int) $panel9['id']);
+check('بعد از تمدید فعال شد', \Pasargad\Store\PanelRepository::isUsable($revived));
+check('در فهرست فعال برگشت', count($panels->listActiveByUser((int) $user9['id'])) === 1);
 
 echo "\n════════════════════════════════════════";
-echo "\n  باگ ۱۰: تمدید کاربر نامحدود نباید محدود شود";
+echo "\n  باگ ۱۰: شارژ پنل نامحدود نباید محدودش کند";
 echo "\n════════════════════════════════════════\n";
 
-$user10 = makeUser('unlimited_target', 50 * $GB);
-$panel->existingUsers['vip_customer'] = [
-    'username'      => 'vip_customer',
-    'status'        => 'active',
-    'data_limit'    => 0,          // نامحدود
-    'used_traffic'  => 80 * $GB,   // ولی ۸۰ گیگ مصرف کرده
-    'expire'        => time() + 86400,
-];
+// پنل نامحدود (data_limit = 0) که ۸۰ گیگ مصرف کرده است. اگر شارژ از
+// صفر شروع کند، سقف جدید ۵۰ گیگ می‌شود که زیر مصرف است و سرویس مشتری
+// نماینده بی‌دلیل قطع می‌شود — در حالی که نماینده پول داده است.
+[$user10, $panel10] = makeRep('unlimited_target', $panel, $users, $panels, [
+    'data_limit'   => 0,          // نامحدود
+    'used_traffic' => 80 * $GB,   // ولی ۸۰ گیگ مصرف کرده
+]);
 
-$up10 = new UserProvisioner($users, $panel);
-$res10 = $up10->extendUser($users->findById((int) $user10['id']), 'vip_customer', 50, 30);
-check('تمدید موفق بود', $res10['ok'], (string) $res10['message']);
+$order10 = makePaidOrder($orders, (int) $user10['id'], $topup5, [
+    'panel_id' => (int) $panel10['id'],
+]);
 
-$newLimit = (int) ($panel->existingUsers['vip_customer']['data_limit'] ?? 0);
-$used = 80 * $GB;
-check('سقف جدید بالای مصرف است', $newLimit > $used, "new=$newLimit used=$used");
-check('سقف = مصرف + ۵۰ گیگ', $newLimit === 130 * $GB, 'new=' . ($newLimit / $GB) . 'GB');
-check('کاربر محدود نشد', (string) ($panel->existingUsers['vip_customer']['status'] ?? '') === 'active');
+$res10 = $prov->provision($order10);
+check('شارژ موفق بود', $res10['ok'], (string) $res10['message']);
+
+$newLimit = (int) $panel->admins['unlimited_target']['data_limit'];
+check('سقف جدید بالای مصرف است', $newLimit > 80 * $GB, "new=" . ($newLimit / $GB) . 'GB');
+check('سقف = مصرف + ۱۰ گیگ (بستهٔ شارژ)', $newLimit === 90 * $GB, 'new=' . ($newLimit / $GB) . 'GB');
+check('پنل محدود نشد (بازگشت به حالت محدود)',
+    \Pasargad\Store\PanelRepository::isUsable($panels->find((int) $panel10['id'])));
 
 echo "\n════════════════════════════════════════";
 echo "\n  نتیجهٔ بازگشتی";
@@ -410,7 +433,7 @@ $panel->addAdmin('retry_terminal_admin', ['data_limit' => 0, 'used_traffic' => 0
 
 $retryOrder = $orders->create((int) $retryUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
 ]);
@@ -439,7 +462,7 @@ check('باز هم حجمی اعمال نشد', (int) $panel->admins['retry_term
 // سفارش بدون paid_at (یعنی پرداخت‌نشده) نباید اجرا شود
 $unpaid = $orders->create((int) $retryUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_PAID,
 ]);
@@ -460,7 +483,7 @@ $panel->addAdmin('perm_admin', ['data_limit' => 0, 'used_traffic' => 0]);
 
 $permOrder = $orders->create((int) $permUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بسته',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_PAID, 'paid_at' => time(),
 ]);
@@ -476,9 +499,9 @@ $permRow = $orders->find((int) $permOrder['id']);
 check('دلیل permission_denied ثبت شد', (string) $permRow['terminal_reason'] === 'permission_denied',
     'reason=' . (string) $permRow['terminal_reason']);
 
-$permUserRow = $users->findById((int) $permUser['id']);
-check('حساب کاربر قطع نشد', (string) $permUserRow['panel_status'] !== 'revoked',
-    'status=' . $permUserRow['panel_status']);
+$permPanel = $panels->find(primaryPanelId($panels, $permUser));
+check('پنل کاربر قطع نشد', (string) $permPanel['panel_status'] !== PanelRepository::STATUS_REVOKED,
+    'status=' . $permPanel['panel_status']);
 check('پیام راهنمای دسترسی دارد', str_contains((string) $permResult['message'], 'پشتیبانی'), (string) $permResult['message']);
 
 $panel->modifyError = '';

@@ -6,13 +6,14 @@ declare(strict_types=1);
  * تست سوییچ‌های فعال/غیرفعال:
  *   • کل ربات + متن دلخواهٔ غیرفعالی
  *   • درگاه‌های پرداخت (مستقل از هم)
- *   • تمدید و ابزار ساخت کاربر
+ *   • همگام‌سازی خودکار پنل، تست کانفیگ، قطع دسترسی پس از انقضا
  */
 
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/TestDb.php';
 require_once __DIR__ . '/FakePanelClient.php';
 require_once __DIR__ . '/FakeBotApi.php';
+require_once __DIR__ . '/Fixture.php';
 
 use Pasargad\Bot\Kernel;
 use Pasargad\Bot\Notifier;
@@ -24,12 +25,12 @@ use Pasargad\Panel\FakePanelClient;
 use Pasargad\Store\FeatureFlags;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
+use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestDb;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
-use Pasargad\Support\Crypto;
 use Pasargad\Support\Migrator;
 use Pasargad\Telegram\FakeBotApi;
 use Pasargad\Telegram\Update;
@@ -49,9 +50,10 @@ $flags    = new FeatureFlags($settings);
 $users    = new UserRepository($db);
 $packages = new PackageRepository($db);
 $orders   = new OrderRepository($db);
+$panels   = new PanelRepository($db);
 
 $provisioner = new Provisioner($panel, $orders, $users, $settings);
-$payments    = new PaymentService($orders, $provisioner, $settings, $flags);
+$payments    = new PaymentService($orders, $provisioner, $settings, $flags, $users);
 
 $kernel = new Kernel(
     $bot, new Notifier($bot), $users, $packages, $orders,
@@ -103,28 +105,32 @@ function msg(int $userId, string $text): Update
 $ADMIN = 999;
 $USER  = 1111;
 
-$users->upsertByTelegram($ADMIN, [
-    'telegram_id' => $ADMIN, 'first_name' => 'سوپرادمین',
-    'panel_username' => 'superadmin', 'panel_password' => Crypto::encrypt('pass'),
-    'panel_status' => 'active', 'user_credit' => 1073741824 * 100,
+[$adminUser, $adminPanel] = makeRep('superadmin', $panel, $users, $panels, [
+    'telegram_id' => $ADMIN,
+    'first_name'  => 'سوپرادمین',
 ]);
-$panel->addAdmin('superadmin', ['data_limit' => 0, 'used_traffic' => 0]);
 
-$users->upsertByTelegram($USER, [
-    'telegram_id' => $USER, 'first_name' => 'مشتری',
-    'panel_username' => 'customer', 'panel_password' => Crypto::encrypt('pass'),
-    'panel_status' => 'active', 'user_credit' => 1073741824 * 50,
+[$user, $userPanel] = makeRep('customer', $panel, $users, $panels, [
+    'telegram_id' => $USER,
+    'first_name'  => 'مشتری',
+    'data_limit'  => 1073741824,
 ]);
-$panel->addAdmin('customer', ['data_limit' => 1073741824, 'used_traffic' => 0]);
+
+$userPanelId = (int) $userPanel['id'];
 
 // ------------------------------------------------------------------
 echo "\n▶ مقادیر پیش‌فرض\n";
 // ------------------------------------------------------------------
 
 check('ربات به‌صورت پیش‌فرض فعال است', $flags->isBotEnabled());
-check('هر دو درگاه به‌صورت پیش‌فرض فعال هستند', $flags->isGatewayEnabled(CardToCardGateway::NAME) && $flags->isGatewayEnabled(NowPaymentsGateway::NAME));
-check('تمدید پیش‌فرض فعال است', $flags->isRenewalEnabled());
-check('ابزار کاربر پیش‌فرض فعال است', $flags->isUserToolsEnabled());
+check(
+    'درگاه‌های پیکربندی‌شده به‌صورت پیش‌فرض فعال هستند',
+    $flags->isGatewayEnabled(CardToCardGateway::NAME) && $flags->isGatewayEnabled(NowPaymentsGateway::NAME)
+);
+check('همگام‌سازی پنل پیش‌فرض فعال است', $flags->isPanelSyncEnabled());
+check('تست کانفیگ پیش‌فرض فعال است', $flags->isTestConfigEnabled());
+check('قطع دسترسی پس از انقضا پیش‌فرض فعال است', $flags->isCutoffOnExpireEnabled());
+check('عضویت اجباری کانال پیش‌فرض خاموش است', $settings->bool(Settings::CHANNEL_ENFORCED, false) === false);
 check('متن پیش‌فرض غیرفعالی برگردانده شد', str_contains($flags->disabledNotice(), 'غیرفعال'), $flags->disabledNotice());
 
 // ------------------------------------------------------------------
@@ -140,12 +146,16 @@ check('کاربر عادی پیام غیرفعالی گرفت', str_contains($bo
 check('ربات به کاربر عادی منو نشان نداد', !str_contains($bot->allText(), 'منوی اصلی'), $bot->allText());
 
 $bot->reset();
-$kernel->handle(cb($USER, ['n' => 'shop', 'kind' => 'panel_quota']));
-check('فروشگاه برای کاربر عادی بسته شد', !str_contains($bot->allText(), 'بسته‌های حجم پنل'), $bot->allText());
+$kernel->handle(cb($USER, ['n' => 'shop', 'kind' => PackageRepository::KIND_AGENCY]));
+check('فروشگاه برای کاربر عادی بسته شد', !str_contains($bot->allText(), 'بسته‌های پنل نمایندگی'), $bot->allText());
 
 $bot->reset();
 $kernel->handle(cb($USER, ['n' => 'user.account']));
 check('حساب کاربر هم بسته شد', !str_contains($bot->allText(), 'حساب من'), $bot->allText());
+
+$bot->reset();
+$kernel->handle(cb($USER, ['n' => 'panel.list']));
+check('فهرست پنل‌ها هم بسته شد', !str_contains($bot->allText(), 'customer'), $bot->allText());
 
 // سوپرادمین همچنان دسترسی دارد تا بتواند روشن کند
 $bot->reset();
@@ -157,20 +167,22 @@ $kernel->handle(cb($ADMIN, ['n' => 'admin.flag.toggle', 'key' => Settings::BOT_E
 check('سوپرادمین ربات را دوباره روشن کرد', $flags->isBotEnabled());
 
 $bot->reset();
-$kernel->handle(msg($USER, '/start'));
+$kernel->handle(msg($USER, '/menu'));
 check('کاربر دوباره به منو دسترسی دارد', str_contains($bot->allText(), 'منوی اصلی'), $bot->allText());
 
 // ------------------------------------------------------------------
 echo "\n▶ متن دلخواه غیرفعالی\n";
 // ------------------------------------------------------------------
 
+// توجه: FloodGuard پیام‌های *کاملاً یکسان* را در پنجرهٔ چندثانیه‌ای رد می‌کند،
+// پس هر پیام متنی این تست باید متن متفاوتی داشته باشد.
 $custom = "⛔️ درگاه‌های ما موقتاً به دلیل تعمیرات تعطیل است.\nساعت ۱۰ صبح باز می‌شویم.\nبا پشتیبانی تماس بگیرید: @mysupport";
 
 $flags->setBotEnabled(false);
 $flags->setDisabledNotice($custom);
 
 $bot->reset();
-$kernel->handle(msg($USER, '/start'));
+$kernel->handle(msg($USER, '/rules'));
 check('متن دلخواه نمایش داده شد', str_contains($bot->allText(), 'تعمیرات'), $bot->allText());
 check('متن دلخواه کامل ارسال شد', str_contains($bot->allText(), '@mysupport'), $bot->allText());
 
@@ -213,7 +225,8 @@ $flags->setBotEnabled(true);
 echo "\n▶ خاموش کردن درگاه کارت‌به‌کارت\n";
 // ------------------------------------------------------------------
 
-check('هر دو درگاه در ابتدا فعال هستند', count($payments->activeGateways()) === 2);
+check('درگاه‌های پیکربندی‌شده در ابتدا فعال هستند', count($payments->activeGateways()) === 2,
+    implode(',', array_keys($payments->activeGateways())));
 
 $flags->setGatewayEnabled(CardToCardGateway::NAME, false);
 check('کارت‌به‌کارت خاموش شد', !$flags->isGatewayEnabled(CardToCardGateway::NAME));
@@ -224,14 +237,14 @@ $active = array_keys($payments->activeGateways());
 check('درگاه فعال همان ارز دیجیتال است', $active === [NowPaymentsGateway::NAME], implode(',', $active));
 
 $pkgId = $packages->create([
-    'title' => 'بستهٔ تست', 'kind' => PackageRepository::KIND_PANEL_QUOTA,
+    'title' => 'بستهٔ تست', 'kind' => PackageRepository::KIND_TOPUP,
     'volume_gb' => 50, 'duration_days' => 30, 'price_toman' => 300000,
     'sort_order' => 1, 'is_active' => true,
 ]);
 
-$order = $orders->create((int) $users->findByTelegramId($USER)['id'], [
+$order = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 300000,
     'status' => OrderRepository::STATUS_CREATED,
 ]);
@@ -261,7 +274,7 @@ $flags->setGatewayEnabled(NowPaymentsGateway::NAME, false);
 check('هیچ درگاه فعالی نماند', $payments->activeGateways() === []);
 
 $bot->reset();
-$kernel->handle(cb($USER, ['n' => 'pkg.buy', 'id' => $pkgId]));
+$kernel->handle(cb($USER, ['n' => 'pkg.buy', 'id' => $pkgId, 'p' => $userPanelId]));
 check('پیام مناسب وقتی درگاهی فعال نیست', str_contains($bot->allText(), 'پرداختی فعال نیست'), $bot->allText());
 
 $bot->reset();
@@ -278,61 +291,39 @@ $flags->setGatewayEnabled(NowPaymentsGateway::NAME, true);
 $flags->setGatewayEnabled(CardToCardGateway::NAME, true);
 
 // ------------------------------------------------------------------
-echo "\n▶ خاموش کردن تمدید\n";
+echo "\n▶ خاموش کردن تست کانفیگ\n";
 // ------------------------------------------------------------------
 
-$bot->reset();
-$kernel->handle(cb($USER, ['n' => 'user.credit']));
-check('منوی ابزار کاربر باز شد', str_contains($bot->allText(), 'ابزار کاربران'), $bot->allText());
-check('دکمهٔ تمدید نمایش داده شد', $bot->hasButton('تمدید کاربر'));
-
-$flags->setRenewalEnabled(false);
-check('تمدید خاموش شد', !$flags->isRenewalEnabled());
+$flags->setTestConfigEnabled(false);
+check('تست کانفیگ خاموش شد', !$flags->isTestConfigEnabled());
 
 $bot->reset();
-$kernel->handle(cb($USER, ['n' => 'uc.extend']));
-check('شروع تمدید مسدود شد', str_contains($bot->allText(), 'تمدید کاربر موقتاً غیرفعال'), $bot->allText());
+$kernel->handle(cb($USER, ['n' => 'panel.test', 'id' => $userPanelId, 'x' => 1]));
+check('دریافت تست کانفیگ مسدود شد', str_contains($bot->allText(), 'تست کانفیگ موقتاً غیرفعال'), $bot->allText());
+
+$flags->setTestConfigEnabled(true);
 
 $bot->reset();
-$kernel->handle(cb($USER, ['n' => 'user.credit']));
-check('در منو، تمدید غیرفعال نمایش داده شد', $bot->hasButton('تمدید (غیرفعال)'));
-
-$bot->reset();
-$kernel->handle(cb($USER, ['n' => 'uc.new']));
-check('ساخت کاربر جدید همچنان کار می‌کند', str_contains($bot->allText(), 'ساخت کاربر'), $bot->allText());
-
-// حتی با نشست باز، مرحلهٔ بعدی هم باید متوقف شود
-$sessions = new SessionStore($db);
-$sessions->set($USER, ['step' => 'user_credit:username', 'mode' => 'extend']);
-$bot->reset();
-$kernel->handle(msg($USER, 'someuser'));
-check('جریان نیمه‌کارهٔ تمدید هم متوقف شد', str_contains($bot->allText(), 'تمدید کاربر موقتاً غیرفعال'), $bot->allText());
-
-$flags->setRenewalEnabled(true);
-$bot->reset();
-$kernel->handle(cb($USER, ['n' => 'uc.extend']));
-check('با روشن شدن تمدید، کار می‌کند', str_contains($bot->allText(), 'تمدید کاربر'), $bot->allText());
+$kernel->handle(cb($USER, ['n' => 'panel.test', 'id' => $userPanelId, 'x' => 2]));
+check('با روشن شدن تست کانفیگ، کار می‌کند', str_contains($bot->allText(), 'کانفیگ تست ساخته شد'), $bot->allText());
 
 // ------------------------------------------------------------------
-echo "\n▶ خاموش کردن ابزار کاربر\n";
+echo "\n▶ سوییچ قطع دسترسی پس از انقضا\n";
 // ------------------------------------------------------------------
 
-$flags->setUserToolsEnabled(false);
-check('ابزار کاربر خاموش شد', !$flags->isUserToolsEnabled());
+$flags->setBotEnabled(false);
+$bot->reset();
+$kernel->handle(cb($USER, ['n' => 'panel.test', 'id' => $userPanelId, 'x' => 3]));
+check('سوییچ کلی ربات، تست کانفیگ را هم می‌بندد',
+    str_contains($bot->lastCallbackAnswer(), 'غیرفعال'), $bot->lastCallbackAnswer());
+$flags->setBotEnabled(true);
 
 $bot->reset();
-$kernel->handle(cb($USER, ['n' => 'uc.new']));
-check('ساخت کاربر مسدود شد', str_contains($bot->allText(), 'ابزار ساخت کاربر موقتاً غیرفعال'), $bot->allText());
+$kernel->handle(cb($ADMIN, ['n' => 'admin.flag.toggle', 'key' => Settings::CUTOFF_ON_EXPIRE]));
+check('قطع پس از انقضا از پنل خاموش شد', !$flags->isCutoffOnExpireEnabled());
 
-$bot->reset();
-$kernel->handle(cb($USER, ['n' => 'uc.extend']));
-check('تمدید هم مسدود شد', str_contains($bot->allText(), 'ابزار ساخت کاربر موقتاً غیرفعال'), $bot->allText());
-
-$bot->reset();
-$kernel->handle(cb($USER, ['n' => 'user.credit']));
-check('منو پیام غیرفعال بودن ابزار نشان می‌دهد', str_contains($bot->allText(), 'این ابزار موقتاً غیرفعال'), $bot->allText());
-
-$flags->setUserToolsEnabled(true);
+$kernel->handle(cb($ADMIN, ['n' => 'admin.flag.toggle', 'key' => Settings::CUTOFF_ON_EXPIRE]));
+check('و دوباره روشن شد', $flags->isCutoffOnExpireEnabled());
 
 // ------------------------------------------------------------------
 echo "\n▶ صفحهٔ تنظیمات\n";
@@ -343,23 +334,32 @@ $kernel->handle(cb($ADMIN, ['n' => 'admin.settings']));
 $text = $bot->allText();
 check('وضعیت کل ربات نمایش داده شد', str_contains($text, 'کل ربات'), $text);
 check('وضعیت درگاه‌ها نمایش داده شد', str_contains($text, 'درگاه‌های پرداخت'), $text);
-check('وضعیت تمدید نمایش داده شد', str_contains($text, 'تمدید'), $text);
-check('وضعیت ابزار کاربر نمایش داده شد', str_contains($text, 'ابزار ساخت/تمدید کاربر'), $text);
+check('وضعیت همگام‌سازی نمایش داده شد', str_contains($text, 'همگام‌سازی'), $text);
+check('وضعیت تست کانفیگ نمایش داده شد', str_contains($text, 'تست کانفیگ'), $text);
+check('وضعیت قطع پس از انقضا نمایش داده شد', str_contains($text, 'قطع دسترسی پس از انقضا'), $text);
+check('وضعیت عضویت اجباری نمایش داده شد', str_contains($text, 'عضویت اجباری کانال'), $text);
 check('دکمهٔ متن غیرفعالی هست', $bot->hasButton('متن غیرفعالی'));
 check('دکمهٔ مدیریت درگاه‌ها هست', $bot->hasButton('مدیریت درگاه‌های پرداخت'));
+check('دکمهٔ تنظیم کانال هست', $bot->hasButton('تنظیم کانال'));
+check('دکمهٔ ویرایش قوانین هست', $bot->hasButton('ویرایش قوانین'));
 
 // ------------------------------------------------------------------
 echo "\n▶ toggle عمومی\n";
 // ------------------------------------------------------------------
 
 check('کلید نامعتبر null برمی‌گرداند', $flags->toggle('nonexistent_key') === null);
-check('کلید معتبر bool برمی‌گرداند', $flags->toggle(Settings::RENEWAL_ENABLED) === false);
-check('تغییر واقعاً ذخیره شد', $flags->isRenewalEnabled() === false);
-$flags->toggle(Settings::RENEWAL_ENABLED);
-check('تغییر برگشتی ذخیره شد', $flags->isRenewalEnabled() === true);
+check('کلید معتبر bool برمی‌گرداند', $flags->toggle(Settings::PANEL_SYNC) === false);
+check('تغییر واقعاً ذخیره شد', $flags->isPanelSyncEnabled() === false);
+$flags->toggle(Settings::PANEL_SYNC);
+check('تغییر برگشتی ذخیره شد', $flags->isPanelSyncEnabled() === true);
 
 $summary = $flags->summary();
-check('خلاصهٔ وضعیت کامل است', count($summary) === 7, implode(',', array_keys($summary)));
+check('خلاصهٔ وضعیت همهٔ کلیدهای سوییچ را پوشش می‌دهد',
+    count($summary) === count(Settings::TOGGLE_KEYS),
+    implode(',', array_keys($summary)));
+check('کلیدهای حذف‌شده در خلاصه نیستند',
+    !array_key_exists('user_tools', $summary) && !array_key_exists('credit', $summary),
+    implode(',', array_keys($summary)));
 
 echo "\n───────────────\n";
 echo "نتیجه: {$passed} موفق، {$failed} ناموفق\n";

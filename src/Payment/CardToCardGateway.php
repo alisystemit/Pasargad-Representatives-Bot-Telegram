@@ -24,7 +24,7 @@ final class CardToCardGateway implements PaymentGateway
 
     public function title(): string
     {
-        return '💳 کارت‌به‌کارت';
+        return '💳 کارت‌به‌کارت دستی 📝';
     }
 
     public function isEnabled(): bool
@@ -57,23 +57,23 @@ final class CardToCardGateway implements PaymentGateway
         $amount  = (int) $order['price_toman'];
 
         $lines = [
-            '🏦 <b>پرداخت کارت‌به‌کارت</b>',
+            '🏦✨ <b>پرداخت کارت‌به‌کارت دستی 📝</b>',
             '',
-            '📦 بسته: <b>' . Str::escape((string) $order['package_title']) . '</b>',
-            '💰 مبلغ قابل پرداخت: <b>' . Str::formatToman($amount) . '</b>',
-            '🔑 کد پیگیری: <code>' . Str::escape($code) . '</code>',
+            '📦🎁 بسته: <b>' . Str::escape((string) $order['package_title']) . '</b>',
+            '💰💵 مبلغ قابل پرداخت: <b>' . Str::formatToman($amount) . '</b>',
+            '🔑🧾 کد پیگیری: <code>' . Str::escape($code) . '</code>',
             '',
-            '🏦 شماره کارت: <code>' . Str::escape(Config::str('store.card_number')) . '</code>',
+            '🏦 شماره کارت: <code>' . Str::escape(Config::str('store.card_number')) . '</code> 💳',
         ];
 
         $owner = Config::str('store.card_owner');
         if ($owner !== '') {
-            $lines[] = '👤 به نام: <b>' . Str::escape($owner) . '</b>';
+            $lines[] = '👤 به نام: <b>' . Str::escape($owner) . '</b> 🙏';
         }
 
         $bank = Config::str('store.card_bank');
         if ($bank !== '') {
-            $lines[] = '🏦 بانک: ' . Str::escape($bank);
+            $lines[] = '🏦 بانک: ' . Str::escape($bank) . ' 🏛️';
         }
 
         $note = Config::str('store.card_note');
@@ -83,10 +83,10 @@ final class CardToCardGateway implements PaymentGateway
         }
 
         $lines[] = '';
-        $lines[] = '⏱ مهلت ارسال رسید: تا ' . Str::date($expire);
+        $lines[] = '⏱⏳ مهلت ارسال رسید: تا ' . Str::date($expire);
         $lines[] = '';
-        $lines[] = 'پس از واریز، <b>تصویر رسید</b> یا <b>شمارهٔ پیگیری</b> را همین‌جا بفرستید.';
-        $lines[] = 'پس از تأیید سوپرادمین، بسته به‌صورت خودکار روی پنل شما اعمال می‌شود. ✅';
+        $lines[] = '📸 پس از واریز، <b>تصویر رسید</b> یا <b>شمارهٔ پیگیری</b> را همین‌جا بفرستید! 👇';
+        $lines[] = 'پس از تأیید سوپرادمین، بسته به‌صورت خودکار روی پنل شما اعمال می‌شود! ✅🤖';
 
         return [
             'ok'              => true,

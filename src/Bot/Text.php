@@ -11,91 +11,100 @@ use Pasargad\Support\Str;
  */
 final class Text
 {
-    public static function welcome(string $name, bool $linked): string
+    public static function welcome(string $name, bool $hasPanels): string
     {
+        // متن خوش‌آمد سفارشی ادمین (اگر تنظیم شده باشد)
+        try {
+            $settings = new \Pasargad\Store\Settings();
+            $customWelcome = trim((string) $settings->get(\Pasargad\Store\Settings::WELCOME_TEXT, ''));
+            if ($customWelcome !== '') {
+                return str_replace('{name}', Str::escape($name), $customWelcome);
+            }
+        } catch (\Throwable $e) {
+            // در تست‌ها ممکن است دیتابیس نباشد — متن پیش‌فرض
+        }
+
         $lines = [
-            '👋 <b>سلام ' . Str::escape($name) . '!</b>',
+            '👋✨ <b>سلام ' . Str::escape($name) . '! 🌹</b>',
             '',
-            'به <b>ربات نمایندگان پاسارگاد</b> خوش آمدید.',
+            '🤖 به <b>🌐 ربات نمایندگان پنل 🚀</b> خوش آمدید! 🎉',
             '',
         ];
 
-        $lines[] = $linked
-            ? 'حساب شما به پنل متصل است. از منوی زیر کارهایتان را انجام دهید.'
-            : 'برای شروع، حساب پنل خود را متصل کنید تا بتوانید بسته بخرید و سرویس بگیرید.';
+        $lines[] = $hasPanels
+            ? '✅🖥️ پنل‌های شما در ربات ثبت شده است! 🎯 از منوی زیر کارهایتان را انجام دهید 👇✨'
+            : '🛒💎 برای شروع، یک <b>🖥️ پنل نمایندگی 🌟</b> بخرید تا حساب اپراتور شما در پنل ساخته شود! 🎁 '
+                . 'اگر از قبل پنلی دارید، با دکمهٔ «🔗 من پنل دارم» آن را وصل کنید! 🔌✨';
 
         return implode("\n", $lines);
     }
 
-    public static function mainMenu(bool $isAdmin, bool $linked, bool $shopOpen = true): string
+    public static function mainMenu(bool $isAdmin, bool $hasPanels, bool $shopOpen = true): string
     {
-        $lines = ['🏠 <b>منوی اصلی</b>', ''];
+        $lines = ['🏠✨ <b>منوی اصلی 🌟</b>', ''];
 
-        if (!$linked) {
-            $lines[] = '⚠️ حساب شما هنوز به پنل وصل نشده است.';
-            $lines[] = 'برای خرید بسته ابتدا باید وارد شوید.';
+        if (!$hasPanels) {
+            $lines[] = '🛒💎 هنوز پنل نمایندگی ندارید! 😔 یک بستهٔ پنل بخرید تا حساب شما ساخته شود! 🚀🎁';
             return implode("\n", $lines);
         }
 
         if (!$shopOpen) {
-            $lines[] = '🛒 فروشگاه موقتاً بسته است. لطفاً کمی بعد مراجعه کنید.';
+            $lines[] = '🛒🔴 فروشگاه موقتاً بسته است! 😴 لطفاً کمی بعد مراجعه کنید! 🙏⏳';
         }
 
-        $lines[] = 'از دکمه‌های زیر استفاده کنید 👇';
+        $lines[] = '👇✨ از دکمه‌های شیشه‌ای زیر استفاده کنید! 👇🎯';
 
         return implode("\n", $lines);
     }
 
-    public static function account(array $user): string
+    /**
+     * خلاصهٔ حساب کاربر (سطح کاربر، نه سطح پنل).
+     *
+     * @param array<string, mixed>            $user
+     * @param array<int, array<string, mixed>> $panels
+     */
+    public static function account(array $user, array $panels = []): string
     {
-        $statusLabels = [
-            'active'   => '✅ فعال',
-            'limited'  => '⚠️ محدود (سقف حجم پر شده)',
-            'disabled' => '⛔️ غیرفعال',
-            'revoked'  => '🔑 نیازمند ورود مجدد',
-            'pending'  => '⏳ متصل نشده',
-        ];
-
-        $status = (string) ($user['panel_status'] ?? 'pending');
-        $limit  = (int) ($user['panel_data_limit'] ?? 0);
-        $used   = (int) ($user['panel_used'] ?? 0);
-        $credit = (int) ($user['user_credit'] ?? 0);
-
         $lines = [
-            '👤 <b>حساب من</b>',
+            '👤✨ <b>حساب من 🎫</b>',
             '',
-            '🆔 نام کاربری پنل: <code>' . Str::escape((string) ($user['panel_username'] ?? '—')) . '</code>',
-            '📊 وضعیت: ' . ($statusLabels[$status] ?? $status),
+            '🆔📱 تلگرام: <code>' . (int) ($user['telegram_id'] ?? 0) . '</code>',
+            '👤📝 نام: ' . Str::escape((string) ($user['first_name'] ?? '—')),
         ];
 
-        if ($limit > 0) {
-            $percent = $used > 0 ? min(100, (int) round(($used / $limit) * 100)) : 0;
-            $lines[] = '💾 حجم کل: <b>' . Str::formatBytes($limit) . '</b>';
-            $lines[] = '📥 مصرف: <b>' . Str::formatBytes($used) . '</b> (' . Str::faNumber($percent) . '٪)';
-            $lines[] = self::progressBar($percent);
-        } else {
-            $lines[] = '💾 حجم کل: <b>نامحدود</b>';
-        }
-
-        if ($credit > 0) {
-            $lines[] = '🎁 اعتبار ساخت کاربر: <b>' . Str::formatBytes($credit) . '</b>';
-            if ($user['user_credit_expire'] !== null) {
-                $lines[] = '⏳ انقضای اعتبار: ' . Str::date((int) $user['user_credit_expire']);
-            }
-        }
-
-        if ($user['granted_expire_at'] !== null) {
-            $lines[] = '📅 اعتبار حجم خریداری‌شده تا: ' . Str::date((int) $user['granted_expire_at']);
+        if (($user['username'] ?? null) !== null) {
+            $lines[] = '📱💬 یوزرنیم: @' . Str::escape((string) $user['username']);
         }
 
         $lines[] = '';
-        $lines[] = '🧾 سفارش‌ها: <b>' . Str::faNumber((int) ($user['orders_count'] ?? 0)) . '</b>';
-        $lines[] = '💰 مجموع خرید: <b>' . Str::formatToman((int) ($user['total_paid'] ?? 0)) . '</b>';
+        $lines[] = '💰👛 کیف پول: <b>' . Str::formatToman((int) ($user['wallet_balance'] ?? 0)) . '</b> ✨';
+        $lines[] = '';
+        $lines[] = '🖥️🌐 <b>پنل‌های من: ' . Str::faNumber(count($panels)) . ' 🎯</b>';
 
-        if ($user['panel_synced_at'] !== null) {
+        if ($panels === []) {
+            $lines[] = '📭😔 پنلی ثبت نشده است! 🈳';
+        } else {
+            $totalLimit = 0;
+            $totalUsed  = 0;
+
+            foreach ($panels as $panel) {
+                $totalLimit += (int) $panel['data_limit'];
+                $totalUsed  += (int) $panel['used_traffic'];
+
+                $lines[] = '• ' . \Pasargad\Store\PanelRepository::statusLabel($panel) . ' '
+                    . Str::escape((string) $panel['panel_username'])
+                    . ' — ' . Str::formatBytes((int) $panel['data_limit']);
+            }
+
             $lines[] = '';
-            $lines[] = '🕒 آخرین بروزرسانی از پنل: ' . Str::date((int) $user['panel_synced_at']);
+            $lines[] = '💾 مجموع سقف: <b>' . Str::formatBytes($totalLimit) . '</b> 📦';
+            $lines[] = '📥 مجموع مصرف: <b>' . Str::formatBytes($totalUsed) . '</b> 📊';
         }
+
+        $lines[] = '';
+        $lines[] = '🧾✨ سفارش‌ها: <b>' . Str::faNumber((int) ($user['orders_count'] ?? 0)) . '</b> 📦';
+        $lines[] = '💰✨ مجموع خرید: <b>' . Str::formatToman((int) ($user['total_paid'] ?? 0)) . '</b> 🎉';
+        $lines[] = '📅🗓 عضویت: ' . Str::date((int) $user['created_at']) . ' 🎫';
 
         return implode("\n", $lines);
     }
@@ -109,77 +118,29 @@ final class Text
         return $bar . ' ' . Str::faNumber($percent) . '٪';
     }
 
-    public static function loginAskUsername(): string
-    {
-        return implode("\n", [
-            '🔐 <b>اتصال به پنل</b>',
-            '',
-            'برای خرید بسته باید به پنل وصل شوید.',
-            '',
-            '۱️⃣ نام کاربری ادمین پنل خود را ارسال کنید.',
-            '',
-            'ℹ️ نام کاربری همان چیزی است که در پنل با آن وارد می‌شوید.',
-        ]);
-    }
-
-    public static function loginAskPassword(): string
-    {
-        return implode("\n", [
-            '🔑 <b>رمز عبور پنل</b>',
-            '',
-            '۲️⃣ رمز عبور حساب ادمین خود را بفرستید.',
-            '',
-            '🔒 رمز شما به‌صورت <b>رمزنگاری‌شده</b> ذخیره می‌شود و فقط برای',
-            'اعمال خودکار بسته‌ها روی پنل استفاده می‌گردد.',
-            '',
-            'پس از ارسال، این پیام را از حافظهٔ چت خود پاک کنید.',
-        ]);
-    }
-
-    public static function loginSuccess(array $admin): string
-    {
-        $limit = (int) ($admin['data_limit'] ?? 0);
-        $used  = (int) ($admin['used_traffic'] ?? 0);
-
-        $lines = [
-            '✅ <b>ورود موفق بود!</b>',
-            '',
-            '🆔 حساب: <code>' . Str::escape((string) ($admin['username'] ?? '')) . '</code>',
-            '💾 حجم: <b>' . Str::formatBytes($limit) . '</b>',
-            '📥 مصرف: <b>' . Str::formatBytes($used) . '</b>',
-        ];
-
-        if (isset($admin['role']['name'])) {
-            $lines[] = '🎭 نقش: ' . Str::escape((string) $admin['role']['name']);
-        }
-
-        $lines[] = '';
-        $lines[] = 'حالا می‌توانید از فروشگاه بسته بخرید. 🛒';
-
-        return implode("\n", $lines);
-    }
-
-    public static function loginFailed(string $message): string
-    {
-        return "❌ <b>ورود ناموفق بود</b>\n\n" . Str::escape($message)
-            . "\n\nلطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.";
-    }
+    // ------------------------------------------------------------------
+    // فروشگاه
+    // ------------------------------------------------------------------
 
     public static function shopList(string $kind): string
     {
-        $title = $kind === \Pasargad\Store\PackageRepository::KIND_USER_CREDIT
-            ? '🎁 بسته‌های اعتبار کاربر'
-            : '📦 بسته‌های حجم پنل';
+        $isAgency = $kind === \Pasargad\Store\PackageRepository::KIND_AGENCY;
 
-        return $title . "\n\nیکی از بسته‌های زیر را انتخاب کنید 👇";
+        $title = $isAgency ? '🖥️✨ بسته‌های پنل نمایندگی 🌟💎' : '⚡️🔋 بسته‌های شارژ و تمدید پنل 🔄💳';
+
+        return $title . "\n\n"
+            . ($isAgency
+                ? '🎉 با خرید این بسته‌ها یک حساب اپراتور تازه در پنل برای شما ساخته می‌شود! 👑🚀'
+                : '🔋✨ حجم و اعتبار پنل‌های موجود شما افزایش پیدا می‌کند! 📈🎁')
+            . "\n\n👇🎯 یکی از بسته‌های زیر را انتخاب کنید 👇✨";
     }
 
     public static function packageDetails(array $package): string
     {
-        $isCredit = $package['kind'] === \Pasargad\Store\PackageRepository::KIND_USER_CREDIT;
+        $isAgency = $package['kind'] === \Pasargad\Store\PackageRepository::KIND_AGENCY;
 
         $lines = [
-            '📦 <b>' . Str::escape((string) $package['title']) . '</b>',
+            '📦✨ <b>' . Str::escape((string) $package['title']) . ' 🌟</b>',
             '',
         ];
 
@@ -198,76 +159,68 @@ final class Text
             $lines[] = '📅 اعتبار: <b>' . Str::faNumber((int) $package['duration_days']) . ' روز</b>';
         }
 
+        $lines[] = '👥 سقف کاربران: <b>' . \Pasargad\Store\PackageRepository::userLimitLabel($package['max_users'] ?? 0) . '</b> 🎯';
+
         $lines[] = '';
-        $lines[] = '💰 قیمت: <b>' . Str::formatToman((int) $package['price_toman']) . '</b>';
+        $lines[] = '💰 قیمت: <b>' . Str::formatToman((int) $package['price_toman']) . '</b> 💵';
         $lines[] = '';
 
-        $lines[] = $isCredit
-            ? 'ℹ️ این بسته به‌عنوان <b>اعتبار ساخت کاربر</b> به شما داده می‌شود و'
-                . ' می‌توانید با آن برای مشتریان خود کاربر بسازید.'
-            : 'ℹ️ این بسته <b>مستقیماً</b> حجم حساب پنل شما را افزایش می‌دهد.';
+        $lines[] = $isAgency
+            ? 'ℹ️ این بسته یک <b>پنل نمایندگی تازه</b> برای شما می‌سازد: حساب ادمین با نقش '
+                . 'اپراتور در پنل، به‌همراه آدرس ورود، نام کاربری و رمز عبور.'
+            : 'ℹ️ این بسته <b>حجم و اعتبار</b> یکی از پنل‌های موجود شما را افزایش می‌دهد.';
 
         return implode("\n", $lines);
     }
 
-    public static function confirmPurchase(array $package): string
+    /**
+     * @param string $panelUsername نام پنل هدف (فقط برای بستهٔ شارژ)
+     */
+    public static function confirmPurchase(array $package, string $panelUsername = ''): string
     {
-        return implode("\n", [
-            '🛒 <b>تأیید خرید</b>',
+        $lines = [
+            '🛒✨ <b>تأیید خرید ✅</b>',
             '',
-            '📦 بسته: <b>' . Str::escape((string) $package['title']) . '</b>',
-            '💾 حجم: <b>' . Str::faNumber((float) $package['volume_gb'], 1) . ' گیگابایت</b>',
-            '📅 اعتبار: <b>' . Str::faNumber((int) $package['duration_days']) . ' روز</b>',
-            '💰 مبلغ: <b>' . Str::formatToman((int) $package['price_toman']) . '</b>',
-            '',
-            'مطمئن هستید؟ می‌خواهید پرداخت را ادامه دهید؟',
-        ]);
-    }
+            '📦🎁 بسته: <b>' . Str::escape((string) $package['title']) . '</b>',
+            '💾 حجم: <b>' . Str::faNumber((float) $package['volume_gb'], 1) . ' گیگابایت</b> 📦',
+            '📅 اعتبار: <b>' . Str::faNumber((int) $package['duration_days']) . ' روز</b> ⏳',
+            '👥 سقف کاربران: <b>' . \Pasargad\Store\PackageRepository::userLimitLabel($package['max_users'] ?? 0) . '</b> 🎯',
+            '💰 مبلغ: <b>' . Str::formatToman((int) $package['price_toman']) . '</b> 💵',
+        ];
 
-    public static function orderCreated(array $order): string
-    {
-        return implode("\n", [
-            '🧾 <b>سفارش شما ثبت شد</b>',
-            '',
-            'کد سفارش: <code>' . Str::escape((string) $order['code']) . '</code>',
-            '📦 بسته: ' . Str::escape((string) $order['package_title']),
-            '💰 مبلغ: <b>' . Str::formatToman((int) $order['price_toman']) . '</b>',
-            '',
-            'روش پرداخت را انتخاب کنید 👇',
-        ]);
+        if ($panelUsername !== '') {
+            $lines[] = '🖥️ پنل مقصد: <code>' . Str::escape($panelUsername) . '</code> 🌐';
+        }
+
+        $lines[] = '';
+        $lines[] = '👇 مطمئن هستید؟ می‌خواهید پرداخت را ادامه دهید؟ 💳✅';
+
+        return implode("\n", $lines);
     }
 
     public static function paymentMethods(): string
     {
-        return "💳 <b>انتخاب روش پرداخت</b>\n\nکدام روش را ترجیح می‌دهید؟";
+        return "💳✨ <b>انتخاب روش پرداخت 💰</b>\n\n💎 کدام روش را ترجیح می‌دهید؟ 👇😊";
     }
+
+    // ------------------------------------------------------------------
+    // سفارش‌ها
+    // ------------------------------------------------------------------
 
     public static function orderList(array $orders): string
     {
         if ($orders === []) {
-            return '📭 هنوز سفارشی ثبت نکرده‌اید.';
+            return '📭😔 هنوز سفارشی ثبت نکرده‌اید! 🛒👇';
         }
 
-        $statusLabels = [
-            'created'          => '🆕 ایجاد شده',
-            'awaiting_payment' => '⏳ در انتظار پرداخت',
-            'paid'             => '💰 پرداخت شده (در حال اجرا)',
-            'applying'         => '⚙️ در حال اجرا',
-            'applied'          => '✅ اجرا شد',
-            'failed'           => '❌ ناموفق',
-            'rejected'         => '🚫 پرداخت رد شد',
-            'cancelled'        => '🚫 لغو شده',
-            'refunded'         => '↩️ بازگشت وجه',
-        ];
-
-        $lines = ['🧾 <b>سفارش‌های من</b>', ''];
+        $lines = ['🧾✨ <b>سفارش‌های من 📦</b>', ''];
 
         foreach ($orders as $order) {
-            $lines[] = '<b>' . Str::escape((string) $order['code']) . '</b>';
-            $lines[] = '📦 ' . Str::escape((string) $order['package_title']);
+            $lines[] = '🔖 <b>' . Str::escape((string) $order['code']) . '</b>';
+            $lines[] = '📦🎁 ' . Str::escape((string) $order['package_title']);
             $lines[] = '💰 ' . Str::formatToman((int) $order['price_toman'])
-                . '  •  ' . ($statusLabels[(string) $order['status']] ?? (string) $order['status']);
-            $lines[] = '🕒 ' . Str::date((int) $order['created_at']);
+                . '  •  ' . self::statusLabel((string) $order['status']);
+            $lines[] = '🕒📅 ' . Str::date((int) $order['created_at']);
             $lines[] = '';
         }
 
@@ -297,9 +250,6 @@ final class Text
         ];
     }
 
-    /**
-     * برچسب وضعیت با بازگشت به خود وضعیت در صورت ناشناخته بودن.
-     */
     public static function statusLabel(string $status): string
     {
         return self::statusLabels()[$status] ?? $status;
@@ -307,26 +257,41 @@ final class Text
 
     public static function orderDetails(array $order): string
     {
-        $statusLabels = [
-            'created'          => '🆕 ایجاد شده',
-            'awaiting_payment' => '⏳ در انتظار پرداخت',
-            'paid'             => '💰 پرداخت شده — در صف اجرا',
-            'applying'         => '⚙️ در حال اجرا روی پنل',
-            'applied'          => '✅ با موفقیت اجرا شد',
-            'failed'           => '❌ ناموفق',
-            'rejected'         => '🚫 پرداخت رد شد',
-            'cancelled'        => '🚫 لغو شده',
-            'refunded'         => '↩️ بازگشت وجه',
+        $lines = [
+            '🧾✨ <b>جزئیات سفارش 📋</b>',
+            '',
+            '🔖 کد: <code>' . Str::escape((string) $order['code']) . '</code>',
+            '📦🎁 ' . Str::escape((string) $order['package_title']),
         ];
 
-        $lines = [
-            '🧾 <b>جزئیات سفارش</b>',
-            '',
-            'کد: <code>' . Str::escape((string) $order['code']) . '</code>',
-            '📦 ' . Str::escape((string) $order['package_title']),
-            '💰 ' . Str::formatToman((int) $order['price_toman']),
-            '📊 وضعیت: ' . ($statusLabels[(string) $order['status']] ?? (string) $order['status']),
-        ];
+        // تخفیف باید اینجا هم دیده شود، نه فقط در فاکتور.
+        //
+        // دلیل: کاربری که با کد ۲۰٪ خرید کرده، در این صفحه فقط مبلغ کم‌شده را
+        // می‌بیند و نمی‌داند چرا. بعداً شکایت می‌کند که «قیمت سایت با فاکتور
+        // فرق دارد» — و حق دارد چون هیچ‌جا علتش نوشته نشده.
+        $price    = (int) ($order['price_toman'] ?? 0);
+        $discount = (int) ($order['discount_toman'] ?? 0);
+
+        if ($discount > 0) {
+            $original = (int) ($order['original_price_toman'] ?? 0);
+
+            if ($original < $price + $discount) {
+                $original = $price + $discount;
+            }
+
+            $lines[] = '💰 قیمت پایه: ' . Str::formatToman($original);
+
+            if (!empty($order['coupon_code'])) {
+                $lines[] = '🎟️ کد تخفیف: <code>' . Str::escape((string) $order['coupon_code']) . '</code>';
+            } elseif (!empty($order['referred_by'])) {
+                $lines[] = '🎁 پاداش معرفی اعمال شد';
+            }
+
+            $lines[] = '🎉 تخفیف: <b>−' . Str::formatToman($discount) . '</b>';
+        }
+
+        $lines[] = '💰💵 ' . Str::formatToman($price);
+        $lines[] = '📊 وضعیت: ' . self::statusLabel((string) $order['status']);
 
         if ((int) ($order['applied_volume'] ?? 0) > 0) {
             $lines[] = '💾 حجم اجراشده: <b>' . Str::formatBytes((int) $order['applied_volume']) . '</b>';
@@ -341,87 +306,191 @@ final class Text
             $lines[] = '⚠️ خطا: ' . Str::escape((string) $order['error']);
         }
 
-        if ((int) ($order['attempts'] ?? 0) > 0 && $order['status'] === 'failed') {
+        if ((int) ($order['attempts'] ?? 0) > 0 && ($order['status'] ?? '') === 'failed') {
             $lines[] = '🔁 تلاش‌های ناموفق: ' . Str::faNumber((int) $order['attempts']);
-            if ($order['next_attempt_at'] !== null) {
+
+            if (($order['next_attempt_at'] ?? null) !== null) {
                 $lines[] = '⏱ تلاش بعدی: ' . Str::date((int) $order['next_attempt_at']);
             }
         }
 
         $lines[] = '';
-        $lines[] = '🕒 ثبت: ' . Str::date((int) $order['created_at']);
+        $lines[] = '🕒 ثبت: ' . Str::date((int) ($order['created_at'] ?? 0)) . ' 📝';
 
-        if ($order['paid_at'] !== null) {
-            $lines[] = '💳 پرداخت: ' . Str::date((int) $order['paid_at']);
+        // `??` نه `<>`: این متد با آرایه‌های ناقص هم صدا زده می‌شود و کلید
+        // غایب نباید Warning بسازد (که در تست دیده شد).
+        if (($order['paid_at'] ?? null) !== null) {
+            $lines[] = '💳 پرداخت: ' . Str::date((int) $order['paid_at']) . ' ✅';
         }
-        if ($order['applied_at'] !== null) {
-            $lines[] = '✅ اجرا: ' . Str::date((int) $order['applied_at']);
+
+        if (($order['applied_at'] ?? null) !== null) {
+            $lines[] = '✅ اجرا: ' . Str::date((int) $order['applied_at']) . ' 🎉';
+        }
+
+        if (($order['payment_method'] ?? null) !== null && trim((string) $order['payment_method']) !== '') {
+            $lines[] = '💳 روش: ' . Str::escape((string) $order['payment_method']);
         }
 
         return implode("\n", $lines);
     }
 
+    // ------------------------------------------------------------------
+    // عمومی
+    // ------------------------------------------------------------------
+
     public static function notFound(): string
     {
-        return '🤷 موردی پیدا نشد.';
+        return '🤷😔 موردی پیدا نشد! 🔍';
     }
 
     /**
-     * پیام فروشگاه بسته.
-     *
-     * در یک نقطه تعریف می‌شود تا همهٔ مسیرها (صفحهٔ فروشگاه، صفحهٔ بسته،
-     * ساخت سفارش و شروع پرداخت) پیام یکسان بدهند.
+     * پیام شکست در بررسی اطلاعات ورود پنل (جریان «من پنل دارم»).
      */
+    public static function loginFailed(string $message): string
+    {
+        return "❌🔑 <b>اطلاعات پنل درست نیست! 😔</b>\n\n" . Str::escape($message)
+            . "\n\n🔍 نام کاربری و رمز عبور را بررسی کنید و دوباره تلاش کنید! 🔄";
+    }
+
     public static function shopClosed(): string
     {
-        return "🛒 <b>فروشگاه موقتاً بسته است</b>\n\n"
-            . "در حال حاضر امکان ثبت سفارش جدید وجود ندارد.\n"
-            . "برای اطلاع از زمان بازگشایی با پشتیبانی در تماس باشید.";
+        return "🛒🔴 <b>فروشگاه موقتاً بسته است! 😴</b>\n\n"
+            . "در حال حاضر امکان ثبت سفارش جدید وجود ندارد! ⏳\n"
+            . "برای اطلاع از زمان بازگشایی با پشتیبانی در تماس باشید. 📞🙏";
     }
 
     public static function blocked(string $reason): string
     {
-        return "🚫 <b>دسترسی شما مسدود است</b>\n\n"
-            . 'دلیل: ' . Str::escape($reason)
-            . "\n\nبرای اطلاعات بیشتر با پشتیبانی تماس بگیرید.";
+        return "🚫⛔️ <b>دسترسی شما مسدود است! 🔒</b>\n\n"
+            . '📝 دلیل: ' . Str::escape($reason)
+            . "\n\nبرای اطلاعات بیشتر با پشتیبانی تماس بگیرید. 📞🙏";
     }
 
     public static function onlyAdmins(): string
     {
-        return '⛔️ این بخش مخصوص سوپرادمین است.';
+        return '⛔️🛠 این بخش مخصوص سوپرادمین است! 👑';
     }
 
     public static function support(): string
     {
+        try {
+            $settings = new \Pasargad\Store\Settings();
+            $custom = trim((string) $settings->get(\Pasargad\Store\Settings::SUPPORT_TEXT, ''));
+            if ($custom !== '') {
+                return $custom;
+            }
+        } catch (\Throwable $e) {
+        }
         $link = \Pasargad\Support\Config::str('notifications.support_link');
 
-        return "📞 <b>پشتیبانی</b>\n\n"
-            . 'در صورت هر مشکلی با ما در تماس باشید:\n'
+        return "📞✨ <b>پشتیبانی 💬🆘</b>\n\n"
+            . '📩 در صورت هر مشکلی با ما در تماس باشید: 🫶✨' . "\n"
             . ($link !== '' ? $link : '—');
     }
 
     public static function help(): string
     {
+        try {
+            $settings = new \Pasargad\Store\Settings();
+            $custom = trim((string) $settings->get(\Pasargad\Store\Settings::HELP_TEXT, ''));
+            if ($custom !== '') {
+                return $custom;
+            }
+        } catch (\Throwable $e) {
+        }
         return implode("\n", [
-            'ℹ️ <b>راهنمای ربات</b>',
+            'ℹ️✨ <b>راهنمای ربات 🤖📖</b>',
             '',
-            'این ربات برای نمایندگان و ادمین‌های پنل پاسارگاد است و کارهای زیر را انجام می‌دهد:',
+            '🌟 این ربات مخصوص نمایندگان پنل است و کارهای زیر را انجام می‌دهد: 🎯',
             '',
-            '۱️⃣ اتصال حساب پنل با نام کاربری و رمز عبور',
-            '۲️⃣ خرید بستهٔ حجمی (افزایش مستقیم سقف حجم پنل شما)',
-            '۳️⃣ خرید بستهٔ اعتبار برای ساخت کاربران مشتریان',
-            '۴️⃣ پرداخت با کارت‌به‌کارت یا ارز دیجیتال',
-            '۵️⃣ اجرای <b>خودکار</b> بسته روی پنل بلافاصله پس از تأیید پرداخت',
+            '1️⃣ خرید <b>🖥️ پنل نمایندگی 👑</b>؛ حساب اپراتور شما در پنل ساخته می‌شود 🚀',
+            '2️⃣ نمایش کامل اطلاعات پنل: 📋 آدرس ورود، نام کاربری، رمز، حجم و زمان ⏳',
+            '3️⃣ شارژ و تمدید هر یک از پنل‌های شما (هر کاربر چند پنل می‌تواند داشته باشد) 🔋💳',
+            '4️⃣ دریافت <b>🧪 تست کانفیگ 🎁</b> روی پنل خودتان ✨',
+            '5️⃣ اتصال پنلی که از قبل دارید با دکمهٔ «🔗 من پنل دارم» 🔌',
+            '6️⃣ پرداخت با کارت‌به‌کارت 💳 یا ارز دیجیتال 🪙 و اجرای خودکار پس از تأیید ✅',
+            '7️⃣ مشاهده 💰 کیف پول 👛 و 🧾 تاریخچه پرداخت‌ها 📊',
             '',
-            'دستورها:',
-            '/start — منوی اصلی',
-            '/shop — فروشگاه',
-            '/account — حساب من',
-            '/orders — سفارش‌های من',
-            '/buy — خرید با کد سفارش',
-            '/login — اتصال مجدد به پنل',
-            '/logout — قطع اتصال پنل',
-            '/help — همین راهنما',
+            '⚠️⛔️ پس از اتمام اعتبار پنل، دسترسی همهٔ کاربران آن پنل قطع می‌شود! 🔒',
+            '',
+            '📜 دستورها: ⌨️',
+            '/start — 🏠 منوی اصلی ✨',
+            '/shop — 🛒 فروشگاه 💎',
+            '/panels — 🖥️ پنل‌های من 🌐',
+            '/account — 👤 حساب من 🎫',
+            '/orders — 🧾 سفارش‌های من 📦',
+            '/payments — 💳 تاریخچه پرداخت‌ها 📊',
+            '/wallet — 💰 کیف پول 👛',
+            '/test — 🧪 کانفیگ‌های تست 🎁',
+            '/rules — 📜 قوانین و شرایط ⚖️',
+            '/buy — 🛒 خرید با کد سفارش 🎫',
+            '/login — 🔗 ثبت پنل موجود 🔌',
+            '/help — ℹ️ همین راهنما 📖',
         ]);
+    }
+
+    /**
+     * متن کیف پول کاربر 💰
+     *
+     * @param array<string, mixed> $user
+     * @param array<int, array<string, mixed>> $txns
+     */
+    public static function wallet(array $user, array $txns = []): string
+    {
+        $lines = [
+            '💰✨ <b>کیف پول من 👛</b> ✨💰',
+            '',
+            '💵 موجودی فعلی: <b>' . Str::formatToman((int) ($user['wallet_balance'] ?? 0)) . '</b> 🪙',
+            '',
+        ];
+
+        if ($txns === []) {
+            $lines[] = '📭 هنوز تراکنشی ثبت نشده است! 😊';
+        } else {
+            $lines[] = '📊 <b>آخرین تراکنش‌ها: 🧾</b>';
+            $lines[] = '';
+            foreach (array_slice($txns, 0, 10) as $txn) {
+                $amount = (int) ($txn['amount'] ?? 0);
+                $icon = $amount >= 0 ? '🟢➕' : '🔴➖';
+                $lines[] = $icon . ' <b>' . Str::formatToman($amount) . '</b> 📅 ' . Str::date((int) ($txn['created_at'] ?? 0));
+                if (!empty($txn['note'])) {
+                    $lines[] = '   📝 ' . Str::escape((string) $txn['note']);
+                }
+            }
+        }
+
+        $lines[] = '';
+        $lines[] = 'ℹ️💡 برای شارژ کیف پول با پشتیبانی در تماس باشید! 📞✨';
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * تاریخچه پرداخت‌های کاربر 🧾
+     *
+     * @param array<int, array<string, mixed>> $payments
+     */
+    public static function paymentHistory(array $payments): string
+    {
+        if ($payments === []) {
+            return '💳📭 هنوز پرداختی ثبت نکرده‌اید! 😊🛒';
+        }
+
+        $lines = ['💳✨ <b>تاریخچه پرداخت‌ها 🧾📊</b>', ''];
+        foreach (array_slice($payments, 0, 15) as $payment) {
+            $statusIcon = match ((string) ($payment['status'] ?? '')) {
+                'confirmed', 'finished' => '✅',
+                'failed', 'expired' => '❌',
+                default => '⏳',
+            };
+            $lines[] = $statusIcon . ' 💰 <b>' . Str::formatToman((int) ($payment['amount_toman'] ?? 0)) . '</b>'
+                . ' • 💳 ' . Str::escape((string) ($payment['method'] ?? '—'))
+                . ' • 📅 ' . Str::date((int) ($payment['created_at'] ?? 0));
+            if (!empty($payment['external_id'])) {
+                $lines[] = '   🔗 <code>' . Str::escape((string) $payment['external_id']) . '</code>';
+            }
+        }
+
+        return implode("\n", $lines);
     }
 }

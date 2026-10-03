@@ -73,9 +73,57 @@ try {
             }
             break;
 
+        case 'set-webhook-admin':
+            // وبهوک دوم برای ربات مدیریتی (اختیاری)
+            $adminToken = trim(Config::str('admin_bot_token', ''));
+
+            if ($adminToken === '') {
+                out('admin_bot_token در config.php تنظیم نشده است — وبهوک مدیریتی غیرفعال است.', 'warn');
+                out('برای فعال‌سازی: یک ربات دوم از @BotFather بسازید و توکنش را بگذارید.', 'info');
+                break;
+            }
+
+            $adminSecret = trim(Config::str('admin_webhook_secret', ''));
+
+            if ($adminSecret === '' || $adminSecret === 'CHANGE-THIS-RANDOM-SECRET') {
+                out('ابتدا admin_webhook_secret را در config.php مقداردهی کنید (یک رشتهٔ تصادفی).', 'warn');
+                out('پیشنهاد: php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"', 'info');
+                break;
+            }
+
+            $adminUrl  = rtrim(Config::str('base_url'), '/') . '/admin.php';
+            $adminBot  = new \Pasargad\Telegram\BotApi($adminToken);
+            $result    = $adminBot->call('setWebhook', [
+                'url'                 => $adminUrl,
+                'secret_token'        => $adminSecret,
+                'allowed_updates'     => json_encode(['message', 'callback_query']),
+                'drop_pending_updates' => 'true',
+                'max_connections'     => '10',
+            ]);
+
+            if ($result['ok'] ?? false) {
+                out('وبهوک مدیریتی تنظیم شد: ' . $adminUrl, 'ok');
+                out('فقط پیام‌های سوپرادمین‌ها به این وبهوک می‌رسند.', 'info');
+            } else {
+                out('خطا: ' . json_encode($result, JSON_UNESCAPED_UNICODE), 'err');
+            }
+            break;
+
         case 'webhook-info':
             $bot = new \Pasargad\Telegram\BotApi(Config::str('bot_token'));
             out(json_encode($bot->call('getWebhookInfo'), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), 'info');
+            break;
+
+        case 'webhook-info-admin':
+            $adminToken = trim(Config::str('admin_bot_token', ''));
+
+            if ($adminToken === '') {
+                out('admin_bot_token تنظیم نشده است.', 'warn');
+                break;
+            }
+
+            $adminBot = new \Pasargad\Telegram\BotApi($adminToken);
+            out(json_encode($adminBot->call('getWebhookInfo'), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), 'info');
             break;
 
         case 'health':
@@ -91,9 +139,42 @@ try {
             require __DIR__ . '/selftest.php';
             break;
 
+        case 'backup':
+            // قبل از هر تغییر پرریسک (مایگریشن جدید، تغییر کد) این را اجرا کنید:
+            //   php tools/cli.php backup
+            if (isset($options['keep'])) {
+                $keep = max(2, min(200, (int) $options['keep']));
+                (new \Pasargad\Store\Settings())->set(\Pasargad\Store\Settings::BACKUP_KEEP, (string) $keep);
+                out('سقف نگهداری بکاپ روی ' . $keep . ' نسخه تنظیم شد.', 'ok');
+            }
+
+            if (isset($options['prune'])) {
+                $pruned = \Pasargad\Support\Backup::pruneOld();
+                out('پاک‌سازی: ' . $pruned['removed'] . ' فایل حذف شد، ' . $pruned['kept'] . ' فایل باقی است.', 'ok');
+                break;
+            }
+
+            $backup = \Pasargad\Support\Backup::run();
+            if ($backup['ok'] ?? false) {
+                out('بکاپ ساخته شد: ' . ($backup['path'] ?? '') . ' (' . ($backup['size'] ?? 0) . ' بایت)', 'ok');
+                out('سقف نگهداری: ' . \Pasargad\Support\Backup::keepCount() . ' نسخه', 'info');
+            } else {
+                out('خطا: ' . ($backup['message'] ?? ''), 'err');
+                exit(1);
+            }
+            break;
+
         case 'help':
         default:
-            out("دستورهای موجود:\n  migrate\n  set-webhook\n  webhook-info\n  health\n  selftest");
+            out("دستورهای موجود:\n"
+                . "  migrate\n"
+                . "  set-webhook\n"
+                . "  set-webhook-admin      وبهوک ربات مدیریتی (اختیاری)\n"
+                . "  webhook-info\n"
+                . "  webhook-info-admin\n"
+                . "  health\n"
+                . "  selftest\n"
+                . "  backup [--keep=N] [--prune]");
             break;
     }
 } catch (Throwable $e) {

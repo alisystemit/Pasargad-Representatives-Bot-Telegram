@@ -21,11 +21,13 @@ use Pasargad\Panel\PasarGuardClient;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
 use Pasargad\Store\Settings;
+use Pasargad\Store\PanelRepository;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
 use Pasargad\Support\Crypto;
 use Pasargad\Support\Db;
 use Pasargad\Support\Migrator;
+use Pasargad\Support\Str;
 
 $ok  = 0;
 $bad = 0;
@@ -50,7 +52,7 @@ function line(string $status, string $label, string $detail = ''): void
 }
 
 echo PHP_EOL . "════════════════════════════════════════" . PHP_EOL;
-echo "  گزارش سلامت ربات نمایندگان پاسارگاد";
+echo "  گزارش سلامت ربات نمایندگان پنل 💚";
 echo PHP_EOL . "════════════════════════════════════════" . PHP_EOL . PHP_EOL;
 
 // ------------------------------------------------------------------
@@ -106,9 +108,12 @@ try {
 
     $orders  = new OrderRepository($db);
     $users   = new UserRepository($db);
+    $panels  = new PanelRepository($db);
     $packages = new PackageRepository($db);
 
     line('ok', 'تعداد کاربران', (string) $users->countAll());
+    line('ok', 'تعداد پنل‌های نمایندگی', (string) $panels->countAll());
+    line('ok', 'تعداد نمایندگان', (string) count($users->listLinkedAdmins()));
     line('ok', 'تعداد بسته‌های فعال', (string) count($packages->activePackages()));
     line('ok', 'تعداد سفارش‌ها', (string) $orders->countAll());
 
@@ -120,6 +125,17 @@ try {
 
     $failed = $orders->countAll(OrderRepository::STATUS_FAILED);
     line($failed === 0 ? 'ok' : 'warn', 'سفارش‌های ناموفق', (string) $failed);
+
+    // پنل‌های منقضی که کاربرانشان هنوز فعال‌اند = درآمد از دست رفته.
+    $expiredPending = 0;
+    foreach ($panels->listAll(200) as $row) {
+        if (PanelRepository::isExpired($row) && $row['cutoff_done_at'] === null) {
+            $expiredPending++;
+        }
+    }
+
+    line($expiredPending === 0 ? 'ok' : 'warn', 'پنل‌های منقضی بدون قطع دسترسی',
+        $expiredPending === 0 ? 'ندارد' : "{$expiredPending} پنل — از پنل مدیریت اقدام کنید");
 } catch (\Throwable $e) {
     line('bad', 'دیتابیس', $e->getMessage());
 }
@@ -145,12 +161,15 @@ if ($ownerUser !== '' && $ownerPass !== '') {
     try {
         $panel  = new PasarGuardClient();
         $result = $panel->testConnection($ownerUser, $ownerPass);
-        line($result['ok'] ? 'ok' : 'warn', 'ورود به پنل با حساب پشتیبان', $result['message']);
+        line($result['ok'] ? 'ok' : 'warn', 'ورود به پنل با حساب سازنده', $result['message']);
     } catch (\Throwable $e) {
-        line('warn', 'ورود به پنل با حساب پشتیبان', $e->getMessage());
+        line('warn', 'ورود به پنل با حساب سازنده', $e->getMessage());
     }
 } else {
-    line('warn', 'حساب پشتیبان پنل', 'panel.owner_username/password تنظیم نشده (برای تست اتصال)');
+    // این فقط یک هشدار نیست: بدون این اکانت، بستهٔ «پنل نمایندگی» قابل فروش
+    // نیست چون ربات نمی‌تواند حساب اپراتور جدید بسازد.
+    line('bad', 'حساب سازندهٔ پنل',
+        'panel.owner_username/password تنظیم نشده — خرید پنل نمایندگی غیرفعال است');
 }
 
 // ------------------------------------------------------------------
@@ -198,7 +217,11 @@ try {
         $flags->isBotEnabled() ? 'فعال' : '⚠️ غیرفعال — کاربران پیام تعیین‌شده را می‌بینند');
 
     foreach ($flags->gatewayStatuses() as $name => $status) {
-        $label = $name === 'card2card' ? 'سوییچ کارت‌به‌کارت' : 'سوییچ ارز دیجیتال';
+        $label = match ($name) {
+            'card2card'   => 'سوییچ کارت‌به‌کارت',
+            'autocard'    => 'سوییچ کارت‌به‌کارت خودکار',
+            default       => 'سوییچ ارز دیجیتال',
+        };
         $note  = $status['enabled'] ? 'فعال' : 'غیرفعال';
 
         if (!$status['configured']) {
@@ -211,8 +234,17 @@ try {
     line($flags->isRenewalEnabled() ? 'ok' : 'warn', 'تمدید',
         $flags->isRenewalEnabled() ? 'فعال' : 'غیرفعال');
 
-    line($flags->isUserToolsEnabled() ? 'ok' : 'warn', 'ابزار ساخت/تمدید کاربر',
-        $flags->isUserToolsEnabled() ? 'فعال' : 'غیرفعال');
+    line($flags->isPanelSyncEnabled() ? 'ok' : 'warn', 'همگام‌سازی خودکار پنل‌ها',
+        $flags->isPanelSyncEnabled() ? 'فعال' : 'غیرفعال');
+
+    line($flags->isTestConfigEnabled() ? 'ok' : 'warn', 'دریافت تست کانفیگ',
+        $flags->isTestConfigEnabled() ? 'فعال' : 'غیرفعال');
+
+    line($flags->isCutoffOnExpireEnabled() ? 'ok' : 'warn', 'قطع دسترسی پس از انقضا',
+        $flags->isCutoffOnExpireEnabled() ? 'فعال' : 'غیرفعال');
+
+    line($flags->isChannelEnforced() ? 'ok' : 'warn', 'عضویت اجباری کانال',
+        $flags->isChannelEnforced() ? 'اجباری' : 'غیرفعال');
 
     $notice = $flags->disabledNotice();
     line('ok', 'متن غیرفعالی', mb_strlen($notice) . ' کاراکتر');
@@ -224,16 +256,69 @@ try {
 echo PHP_EOL . "▶ وبهوک\n";
 // ------------------------------------------------------------------
 
-$botPhp = realpath(__DIR__ . '/../bot.php');
-$ipnPhp = realpath(__DIR__ . '/../nowpayments_ipn.php');
+$botPhp     = realpath(__DIR__ . '/../bot.php');
+$adminPhp   = realpath(__DIR__ . '/../admin.php');
+$invoicePhp = realpath(__DIR__ . '/../invoice.php');
+$ipnPhp     = realpath(__DIR__ . '/../nowpayments_ipn.php');
+
 line($botPhp !== false ? 'ok' : 'bad', 'فایل وبهوک موجود', $botPhp !== false ? $botPhp : 'یافت نشد');
 line($ipnPhp !== false ? 'ok' : 'bad', 'فایل IPN موجود', $ipnPhp !== false ? $ipnPhp : 'یافت نشد');
+line($invoicePhp !== false ? 'ok' : 'bad', 'صفحهٔ فاکتور موجود', $invoicePhp !== false ? $invoicePhp : 'یافت نشد');
 
 if ($baseUrl !== '') {
     $expectedHook = rtrim($baseUrl, '/') . '/bot.php';
     $expectedIpn  = rtrim($baseUrl, '/') . '/nowpayments_ipn.php';
     line('ok', 'آدرس وبهوک', $expectedHook);
     line('ok', 'آدرس IPN', $expectedIpn);
+    line('ok', 'آدرس فاکتور', rtrim($baseUrl, '/') . '/invoice.php?t=<token>');
+}
+
+// ------------------------------------------------------------------
+// ربات مدیریتی جدا (اختیاری)
+//
+// سه وضعیت ممکن است و هر سه سالم‌اند:
+//   • خالی  → قابلیت غیرفعال است (حالت پیش‌فرض)
+//   • توکن هست ولی secret نه → تنظیم ناقص: admin.php ۵۰۳ می‌دهد
+//   • هر دو هست → آمادهٔ `set-webhook-admin`
+// ------------------------------------------------------------------
+
+$adminToken = trim(Config::str('admin_bot_token', ''));
+
+if ($adminToken === '') {
+    line('ok', 'ربات مدیریتی', 'غیرفعال (اختیاری — admin_bot_token خالی است)');
+} else {
+    $adminSecret = trim(Config::str('admin_webhook_secret', ''));
+
+    $secretOk = $adminSecret !== '' && $adminSecret !== 'CHANGE-THIS-RANDOM-SECRET';
+
+    line($secretOk ? 'ok' : 'bad', 'ربات مدیریتی', $secretOk
+        ? 'آماده — php tools/cli.php set-webhook-admin'
+        : 'admin_webhook_secret تنظیم نشده — admin.php همهٔ درخواست‌ها را رد می‌کند (۵۰۳)');
+
+    line($adminPhp !== false ? 'ok' : 'bad', 'فایل admin.php', $adminPhp !== false ? $adminPhp : 'یافت نشد');
+}
+
+// ------------------------------------------------------------------
+echo PHP_EOL . "▶ بکاپ\n";
+// ------------------------------------------------------------------
+
+try {
+    $keep  = \Pasargad\Support\Backup::keepCount();
+    $files = \Pasargad\Support\Backup::list();
+    $size  = 0;
+
+    foreach ($files as $file) {
+        $size += (int) @filesize($file);
+    }
+
+    line($files !== [] ? 'ok' : 'warn', 'نسخه‌های بکاپ',
+        count($files) . ' فایل • ' . Str::formatBytes($size) . ' • سقف ' . $keep);
+
+    if ($files !== [] && $files === array_slice($files, 0, $keep)) {
+        line('ok', 'سیاست نگهداری', 'سقف رعایت شده');
+    }
+} catch (\Throwable $e) {
+    line('warn', 'بکاپ', $e->getMessage());
 }
 
 // ------------------------------------------------------------------

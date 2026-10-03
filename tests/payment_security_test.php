@@ -12,18 +12,19 @@ declare(strict_types=1);
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/TestDb.php';
 require_once __DIR__ . '/FakePanelClient.php';
+require_once __DIR__ . '/Fixture.php';
 
 use Pasargad\Payment\CardToCardGateway;
 use Pasargad\Payment\NowPaymentsGateway;
 use Pasargad\Payment\PaymentService;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
+use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestDb;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
-use Pasargad\Support\Crypto;
 use Pasargad\Support\Migrator;
 
 $db = TestDb::boot();
@@ -32,9 +33,10 @@ $db = TestDb::boot();
 $panel    = new \Pasargad\Panel\FakePanelClient();
 $orders   = new OrderRepository($db);
 $users    = new UserRepository($db);
+$panels   = new PanelRepository($db);
 $packages = new PackageRepository($db);
 $settings = new Settings($db);
-$prov     = new Provisioner($panel, $orders, $users, $settings);
+$prov     = new Provisioner($panel, $orders, $users, $settings, $panels);
 $payments = new PaymentService($orders, $prov, $settings, null, $users);
 
 $GB = 1073741824;
@@ -60,25 +62,17 @@ function check(string $label, bool $condition, string $detail = ''): void
 }
 
 /**
- * @param array<string, mixed> $order
+ * ساخت نماینده با یک پنل متصل روی پنل قلابی.
+ *
+ * @param array<string, mixed> $options
  */
-function makeUser(string $name, int $credit = 0): array
+function makeUser(string $name, array $options = []): array
 {
-    global $users, $panel;
+    global $users, $panel, $panels;
 
-    $tid = 700000 + (crc32($name) % 90000);
+    [$user] = makeRep($name, $panel, $users, $panels, $options);
 
-    $id = $users->upsertByTelegram($tid, [
-        'telegram_id'    => $tid,
-        'panel_username' => $name,
-        'panel_password' => Crypto::encrypt('pass'),
-        'panel_status'   => 'active',
-        'user_credit'    => $credit,
-    ])['id'];
-
-    $panel->addAdmin($name, ['data_limit' => 0, 'used_traffic' => 0]);
-
-    return $users->findById($id);
+    return $user;
 }
 
 /**
@@ -106,14 +100,14 @@ echo "\n════════════════════════
 
 $user = makeUser('ipn_admin');
 $pkgId = $packages->create([
-    'title' => 'بستهٔ تست', 'kind' => PackageRepository::KIND_PANEL_QUOTA,
+    'title' => 'بستهٔ تست', 'kind' => PackageRepository::KIND_TOPUP,
     'volume_gb' => 100, 'duration_days' => 30, 'price_toman' => 500000, 'is_active' => true,
 ]);
 
 // سفارش ارز دیجیتال با پرداخت ثبت‌شده
 $order = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
 ]);
@@ -157,7 +151,7 @@ check('وضعیت سفارش paid شد', (string) $row['status'] === OrderReposi
 // ---- ۳) بدنهٔ خالی → باید رد شود نه اینکه با امضای نادرست مقایسه کند ----
 $order2 = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
 ]);
@@ -181,7 +175,7 @@ echo "\n════════════════════════
 
 $order3 = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
 ]);
@@ -230,7 +224,7 @@ echo "\n════════════════════════
 $btcUser = makeUser('btc_admin');
 $btcOrder = $orders->create((int) $btcUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -271,7 +265,7 @@ check('حجم روی پنل اعمال شد', (int) $panel->admins['btc_admin'][
 $btc2 = makeUser('btc_rate_admin');
 $btc2Order = $orders->create((int) $btc2['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -297,7 +291,7 @@ check('نرخ متفاوت بین سفارش و پرداخت رد نشد', $r2b[
 $btc3 = makeUser('btc_partial_admin');
 $btc3Order = $orders->create((int) $btc3['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -328,7 +322,7 @@ check('حجمی به کم‌پرداختی داده نشد', (int) $panel->admin
 $small = makeUser('small_order_admin');
 $smallOrder = $orders->create((int) $small['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 10,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 10,
     'duration_days' => 30, 'price_toman' => 50000,     // نیم دلار
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -351,7 +345,7 @@ $r4 = $payments->handleIpn(json_decode($p4['body'], true), $p4['headers'], $p4['
 check('فاکتورِ بلندشده به حداقل درگاه پذیرفته شد', $r4['ok'] ?? false, (string) ($r4['message'] ?? ''));
 $order4 = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
 ]);
@@ -379,7 +373,7 @@ echo "\n════════════════════════
 
 $order5 = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
 ]);
@@ -405,7 +399,7 @@ echo "\n════════════════════════
 // سفارش ارز دیجیتال در انتظار
 $cryptoOrder = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -419,7 +413,7 @@ check('رسید ذخیره نشد', $orders->find((int) $cryptoOrder['id'])['rec
 // سفارش کارت‌به‌کارت باید بپذیرد
 $c2Order = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => CardToCardGateway::NAME,
@@ -436,7 +430,7 @@ echo "\n════════════════════════
 
 $approved = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => CardToCardGateway::NAME,
@@ -459,7 +453,7 @@ check('وضعیت همچنان applied ماند', (string) $afterReject['status'
 // سفارش در حال اجرا هم نباید رد شود
 $applying = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_APPLYING,
 ]);
@@ -470,7 +464,7 @@ check('وضعیت applying دست‌نخورده', (string) $orders->find((int) 
 // سفارش واقعاً در انتظار پرداخت باید رد شود
 $okReject = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => CardToCardGateway::NAME,
@@ -490,7 +484,7 @@ $panel->addAdmin('replay_admin', ['data_limit' => 0, 'used_traffic' => 0]);
 
 $replayOrder = $orders->create((int) $replayUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 50,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 50,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -536,7 +530,7 @@ echo "\n════════════════════════
 
 $unpaid = $orders->create((int) $user['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,
@@ -570,7 +564,7 @@ echo "\n════════════════════════
 $secUser = makeUser('sig_admin');
 $secOrder = $orders->create((int) $secUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
-    'kind' => PackageRepository::KIND_PANEL_QUOTA, 'volume_gb' => 100,
+    'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
     'duration_days' => 30, 'price_toman' => 500000,
     'status' => OrderRepository::STATUS_AWAITING_PAYMENT,
     'payment_method' => NowPaymentsGateway::NAME,

@@ -25,6 +25,26 @@ final class FakeBotApi extends BotApi
     /** @var array<int, string> */
     public array $answeredCallbacks = [];
 
+    /**
+     * پاسخ‌های کال‌بک به‌همراه متن و وضعیت هشدار.
+     *
+     * @var array<int, array{id:string, text:string, alert:bool}>
+     */
+    public array $callbackAnswers = [];
+
+    /**
+     * وضعیت عضویت شبیه‌سازی‌شده در کانال، به تفکیک کاربر.
+     *
+     * مقادیر مجاز همان مقادیر Bot API هستند: creator | administrator |
+     * member | restricted | left | kicked
+     *
+     * @var array<int, string>
+     */
+    public array $chatMemberStatus = [];
+
+    /** اگر true باشد، getChatMember خطای سرور می‌دهد. */
+    public bool $chatMemberFails = false;
+
     public function __construct()
     {
         // از سازندهٔ والد پرهیز می‌کنیم (نیازمند توکن واقعی است).
@@ -67,7 +87,34 @@ final class FakeBotApi extends BotApi
     public function call(string $method, array $params = []): array
     {
         if ($method === 'answerCallbackQuery') {
-            $this->answeredCallbacks[] = (string) ($params['callback_query_id'] ?? '');
+            $id = (string) ($params['callback_query_id'] ?? '');
+
+            $this->answeredCallbacks[] = $id;
+            $this->callbackAnswers[]   = [
+                'id'    => $id,
+                'text'  => (string) ($params['text'] ?? ''),
+                'alert' => (bool) ($params['show_alert'] ?? false),
+            ];
+        }
+
+        // ------------------------------------------------------------------
+        // شبیه‌سازی دروازهٔ عضویت کانال.
+        //
+        // بدون این، همهٔ تست‌های عضویت اجباری «عضو نیست» می‌دیدند چون
+        // پاسخ خالی یعنی status ناموجود، و هیچ‌وقت مسیر «عضو شد» آزموده
+        // نمی‌شد — یعنی مهم‌ترین شاخهٔ کد بی‌آزمایش می‌ماند.
+        // ------------------------------------------------------------------
+        if ($method === 'getChatMember') {
+            if ($this->chatMemberFails) {
+                return ['ok' => false, 'error_code' => 500, 'description' => 'Internal Server Error'];
+            }
+
+            $userId = (int) ($params['user_id'] ?? 0);
+
+            return [
+                'ok'     => true,
+                'result' => ['status' => $this->chatMemberStatus[$userId] ?? 'left'],
+            ];
         }
 
         return ['ok' => true, 'result' => []];
@@ -76,6 +123,7 @@ final class FakeBotApi extends BotApi
     public function answerCallback(string $callbackQueryId, string $text = '', bool $alert = false): void
     {
         $this->answeredCallbacks[] = $callbackQueryId;
+        $this->callbackAnswers[]   = ['id' => $callbackQueryId, 'text' => $text, 'alert' => $alert];
     }
 
     public function deleteMessage(int $chatId, int $messageId): bool
@@ -93,6 +141,15 @@ final class FakeBotApi extends BotApi
         $this->sentPhotos = [];
         $this->edits      = [];
         $this->answeredCallbacks = [];
+        $this->callbackAnswers   = [];
+    }
+
+    /**
+     * متن آخرین پاسخِ کال‌بک (حباب هشدار).
+     */
+    public function lastCallbackAnswer(): string
+    {
+        return $this->callbackAnswers === [] ? '' : (string) end($this->callbackAnswers)['text'];
     }
 
     /**

@@ -22,7 +22,7 @@ use Pasargad\Telegram\Update;
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
     header('Content-Type: text/html; charset=utf-8');
     echo '<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8">';
-    echo '<title>ربات نمایندگان پاسارگاد</title>';
+    echo '<title>ربات نمایندگان پنل</title>';
     echo '<body style="font-family:Tahoma,sans-serif;text-align:center;padding:40px">';
     echo '<h2>ربات فعال است ✅</h2>';
     echo '<p>وبهوک با موفقیت تنظیم شده است.</p>';
@@ -93,6 +93,7 @@ try {
     (new Migrator($db))->migrateWhenOutdated();
 
     $kernel = new Kernel();
+    $kernel->beginPanelBudget();
     $kernel->handle(new Update($update));
 
     // همیشه 200 برمی‌گردانیم تا تلگرام پیام را دوباره نفرستد

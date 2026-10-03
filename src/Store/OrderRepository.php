@@ -55,6 +55,15 @@ final class OrderRepository
     }
 
     /**
+     * اتصال دیتابیس این مخزن (برای کلاس‌هایی مثل Invoice که باید روی
+     * همین دیتابیس کوئری بزنند).
+     */
+    public function db(): Db
+    {
+        return $this->db;
+    }
+
+    /**
      * ساخت سفارش جدید.
      *
      * @param array<string, mixed> $data
@@ -459,10 +468,74 @@ final class OrderRepository
         return $this->db->first('SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC LIMIT 1', [$orderId]);
     }
 
+    /**
+     * تاریخچهٔ پرداخت‌های یک کاربر (برای «تاریخچه پرداخت‌ها» 🧾).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function paymentsForUser(int $userId, int $limit = 20): array
+    {
+        return $this->db->all(
+            'SELECT p.* FROM payments p
+              INNER JOIN orders o ON o.id = p.order_id
+              WHERE o.user_id = ?
+              ORDER BY p.id DESC LIMIT ' . max(1, min($limit, 30)),
+            [$userId]
+        );
+    }
+
     public function updatePayment(int $paymentId, array $data): void
     {
         $data['updated_at'] = time();
         $this->db->update('payments', $data, ['id' => $paymentId]);
+    }
+
+    /**
+     * سفارش‌های کارت‌به‌کارت خودکار در انتظار تأیید (برای کرون).
+     *
+     * فقط سفارش‌هایی که پرداختشان هنوز باز است (pending/waiting) برمی‌گردند؛
+     * فاکتورهای منقضی‌شده یا تأییدشده دوباره استعلام نمی‌شوند تا بار
+     * بیهوده به سرویس استعلام وارد نشود.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function awaitingAutoCard(int $limit = 20): array
+    {
+        return $this->db->all(
+            "SELECT o.* FROM orders o
+              WHERE o.status = :st AND o.payment_method = :method
+                AND EXISTS (
+                    SELECT 1 FROM payments p
+                    WHERE p.order_id = o.id AND p.method = :method
+                      AND p.status IN ('pending', 'waiting')
+                )
+              ORDER BY o.id ASC LIMIT " . max(1, min($limit, 50)),
+            ['st' => self::STATUS_AWAITING_PAYMENT, 'method' => \Pasargad\Payment\AutoCardGateway::NAME]
+        );
+    }
+
+    /**
+     * آیا مبلغ یکتایی در فاکتور باز دیگری استفاده شده است؟
+     */
+    public function existsPendingAutoCardAmount(int $amount, ?int $excludeOrderId = null): bool
+    {
+        $sql = "SELECT COUNT(*) FROM payments p
+                 INNER JOIN orders o ON o.id = p.order_id
+                 WHERE p.method = :method AND p.amount_toman = :amount
+                   AND p.status IN ('pending', 'waiting')
+                   AND o.status = :st";
+        $params = [
+            'method' => \Pasargad\Payment\AutoCardGateway::NAME,
+            'amount' => $amount,
+            'st'     => self::STATUS_AWAITING_PAYMENT,
+        ];
+
+        if ($excludeOrderId !== null && $excludeOrderId > 0) {
+            $sql .= ' AND p.order_id != :ex';
+            $params['ex'] = $excludeOrderId;
+        }
+
+        return $this->db->count($sql, $params) > 0;
     }
 
     // ------------------------------------------------------------------

@@ -203,6 +203,350 @@ final class Migrator
             // جلوگیری از پذیرش مبلغ منفی
             'CREATE INDEX IF NOT EXISTS idx_payments_amount ON payments(amount_toman)',
         ],
+
+        // ------------------------------------------------------------------
+        // 005: چندپنلی شدن نمایندگان + کانفیگ تست + عضویت اجباری کانال
+        //
+        // چرا این مهاجریشن لازم است:
+        //
+        // قبلاً هر نماینده فقط **یک** پنل داشت و ستون‌های پنل روی خودِ جدول
+        // users بودند (panel_username, panel_data_limit, …). این مدل سه محدودیت
+        // داشت که دیگر با نیاز کسب‌وکار نمی‌خواند:
+        //
+        //   ۱) هر کاربر فقط یک پنل می‌توانست بخرد.
+        //   ۲) حجم و انقضا هر کاربر روی **مجموع** همهٔ خریدهایش انباشته می‌شد،
+        //      پس «کاهش حجم» یا «اتمام اعتبار» هیچ‌وقت به یک پنل مشخص نسبت
+        //      داده نمی‌شد — یعنی هشدار per-panel و قطع دسترسی کاربران هر پنل
+        //      غیرممکن بود.
+        //   ۳) پسورد پنل در همان رکورد کاربر بود، پس با چند پنل جایی برای
+        //      نگهداری جداگانه نبود.
+        //
+        // راه‌حل: جدول مستقل `panels` که **هر ردیف یک پنل خریداری‌شده** است با
+        // حجم، مصرف، انقضا، وضعیت و شمارندهٔ هشدارهای مستقلِ خودش.
+        //
+        // مهاجرت دادهٔ فعلی: کاربرانی که قبلاً وصل شده بودند یک ردیف panels
+        // می‌گیرند (source='legacy') تا هیچ‌کدام از نمایندگان فعلی پنل‌شان را
+        // از دست ندهند، و سفارش‌های قدیمی panel_quota به همان پنل لینک می‌شوند.
+        // ------------------------------------------------------------------
+        '005_panels' => [
+            // پنل‌های خریداری‌شدهٔ هر نماینده
+            'CREATE TABLE IF NOT EXISTS panels (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id              INTEGER NOT NULL,
+                panel_username       TEXT NOT NULL,
+                panel_password       TEXT NOT NULL,           -- رمزنگاری‌شده
+                panel_user_id        INTEGER,
+                panel_status         TEXT NOT NULL DEFAULT \'active\',
+                -- active | limited | disabled | revoked | expired
+                panel_role           TEXT,
+                panel_is_owner       INTEGER DEFAULT 0,
+                data_limit           INTEGER NOT NULL DEFAULT 0,
+                used_traffic         INTEGER NOT NULL DEFAULT 0,
+                granted_volume       INTEGER NOT NULL DEFAULT 0,   -- حجم خریداری‌شده (بایت)
+                access_expire_at     INTEGER,                     -- پایان اعتبار زمانی
+                sub_url              TEXT,                        -- لینک اشتراک نماینده
+                login_url            TEXT,                        -- آدرس ورود به پنل
+                label                TEXT,                        -- نام دلخواه نماینده
+                source               TEXT NOT NULL DEFAULT \'bot\',
+                -- bot = خریداری‌شده از ربات | legacy = مهاجرت | self = دکمهٔ «من پنل دارم»
+                order_id             INTEGER,
+                is_default           INTEGER NOT NULL DEFAULT 0,
+                warned_low_volume    INTEGER,                     -- زمان آخرین هشدار حجم
+                warned_expiring      INTEGER,                     -- زمان آخرین هشدار انقضا
+                expiry_notified      INTEGER NOT NULL DEFAULT 0,  -- هشدار «تمام شد» ارسال شد
+                cutoff_requested_at  INTEGER,                     -- درخواست قطع دسترسی به ادمین داده شد
+                cutoff_done_at       INTEGER,                     -- دسترسی کاربران قطع شد
+                cutoff_count         INTEGER NOT NULL DEFAULT 0,  -- چند کاربر غیرفعال شد
+                synced_at            INTEGER,
+                created_at           INTEGER NOT NULL,
+                updated_at           INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_panels_user ON panels(user_id)',
+            // COLLATE NOCASE چون نام کاربری پنل در API بدون حساسیت جست‌وجو می‌شود
+            // و «Ali» و «ali» نباید دو پنل جدا ساخته شوند.
+            'CREATE INDEX IF NOT EXISTS idx_panels_username ON panels(panel_username COLLATE NOCASE)',
+            'CREATE INDEX IF NOT EXISTS idx_panels_expire ON panels(access_expire_at)',
+
+            // کانفیگ/یوزر تست رایگان ساخته‌شده روی پنل نماینده
+            'CREATE TABLE IF NOT EXISTS test_configs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                panel_id       INTEGER NOT NULL,
+                user_id        INTEGER NOT NULL,
+                panel_username TEXT NOT NULL,
+                data_limit     INTEGER NOT NULL DEFAULT 0,
+                used_traffic   INTEGER NOT NULL DEFAULT 0,
+                expire_at      INTEGER NOT NULL,
+                sub_url        TEXT,
+                status         TEXT NOT NULL DEFAULT \'active\',  -- active | expired | disabled
+                issued_at      INTEGER NOT NULL,
+                disabled_at    INTEGER,
+                FOREIGN KEY (panel_id) REFERENCES panels(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_test_configs_panel ON test_configs(panel_id)',
+            'CREATE INDEX IF NOT EXISTS idx_test_configs_user ON test_configs(user_id)',
+
+            // سفارش به کدام پنل مربوط است (برای شارژ/تمدید)
+            'ALTER TABLE orders ADD COLUMN panel_id INTEGER',
+            'CREATE INDEX IF NOT EXISTS idx_orders_panel ON orders(panel_id)',
+
+            // ------------------------------------------------------------------
+            // انتقال دادهٔ موجود
+            // ------------------------------------------------------------------
+
+            // هر کاربرِ وصل‌شده یک ردیف panels می‌گیرد.
+            'INSERT INTO panels (
+                 user_id, panel_username, panel_password, panel_status, panel_role,
+                 panel_is_owner, data_limit, used_traffic, granted_volume,
+                 access_expire_at, source, synced_at, created_at, updated_at
+             )
+             SELECT u.id, u.panel_username, COALESCE(u.panel_password, \'\'),
+                    u.panel_status, u.panel_role, u.panel_is_owner,
+                    u.panel_data_limit, u.panel_used, u.granted_volume,
+                    u.granted_expire_at, \'legacy\', u.panel_synced_at,
+                    u.created_at, u.updated_at
+             FROM users u
+             WHERE u.panel_username IS NOT NULL AND u.panel_username <> \'\'',
+
+            // سفارش‌های حجمِ قدیمی به پنلِ کاربر لینک می‌شوند تا «شارژ» بعدی
+            // بداند روی کدام پنل اعمال شود.
+            'UPDATE orders SET panel_id = (
+                 SELECT p.id FROM panels p
+                 WHERE p.user_id = orders.user_id
+                 ORDER BY p.id ASC LIMIT 1
+             )
+             WHERE panel_id IS NULL AND kind IN (\'panel_quota\', \'topup\')',
+
+            // بسته‌های «اعتبار کاربر» دیگر ارائه نمی‌شوند (ساخت کاربر از ربات
+            // حذف شد). غیرفعال می‌شوند نه حذف، تا سابقهٔ سفارش‌ها سالم بماند.
+            'UPDATE packages SET is_active = 0 WHERE kind = \'user_credit\'',
+
+            // تنظیمات اولیهٔ قابلیت‌های جدید
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('test_config_enabled', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('test_config_volume_gb', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('test_config_days', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('test_config_max_per_user', '2', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('test_config_cooldown', '30', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('channel_enforced', '0', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('channel_cache_minutes', '30', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('expire_warn_days', '3', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('cutoff_on_expire', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('panel_sync_cron', '1', 0)",
+        ],
+
+        // ------------------------------------------------------------------
+        // 006: کیف پول کاربران + زمان‌بندی بکاپ
+        //
+        // wallet_balance: موجودی کیف پول کاربر (تومان). شارژ آن فقط توسط
+        // سوپرادمین انجام می‌شود و در پرداخت با کیف پول مصرف می‌شود.
+        // wallet_txns: تاریخچهٔ تراکنش‌های کیف پول برای «تاریخچه پرداخت‌ها».
+        // ------------------------------------------------------------------
+        '006_wallet_backup' => [
+            'ALTER TABLE users ADD COLUMN wallet_balance INTEGER NOT NULL DEFAULT 0',
+
+            'CREATE TABLE IF NOT EXISTS wallet_txns (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                amount      INTEGER NOT NULL,
+                kind        TEXT NOT NULL DEFAULT \'manual\',
+                note        TEXT,
+                admin_id    INTEGER,
+                created_at  INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_wallet_user ON wallet_txns(user_id)',
+
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('backup_schedule', 'off', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('backup_last_at', '0', 0)",
+        ],
+
+        // ------------------------------------------------------------------
+        // 007: ضدتکرار دستورات + کارت‌به‌کارت خودکار
+        //
+        // flood_guard: آخرین زمان هر اکشن هر کاربر، برای جلوگیری از اجرای
+        // تکراری دکمه‌ها (دابل‌کلیک) و کاهش بار سرور.
+        // processed_updates: شناسهٔ آپدیت‌های پردازش‌شده، تا ارسال مجدد همان
+        // آپدیت توسط تلگرام دوباره اجرا نشود.
+        // gateway_autocard: سوییچ درگاه کارت‌به‌کارت خودکار.
+        // test_config_panel_id: پنل ثابت تست (۰ = پنل خود کاربر).
+        // ------------------------------------------------------------------
+        '007_flood_autocard' => [
+            'CREATE TABLE IF NOT EXISTS flood_guard (
+                key         TEXT PRIMARY KEY,
+                updated_at  INTEGER NOT NULL
+            )',
+
+            'CREATE TABLE IF NOT EXISTS processed_updates (
+                update_id   INTEGER PRIMARY KEY,
+                created_at  INTEGER NOT NULL
+            )',
+
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('gateway_autocard', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('test_config_panel_id', '0', 0)",
+        ],
+
+        // ------------------------------------------------------------------
+        // 008: تشخیص آپدیت تکراری با اثر انگشت محتوا
+        //
+        // شناسهٔ آپدیت به‌تنهایی برای رد کردن کافی نیست: اگر همان عدد دوباره
+        // دیده شود ولی محتوایش فرق داشته باشد (استفادهٔ مجدد عدد)، آپدیت
+        // واقعی است و نباید نادیده گرفته شود. فقط «همان عدد + همان محتوا»
+        // یعنی ارسال مجدد تلگرام و رد می‌شود.
+        // ------------------------------------------------------------------
+        '008_flood_fingerprint' => [
+            "ALTER TABLE processed_updates ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+        ],
+
+        // ------------------------------------------------------------------
+        // 009: ابزارهای توسعهٔ نمایندگی
+        //
+        //   expire_grace_days      مهلت ارفاقی پس از انقضا (پیش از قطع دسترسی)
+        //   panels.grace_notified  هشدار «مهلت ارفاقی» یک‌بار فرستاده شد
+        //   panels.users_*         آمار کاربران پنل (برای صفحهٔ نماینده)
+        //
+        //   coupons / coupon_uses  کدهای تخفیف و سابقهٔ استفاده
+        //   referrals              معرفی کاربر تازه به ربات
+        //   orders.discount_toman  مبلغ تخفیف هر سفارش
+        //   orders.original_price  قیمت پیش از تخفیف (برای گزارش درآمد ناخالص)
+        //   orders.invoice_token   توکن یکتای فاکتور قابل چاپ
+        //
+        //   tickets / ticket_messages  تیکت پشتیبانی داخل ربات
+        // ------------------------------------------------------------------
+        '009_agency_extras' => [
+            // ---------------- ۱) مهلت ارفاقی ----------------
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('expire_grace_days', '3', 0)",
+            'ALTER TABLE panels ADD COLUMN grace_notified INTEGER NOT NULL DEFAULT 0',
+
+            // ---------------- ۵) آمار کاربران پنل ----------------
+            'ALTER TABLE panels ADD COLUMN users_total INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE panels ADD COLUMN users_active INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE panels ADD COLUMN users_disabled INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE panels ADD COLUMN stats_at INTEGER',
+
+            // ---------------- ۲) کد تخفیف ----------------
+            'CREATE TABLE IF NOT EXISTS coupons (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                code               TEXT NOT NULL,
+                kind               TEXT NOT NULL DEFAULT \'percent\',  -- percent | fixed
+                value              INTEGER NOT NULL DEFAULT 0,       -- درصد یا تومان
+                max_uses           INTEGER NOT NULL DEFAULT 0,       -- ۰ = نامحدود
+                used_count         INTEGER NOT NULL DEFAULT 0,
+                per_user_limit     INTEGER NOT NULL DEFAULT 1,       -- ۰ = هر کاربر بی‌نهایت
+                min_order_toman    INTEGER NOT NULL DEFAULT 0,
+                max_discount_toman INTEGER NOT NULL DEFAULT 0,       -- ۰ = بدون سقف
+                expires_at         INTEGER,
+                is_active          INTEGER NOT NULL DEFAULT 1,
+                note               TEXT,
+                created_at         INTEGER NOT NULL,
+                updated_at         INTEGER NOT NULL
+            )',
+            // COLLATE NOCASE تا «SUMMER» و «summer» یک کد باشند
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_coupons_code ON coupons(code COLLATE NOCASE)',
+            'CREATE INDEX IF NOT EXISTS idx_coupons_active ON coupons(is_active)',
+
+            'CREATE TABLE IF NOT EXISTS coupon_uses (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                coupon_id      INTEGER NOT NULL,
+                user_id        INTEGER NOT NULL,
+                order_id       INTEGER,
+                discount_toman INTEGER NOT NULL DEFAULT 0,
+                created_at     INTEGER NOT NULL,
+                FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_coupon_uses_coupon ON coupon_uses(coupon_id)',
+            'CREATE INDEX IF NOT EXISTS idx_coupon_uses_user ON coupon_uses(user_id)',
+
+            // ---------------- ۲) معرفی کاربر ----------------
+            'CREATE TABLE IF NOT EXISTS referrals (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_user_id INTEGER NOT NULL,
+                referee_user_id  INTEGER NOT NULL,
+                code             TEXT NOT NULL,
+                bonus_toman      INTEGER NOT NULL DEFAULT 0,
+                rewarded_at      INTEGER,
+                created_at       INTEGER NOT NULL,
+                FOREIGN KEY (referrer_user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (referee_user_id) REFERENCES users(id) ON DELETE CASCADE
+            )',
+            // یک کاربر تازه فقط یک معرف دارد؛ بدون این قید، /start ref_X چندبار
+            // می‌توانست چند پاداش معرفی تولید کند.
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_referrals_referee ON referrals(referee_user_id)',
+            'CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id)',
+
+            // ---------------- ۲) تخفیف روی سفارش ----------------
+            'ALTER TABLE orders ADD COLUMN discount_toman INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN original_price_toman INTEGER',
+            'ALTER TABLE orders ADD COLUMN coupon_code TEXT',
+            // کد معرفی که کاربر تازه با آن وارد شد (برای گزارش و پاداش معرف)
+            'ALTER TABLE orders ADD COLUMN referred_by TEXT',
+
+            // کد تخفیف فعال هر کاربر.
+            //
+            // روی users و نه در نشست، چون نشست ۱۵ دقیقه‌ای است و کاربر ممکن
+            // است امروز کد وارد کند و فردا خرید کند.
+            'ALTER TABLE users ADD COLUMN coupon_code TEXT',
+
+            // ---------------- ۴) فاکتور ----------------
+            'ALTER TABLE orders ADD COLUMN invoice_token TEXT',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_invoice ON orders(invoice_token)',
+            'CREATE INDEX IF NOT EXISTS idx_orders_referral ON orders(referred_by)',
+
+            // ---------------- ۳) تیکت پشتیبانی ----------------
+            'CREATE TABLE IF NOT EXISTS tickets (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id             INTEGER NOT NULL,
+                category            TEXT NOT NULL DEFAULT \'general\',
+                subject             TEXT NOT NULL,
+                status              TEXT NOT NULL DEFAULT \'open\',  -- open | answered | closed
+                admin_reply_at      INTEGER,
+                closed_at           INTEGER,
+                created_at          INTEGER NOT NULL,
+                updated_at          INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)',
+            'CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status, id DESC)',
+
+            'CREATE TABLE IF NOT EXISTS ticket_messages (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id  INTEGER NOT NULL,
+                from_side  TEXT NOT NULL,   -- user | admin
+                body       TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_id, id ASC)',
+
+            // ---------------- تنظیمات ----------------
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('coupons_enabled', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('referral_enabled', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('referral_discount_percent', '10', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('referral_bonus_toman', '50000', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('tickets_enabled', '1', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('panel_stats_ttl_minutes', '30', 0)",
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('backup_keep', '14', 0)",
+
+            // ربات مدیریتی اختیاری (وبهوک جدا). پیش‌فرض خاموش است تا کسی که
+            // ربات دومی ندارد اصلاً چیزی تنظیم نکند.
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('admin_bot_ready', '0', 0)",
+        ],
+
+        // ------------------------------------------------------------------
+        // 010: سقف تعداد کاربران هر بسته/پنل
+        //
+        // max_users روی بسته یعنی «با این بسته حداکثر چند کاربر (یوزر) روی
+        // پنل ساخته می‌شود» — جدا از حجم و مدت. ۰ یعنی نامحدود ♾️.
+        // orders.max_users اسنپ‌شات لحظهٔ خرید است و panels.user_limit سقف
+        // خریداری‌شدهٔ هر پنل (جمع شارژها؛ نامحدود غالب است).
+        // ------------------------------------------------------------------
+        '010_user_limit' => [
+            'ALTER TABLE packages ADD COLUMN max_users INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN max_users INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE panels ADD COLUMN user_limit INTEGER NOT NULL DEFAULT 0',
+        ],
         ];
     }
 

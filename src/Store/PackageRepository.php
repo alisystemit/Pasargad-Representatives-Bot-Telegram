@@ -11,13 +11,99 @@ use Pasargad\Support\Str;
  * مخزن بسته‌های فروشگاه.
  *
  * دو نوع بسته وجود دارد:
- *   - panel_quota : حجم مستقیماً روی حساب ادمین خریدار در پنل اعمال می‌شود.
- *   - user_credit : حجم به‌عنوان اعتبار ساخت/تمدید کاربران برای ادمین نگه داشته می‌شود.
+ *   - agency : خرید **پنل نمایندگی** تازه؛ ربات یک حساب ادمین (اپراتور) روی
+ *             پنل می‌سازد، حجم و زمان را تنظیم می‌کند و اطلاعات
+ *             ورود را به خریدار می‌دهد.
+ *   - topup  : شارژ/تمدید یکی از پنل‌های **موجود** خریدار (حجم += و تمدید زمان).
+ *
+ * ساخت کاربر از داخل ربات حذف شده است؛ بنابراین نوع قدیمی `user_credit`
+ * دیگر فروخته نمی‌شود (در مایگریشن ۰۰۵ غیرفعال شده) و `panel_quota` هم به
+ * `topup` نگاشت می‌شود تا سفارش‌های قدیمی قابل اجرا بمانند.
  */
 final class PackageRepository
 {
+    /** خرید پنل نمایندگی تازه */
+    public const KIND_AGENCY = 'agency';
+
+    /** شارژ/تمدید پنل موجود */
+    public const KIND_TOPUP = 'topup';
+
+    /**
+     * @deprecated فقط برای سفارش‌های قدیمی نگه داشته شده.
+     */
     public const KIND_PANEL_QUOTA = 'panel_quota';
+
+    /**
+     * @deprecated قابلیت ساخت کاربر حذف شده؛ فقط برای سفارش‌های قدیمی.
+     */
     public const KIND_USER_CREDIT = 'user_credit';
+
+    /**
+     * انواعی که در فروشگاه به کاربر نشان داده می‌شوند.
+     *
+     * @var array<int, string>
+     */
+    public const SHOP_KINDS = [self::KIND_AGENCY, self::KIND_TOPUP];
+
+    /**
+     * برچسب فارسی هر نوع بسته.
+     *
+     * @return array<string, string>
+     */
+    public static function kindLabels(): array
+    {
+        return [
+            self::KIND_AGENCY       => 'پنل نمایندگی',
+            self::KIND_TOPUP        => 'شارژ پنل',
+            self::KIND_PANEL_QUOTA  => 'شارژ پنل',
+            self::KIND_USER_CREDIT  => 'اعتبار کاربر (لغو شد)',
+        ];
+    }
+
+    public static function kindLabel(string $kind): string
+    {
+        return self::kindLabels()[$kind] ?? $kind;
+    }
+
+    /**
+     * برچسب فارسی سقف کاربران بسته/سفارش/پنل.
+     *
+     * قرارداد: ۰ یعنی نامحدود ♾️ — مثل data_limit=0 در پنل.
+     */
+    public static function userLimitLabel(int|string|float|null $maxUsers): string
+    {
+        $maxUsers = (int) ($maxUsers ?? 0);
+
+        if ($maxUsers <= 0) {
+            return 'نامحدود ♾️';
+        }
+
+        return Str::faNumber($maxUsers) . ' کاربر 👥';
+    }
+
+    /**
+     * آیا این بسته یک پنل تازه می‌سازد (و نه شارژ پنل موجود)؟
+     */
+    public static function createsPanel(string $kind): bool
+    {
+        return $kind === self::KIND_AGENCY;
+    }
+
+    /**
+     * نرمال‌سازی نام نوع از ورودی ادمین (پشتیبانی از نام‌های قدیمی و فارسی).
+     */
+    public static function normalizeKind(string $kind): string
+    {
+        $kind = strtolower(trim($kind));
+
+        return match ($kind) {
+            'agency', 'panel', 'پنل', 'نمایندگی', 'پنل نمایندگی', 'agency_panel' => self::KIND_AGENCY,
+            'topup', 'renew', 'charge', 'شارژ', 'تمدید'                            => self::KIND_TOPUP,
+            'panel_quota', 'quota'                                                => self::KIND_TOPUP,
+            'user_credit', 'credit', 'user'                                       => self::KIND_USER_CREDIT,
+            default                                                               => $kind,
+        };
+    }
 
     private Db $db;
 
@@ -87,13 +173,14 @@ final class PackageRepository
             'slug'          => 'custom',
             'title'         => 'بستهٔ سفارشی',
             'description'   => null,
-            'kind'          => self::KIND_PANEL_QUOTA,
+            'kind'          => self::KIND_AGENCY,
             'volume_gb'     => 0.0,
             'duration_days' => 0,
             'price_toman'   => 0,
             'bonus_gb'      => 0.0,
             'is_active'     => 1,
             'max_per_user'  => 0,
+            'max_users'     => 0,
         ], $data);
     }
 
@@ -108,7 +195,7 @@ final class PackageRepository
             'slug'          => $this->uniqueSlug((string) ($data['slug'] ?? $data['title'] ?? 'package')),
             'title'         => trim((string) ($data['title'] ?? 'بسته')),
             'description'   => $data['description'] ?? null,
-            'kind'          => $data['kind'] ?? self::KIND_PANEL_QUOTA,
+            'kind'          => self::normalizeKind((string) ($data['kind'] ?? self::KIND_AGENCY)),
             'volume_gb'     => (float) ($data['volume_gb'] ?? 0),
             'duration_days' => (int) ($data['duration_days'] ?? 30),
             'price_toman'   => (int) ($data['price_toman'] ?? 0),
@@ -116,6 +203,7 @@ final class PackageRepository
             'sort_order'    => (int) ($data['sort_order'] ?? 0),
             'is_active'     => (int) (bool) ($data['is_active'] ?? true),
             'max_per_user'  => (int) ($data['max_per_user'] ?? 0),
+            'max_users'     => max(0, (int) ($data['max_users'] ?? 0)),
             'created_at'    => $now,
             'updated_at'    => $now,
         ]);
@@ -130,7 +218,7 @@ final class PackageRepository
 
         // فیلدهای عددی صحیح — فقط is_active بولی است، بقیه عدد واقعی‌اند.
         // (اشتباه قبلی: (int)(bool) قیمت ۵۰۰۰۰۰ را به ۱ تبدیل می‌کرد.)
-        $intFields = ['duration_days', 'price_toman', 'sort_order', 'max_per_user'];
+        $intFields = ['duration_days', 'price_toman', 'sort_order', 'max_per_user', 'max_users'];
 
         // فیلدهای اعشاری
         $floatFields = ['volume_gb', 'bonus_gb'];
@@ -152,7 +240,9 @@ final class PackageRepository
 
         foreach ($stringFields as $field) {
             if (array_key_exists($field, $data)) {
-                $payload[$field] = (string) $data[$field];
+                $payload[$field] = $field === 'kind'
+                    ? self::normalizeKind((string) $data[$field])
+                    : (string) $data[$field];
             }
         }
 

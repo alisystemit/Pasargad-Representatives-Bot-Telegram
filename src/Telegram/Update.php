@@ -228,4 +228,15 @@ final class Update
 
         return array_values(array_filter($parts, static fn (string $p): bool => $p !== ''));
     }
+
+    /**
+     * اولین آرگومان دستور به‌صورت یک رشته.
+     *
+     * برای لینک‌های عمیق مثل `/start R123` لازم است؛ `args()[0]` در آن حالت
+     * ممکن است وجود نداشته باشد و کد خالی می‌شود.
+     */
+    public function argument(): string
+    {
+        return (string) ($this->args()[0] ?? '');
+    }
 }

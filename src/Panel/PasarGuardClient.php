@@ -21,6 +21,44 @@ class PasarGuardClient
     private bool $verifySsl;
     private int $timeout;
 
+    /**
+     * مهلت پایان این درخواست وبهوک (زمان پایان بر حسب Unix time).
+     *
+     * چرا لازم است؟
+     *
+     * بدترین حالتِ یک فراخوانی ساده به پنل، بدون هیچ نگهبانی:
+     *     login  = ۲ تلاش × ۲۰ ثانیه = ۴۰ ثانیه
+     *     send   = ۲ تلاش × ۲۰ ثانیه = ۴۰ ثانیه
+     *     ۴۰۱ → یک دور کامل دیگر      = ۸۰ ثانیه
+     *     جمع                        = ۱۶۰ ثانیه
+     *
+     * تلگرام بعد از ۶۰ ثانیه پاسخ‌نگیری را timeout می‌کند و همان update را
+     * **دوباره** می‌فرستد. نتیجه: پیام دوباره پردازش می‌شود، پنل دوباره
+     * بارگذاری می‌شود، کاربر پیام تکراری می‌بیند و در نهایت FloodGuard همهٔ
+     * دکمه‌ها را قفل می‌کند — یعنی همان «هنگ کردن» و «درست فرمان ندادن».
+     *
+     * با این بودجه، قبل از تمام شدن وقت، درخواست جدید **شروع نمی‌شود** و
+     * timeout مؤثر هر درخواست متناسب با وقت باقی‌مانده کوتاه می‌شود؛ نتیجه
+     * یک خطای سریع و قابل‌فهم است، نه قطع وسط کار.
+     */
+    private float $deadline = 0.0;
+
+    /**
+     * بودجهٔ پیش‌فرض **برای کل پروسه**.
+     *
+     * چرا static و نه فقط روی نمونه؟
+     *
+     * ربات در یک درخواست وبهوک، کلاینت‌های متعددی می‌سازد — `Kernel`، و هر
+     * `Store` سرویسی که خودش `new PasarGuardClient()` می‌زند (`PanelSyncer`،
+     * `AccessCutoff`، `PanelUserStats`، `TestConfigService`، `AdminController`…).
+     * اگر بودجه فقط روی یک نمونه می‌نشست، بقیهٔ کلاینت‌های همان درخواست
+     * بدون سقف کار می‌کردند و همان ۱۶۰ ثانیهٔ کشنده برمی‌گشت.
+     *
+     * با static، هر کلاینتی که در همان پروسه ساخته شود سقف را به ارث می‌برد.
+     * برای کرون و CLI هم بی‌اثر است، چون آن‌ها `beginRequest` صدا نمی‌زنند.
+     */
+    private static float $processBudget = 0.0;
+
     /** @var array<string, string> کش توکن: کلید md5(baseUrl|username) */
     private array $tokenCache = [];
 
@@ -33,11 +71,121 @@ class PasarGuardClient
         if ($this->baseUrl === '') {
             throw new PanelException('آدرس پنل در تنظیمات تعریف نشده است (panel.base_url).');
         }
+
+        // سهمیهٔ کل پروسه به ارث می‌رسد (ببینیم توضیح `$processBudget`).
+        $this->deadline = self::$processBudget > 0.0
+            ? microtime(true) + self::$processBudget
+            : 0.0;
+    }
+
+    /**
+     * تعیین بودجهٔ زمانی برای **همهٔ** کلاینت‌هایی که از این لحظه ساخته می‌شوند.
+     *
+     * وبهوک این را یک‌بار صدا می‌زند و دیگر لازم نیست هر سرویسی که خودش
+     * کلاینت می‌سازد، بودجه را بشناسد.
+     */
+    public static function setProcessBudget(float $seconds): void
+    {
+        // زیر ۵ ثانیه بی‌فایده است: هیچ درخواست واقعی در آن جا نمی‌شود.
+        self::$processBudget = $seconds >= 5.0 ? $seconds : 0.0;
+    }
+
+    /** برداشتن بودجهٔ کل پروسه (برای تست و اجرای پس‌زمینه‌ای). */
+    public static function clearProcessBudget(): void
+    {
+        self::$processBudget = 0.0;
     }
 
     public function baseUrl(): string
     {
         return $this->baseUrl;
+    }
+
+    /**
+     * تعیین مهلت پایان کار با پنل.
+     *
+     * پیش از این، بودجه نامحدود بود و بدترین حالت یک فراخوانی ۱۶۰ ثانیه طول
+     * می‌کشید (محاسبه در توضیح `$deadline`). وبهوک این را قبل از پردازش
+     * صدا می‌زند؛ کرون و CLI که پس‌زمینه‌ای اجرا می‌شوند دست‌نخورده می‌مانند.
+     *
+     * @param float $seconds سقف ثانیه از همین لحظه
+     */
+    public function beginRequest(float $seconds): void
+    {
+        // زیر ۵ ثانیه بی‌فایده است: یک درخواست شبکه در آن جا نمی‌شود و فقط
+        // باعث می‌شود کاربر پیام خطای بی‌ربط ببیند.
+        $this->deadline = $seconds >= 5.0 ? microtime(true) + $seconds : 0.0;
+    }
+
+    /**
+     * برداشتن بودجهٔ زمانی (کرون/CLI که پس‌زمینه‌ای‌اند محدودیت تلگرام ندارند).
+     */
+    public function clearRequestBudget(): void
+    {
+        $this->deadline = 0.0;
+    }
+
+    /** چند ثانیه تا پایان بودجه باقی مانده؟ (بدون بودجه = بی‌نهایت) */
+    public function remainingSeconds(): float
+    {
+        if ($this->deadline <= 0.0) {
+            return INF;
+        }
+
+        return max(0.0, $this->deadline - microtime(true));
+    }
+
+    /**
+     * timeout مؤثر برای درخواست بعدی.
+     *
+     * یک ثانیه ذخیره می‌گذاریم تا خودِ تشخیص پایان وقت فرصت اجرا شود و خطای
+     * تمیز بدهد، نه قطع ناگهانی.
+     */
+    private function effectiveTimeout(): int
+    {
+        $remaining = $this->remainingSeconds();
+
+        if ($remaining === INF) {
+            return $this->timeout;
+        }
+
+        return max(1, min($this->timeout, (int) floor($remaining) - 1));
+    }
+
+    /**
+     * تلاش مجدد فقط وقتی که واقعاً وقت دارد.
+     *
+     * تلاش مجدد وقتی بی‌فایده است که وقت باقی‌مانده از یک دور کامل کمتر باشد:
+     * فقط زمان کل را جلو می‌اندازد و نتیجه‌ای عوض نمی‌کند.
+     */
+    private function effectiveAttempts(): int
+    {
+        $remaining = $this->remainingSeconds();
+
+        if ($remaining === INF) {
+            return 2;
+        }
+
+        return $remaining >= $this->timeout * 2 + 1 ? 2 : 1;
+    }
+
+    /**
+     * نگهبان پیش از شروع درخواست: اگر وقت نمانده، اصلاً شبکه را لمس نکن.
+     */
+    private function assertTimeLeft(string $path): void
+    {
+        // ۲ ثانیه = کمتر از یک درخواست شبکهٔ واقعی. شروع کردنش فقط یعنی
+        // پاسخ بدتری (timeout به‌جای پیام روشن) برای همان مقدار وقت.
+        if ($this->remainingSeconds() < 2.0) {
+            // سازندهٔ اختصاصی، چون این خطا **خطای شبکه نیست** و تلاش مجدد برایش
+            // بی‌فایده است (وقتی وجود ندارد). اگر با وضعیت ۰ معمولی پرتاب شود،
+            // `isRetryable()` آن را قابل‌تلاش‌مجدد می‌بیند و هر بار همان‌جا
+            // دوباره شکست می‌خورد.
+            throw PanelException::budgetExceeded(
+                'پنل در این لحظه پاسخ‌گو نیست (مهلت پردازش تمام شد). چند ثانیه دیگر دوباره تلاش کنید.',
+                $path
+            );
+        }
     }
 
     // ------------------------------------------------------------------
@@ -56,6 +204,11 @@ class PasarGuardClient
             return $this->tokenCache[$cacheKey];
         }
 
+        // پیش از هر تلاش برای توکن هم باید وقت داشته باشیم؛ وگرنه یک درخواست
+        // ۴۰ ثانیه‌ای فقط برای گرفتن توکن شروع می‌شود و بعد `send()` اصلاً
+        // فرصت نمی‌کند — یعنی ۴۰ ثانیه هدر رفت.
+        $this->assertTimeLeft('/api/admin/token');
+
         $response = Http::json('POST', $this->baseUrl . '/api/admin/token', null, [
             'form' => [
                 'username'   => $username,
@@ -63,7 +216,8 @@ class PasarGuardClient
                 'grant_type' => 'password',
             ],
             'headers'  => ['Accept: application/json'],
-            'timeout'  => $this->timeout,
+            'timeout'  => $this->effectiveTimeout(),
+            'attempts' => $this->effectiveAttempts(),
             'verify_ssl' => $this->verifySsl,
         ]);
 
@@ -135,28 +289,101 @@ class PasarGuardClient
     }
 
     /**
-     * اطلاعات یک ادمین مشخص (GET /api/admin/{username}).
+     * اطلاعات یک ادمین مشخص.
+     *
+     * ⚠️ **چرا `GET /api/admin/{username}` صدا زده نمی‌شود؟**
+     * چون در پنل ۵ چنین مسیری وجود ندارد. بررسی زنده روی
+     * `us.api-system.top` نشان می‌دهد `GET /api/admin/anything` پاسخ
+     * **405 Method Not Allowed** می‌دهد (چون مسیر فقط PUT/DELETE دارد).
+     * یعنی هر فراخوانی به آن، همیشه استثنا می‌داد و چهار مسیر حیاتی
+     * (ثبت پنل، همگام‌سازی، خرید پنل، شارژ) همیشه خراب می‌شدند — در
+     * حالی که تست‌ها سبز بودند چون کلاینت ساختگی این محدودیت را نداشت.
+     *
+     * دو راه درست وجود دارد:
+     *   ① خودِ ادمین را می‌خواهیم  → `GET /api/admin` (ادمین جاری).
+     *      چون با همان نام کاربری لاگین کرده‌ایم، پاسخ دقیقاً رکورد
+     *      همان ادمین است. این مسیر را ۳ از ۴ فراخوانی استفاده می‌کنند.
+     *   ② ادمین دیگری (مالک)      → `GET /api/admins?username=X` و باز کردن
+     *      `admins[0]` از پاسخ.
      *
      * @return array<string, mixed>
      */
     public function getAdmin(string $targetUsername, string $username, string $password): array
     {
-        return $this->request(
-            'GET',
-            '/api/admin/' . rawurlencode($targetUsername),
-            $username,
-            $password
+        $target = trim($targetUsername);
+
+        if ($target === '') {
+            throw new PanelException('نام کاربری پنل مشخص نشده است.', 404);
+        }
+
+        // حالت ① — خودِ ادمین
+        if (strcasecmp($target, trim($username)) === 0) {
+            return $this->getCurrentAdmin($username, $password);
+        }
+
+        // حالت ② — ادمین دیگر، فقط با اکانتی که دسترسی sudo دارد
+        return $this->findAdminRow(
+            $this->listAdmins($username, $password, ['username' => $target, 'limit' => 1]),
+            $target
         );
     }
 
     /**
-     * اطلاعات ادمین بر اساس شناسهٔ عددی (GET /api/admin/by-id/{admin_id}).
+     * اطلاعات ادمین بر اساس شناسهٔ عددی.
+     *
+     * ⚠️ `GET /api/admin/by-id/{id}` هم مثل مورد قبلی **۴۰۵** می‌دهد؛ فقط
+     * متدهای PUT/DELETE روی آن مسیر وجود دارند. راه درست، فیلتر `ids` روی
+     * `GET /api/admins` است.
      *
      * @return array<string, mixed>
      */
     public function getAdminById(int $adminId, string $username, string $password): array
     {
-        return $this->request('GET', '/api/admin/by-id/' . $adminId, $username, $password);
+        if ($adminId <= 0) {
+            throw new PanelException('شناسهٔ ادمین نامعتبر است.', 404);
+        }
+
+        return $this->findAdminRow(
+            $this->listAdmins($username, $password, ['ids' => $adminId, 'limit' => 1]),
+            (string) $adminId
+        );
+    }
+
+    /**
+     * بیرون‌کشیدن ردیف درخواستی از پاسخ `{admins: [...]}`.
+     *
+     * اگر پنل به‌جای لیست، خودِ رکورد را برگرداند (رفتار بعضی نسخه‌ها)،
+     * همان را می‌پذیریم تا تغییر نسخهٔ پنل این مسیر را نشکند.
+     *
+     * @param  array<string, mixed> $response
+     * @return array<string, mixed>
+     */
+    private function findAdminRow(array $response, string $needle): array
+    {
+        // شکل لیستی (GET /api/admins)
+        if (isset($response['admins']) && is_array($response['admins'])) {
+            foreach ($response['admins'] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $rowUsername = strtolower(trim((string) ($row['username'] ?? '')));
+
+                if ($rowUsername === strtolower($needle)
+                    || (string) ($row['id'] ?? '') === $needle) {
+                    return $row;
+                }
+            }
+
+            throw new PanelException('موردی با این مشخصات در پنل پیدا نشد.', 404);
+        }
+
+        // شکل تک‌رکوردی (fallback)
+        if (isset($response['username']) || isset($response['id'])) {
+            return $response;
+        }
+
+        throw new PanelException('موردی با این مشخصات در پنل پیدا نشد.', 404);
     }
 
     /**
@@ -174,12 +401,30 @@ class PasarGuardClient
 
     /**
      * ویرایش ادمین (PUT /api/admin/{username}).
+ *
+     * ⚠️ **چرا بدنهٔ خالی رد می‌شود؟**
+     * مدل `AdminModify` هیچ فیلدی را اجباری نکرده، پس `PUT` با بدنهٔ `{}`
+     * از نظر HTTP «موفق» است ولی هیچ کاری نمی‌کند. بدتر: نسخه‌هایی از پنل که
+     * فیلدهای نفرستاده را `None` حساب کنند، درخواست کوتاه یعنی **پاک کردن**
+     * `sub_domain`/`profile_title`/`note` نماینده. یک تماس بی‌معنی نباید بتواند
+     * اطلاعات نماینده را صفر کند، پس صریح رد می‌شود.
      *
      * @param  array<string, mixed> $payload فیلدهای AdminModify
      * @return array<string, mixed>
      */
     public function modifyAdmin(string $targetUsername, array $payload, string $username, string $password): array
     {
+        if ($payload === []) {
+            throw new PanelException(
+                'هیچ فیلدی برای ویرایش پنل ارسال نشد؛ عملیات انجام نشد.',
+                0,
+                ['path' => '/api/admin/' . $targetUsername],
+                null,
+                false,
+                true   // تقصیر کاربر نیست و با تلاش مجدد درست نمی‌شود
+            );
+        }
+
         return $this->request(
             'PUT',
             '/api/admin/' . rawurlencode($targetUsername),
@@ -199,6 +444,83 @@ class PasarGuardClient
             '/api/admin/' . rawurlencode($targetUsername) . '/reset',
             $username,
             $password
+        );
+    }
+
+    /**
+     * ساخت ادمین جدید (POST /api/admin).
+     *
+     * برای «خرید پنل نمایندگی» استفاده می‌شود: ربات با اکانت owner یک حساب
+     * ادمین با نقش اپراتور می‌سازد تا نماینده از داخل خود پنل دسترسی
+     * عملیاتی داشته باشد.
+     *
+     * @param  array<string, mixed> $payload فیلدهای AdminCreate
+     * @return array<string, mixed>
+     */
+    public function createAdmin(array $payload, string $username, string $password): array
+    {
+        return $this->request('POST', '/api/admin', $username, $password, $payload);
+    }
+
+    /**
+     * حذف ادمین (DELETE /api/admin/{username}).
+     */
+    public function deleteAdmin(string $targetUsername, string $username, string $password): array
+    {
+        return $this->request(
+            'DELETE',
+            '/api/admin/' . rawurlencode($targetUsername),
+            $username,
+            $password
+        );
+    }
+
+    /**
+     * غیرفعال کردن یک کاربر پنل.
+     *
+     * ⚠️ **چرا `PUT /api/user/{username}/disabled` و نه `PUT /api/user/{username}`؟**
+     * مدل `UserModify` هیچ فیلدی را اجباری نکرده و همه قابل‌تهی‌اند. اگر
+     * نسخه‌ای از پنل فیلدهای نفرستاده را «null» حساب کند، ارسال فقط
+     * `{status: "disabled"}` هم‌زمان `data_limit` و `expire` کاربر را **پاک
+     * می‌کند** — یعنی قطع دسترسی عملاً به «حذف» تبدیل می‌شود و با تمدید دوباره
+     * برنمی‌گردد. endpoint اختصاصی فقط یک فیلد دارد (`disabled`) و از نظر
+     * ساختاری نمی‌تواند چیزی را بپاکد.
+     * (آزمون زنده: `PUT /api/user/xyz/disabled → 401` یعنی مسیر و متد درست است.)
+     *
+     * برای «قطع دسترسی همهٔ کاربران یک نماینده پس از اتمام اعتبار» استفاده
+     * می‌شود. عمداً به‌جای DELETE از تغییر وضعیت استفاده می‌کنیم چون حذف
+     * اطلاعات مصرف مشتری را از بین می‌برد و در صورت تمدید دوباره قابل بازگشت
+     * نیست.
+     *
+     * @param array<string, mixed> $payload اگر `status` چیزی غیر از `disabled`
+     *                                      باشد (مثلاً فعال‌سازی دوباره)، مسیر
+     *                                      عمومی با همان وضعیت استفاده می‌شود.
+     */
+    public function disableUser(string $targetUsername, string $username, string $password, array $payload = []): array
+    {
+        $target = trim($targetUsername);
+
+        if ($target === '') {
+            throw new PanelException('نام کاربری پنل مشخص نشده است.', 404);
+        }
+
+        $status = (string) ($payload['status'] ?? '');
+
+        if ($status !== '' && $status !== 'disabled') {
+            return $this->modifyUser(
+                $target,
+                array_merge(['status' => $status], $payload),
+                $username,
+                $password
+            );
+        }
+
+        return $this->request(
+            'PUT',
+            '/api/user/' . rawurlencode($target) . '/disabled',
+            $username,
+            $password,
+            ['disabled' => true]
         );
     }
 
@@ -237,11 +559,26 @@ class PasarGuardClient
     /**
      * ویرایش کاربر (PUT /api/user/{username}).
      *
+     * ⚠️ مثل `modifyAdmin`، بدنهٔ خالی رد می‌شود: `UserModify` هم فیلد اجباری
+     * ندارد و نسخه‌هایی از پنل که `None` را «پاک کردن» می‌گیرند، با `{}` حجم و
+     * تاریخ انقضای مشتری را صفر می‌کنند.
+     *
      * @param  array<string, mixed> $payload
      * @return array<string, mixed>
      */
     public function modifyUser(string $targetUsername, array $payload, string $username, string $password): array
     {
+        if ($payload === []) {
+            throw new PanelException(
+                'هیچ فیلدی برای ویرایش کاربر ارسال نشد؛ عملیات انجام نشد.',
+                0,
+                ['path' => '/api/user/' . $targetUsername],
+                null,
+                false,
+                true
+            );
+        }
+
         return $this->request(
             'PUT',
             '/api/user/' . rawurlencode($targetUsername),
@@ -277,6 +614,92 @@ class PasarGuardClient
         $query = array_merge(['offset' => 0, 'limit' => 50], $query);
 
         return $this->request('GET', '/api/users?' . http_build_query($query), $username, $password);
+    }
+
+    /**
+     * شمارش کاربران با فیلتر وضعیت — بدون دانلود لیست.
+     *
+     * چرا جدا از listUsers؟ برای آمار، فقط عدد `total` لازم است؛ گرفتن
+     * صفحه‌به‌صفحهٔ هزاران کاربر داخل وبهوک یعنی تایم‌اوت و «هنگ» ربات.
+     * با `limit=1` فقط شمارش برمی‌گردد (۱ درخواست به‌جای N صفحه).
+     *
+     * نکتهٔ کوئری: فیلترهای لیستی پنل (`status=[...]`) باید به‌صورت کلید
+     * تکراری (`status=a&status=b`) فرستاده شوند؛ `http_build_query` شکل
+     * `status[0]=a` می‌سازد که FastAPI لیست نمی‌فهمد و ۴۲۲ می‌دهد.
+     *
+     * @param  array<int, string> $statuses زیرمجموعه‌ای از UserStatus (خالی = همه)
+     * @return int|null شمارش، یا null اگر نامشخص بود (فراخواننده باید walk کند)
+     */
+    public function countUsers(string $username, string $password, array $statuses = [], ?string $admin = null): ?int
+    {
+        $qs = 'limit=1&offset=0';
+
+        foreach ($statuses as $status) {
+            $status = trim((string) $status);
+
+            if ($status !== '') {
+                $qs .= '&status=' . rawurlencode($status);
+            }
+        }
+
+        if ($admin !== null && trim($admin) !== '') {
+            $qs .= '&admin=' . rawurlencode(trim($admin));
+        }
+
+        try {
+            $response = $this->request('GET', '/api/users?' . $qs, $username, $password);
+        } catch (PanelException) {
+            return null;
+        }
+
+        $users = $response['users'] ?? null;
+        $total = $response['total'] ?? null;
+
+        // شکل پاسخ باید دقیقاً همان UsersResponse باشد؛ وگرنه عدد
+        // غیرقابل اعتماد است و null برمی‌گردد تا فراخواننده walk کند.
+        if (!is_array($users) || !is_numeric($total)) {
+            return null;
+        }
+
+        return max(0, (int) $total);
+    }
+
+    /**
+     * غیرفعال کردن یک‌جای همهٔ کاربران یک ادمین (POST .../users/disable).
+     *
+     * چرا bulk و نه حلقه؟ قطع دسترسی ۲۰۰ کاربر با ۲۰۰ درخواست PUT پشت سر هم
+     * در وبهوک یعنی ده‌ها ثانیه تا دقیقه‌ها تأخیر و ریسک تایم‌اوت PHP —
+     * یعنی «هنگ» ربات وسط کار. این endpoint همان کار را سمت سرور در یک
+     * درخواست انجام می‌دهد.
+     *
+     * توجه: پاسخ موفق بدنهٔ شمارشی ندارد؛ تعداد دقیق از قبل (لیست) دانسته
+     * می‌شود، نه از اینجا.
+     *
+     * @return array<string, mixed>
+     */
+    public function disablePanelUsers(string $targetUsername, string $username, string $password): array
+    {
+        return $this->request(
+            'POST',
+            '/api/admin/' . rawurlencode($targetUsername) . '/users/disable',
+            $username,
+            $password
+        );
+    }
+
+    /**
+     * فهرست نقش‌های ادمین (GET /api/admin-roles).
+     *
+     * برای انتخاب خودکار نقش اپراتور وقتی `rep_role_id` تنظیم نشده است.
+     *
+     * @param  array<string, mixed> $query
+     * @return array<string, mixed>
+     */
+    public function listRoles(string $username, string $password, array $query = []): array
+    {
+        $query = array_merge(['limit' => 50, 'offset' => 0], $query);
+
+        return $this->request('GET', '/api/admin-roles?' . http_build_query($query), $username, $password);
     }
 
     /**
@@ -381,19 +804,30 @@ class PasarGuardClient
      */
     private function send(string $method, string $path, string $username, string $password, ?array $payload): array
     {
+        // نگهبان بودجه: اگر وقت نمانده، اصلاً شبکه لمس نمی‌شود.
+        $this->assertTimeLeft($path);
+
         $token    = $this->login($username, $password);
         $url      = $this->baseUrl . $path;
+
+        // اگر همین حالا بودجه تمام شد (مثلاً login وقت را خورد)، باز هم
+        // درخواست را شروع نمی‌کنیم.
+        $this->assertTimeLeft($path);
+
         $headers  = [
             'accept: application/json',
             'authorization: Bearer ' . $token,
         ];
 
+        $timeout  = $this->effectiveTimeout();
+        $attempts = $this->effectiveAttempts();
+
         $started = microtime(true);
         $response = Http::json($method, $url, $payload, [
             'headers'     => $headers,
-            'timeout'     => $this->timeout,
+            'timeout'     => $timeout,
             'verify_ssl'  => $this->verifySsl,
-            'attempts'    => 2,
+            'attempts'    => $attempts,
         ]);
         $elapsed = (int) round((microtime(true) - $started) * 1000);
 
@@ -402,6 +836,9 @@ class PasarGuardClient
             'path'     => $path,
             'status'   => $response['status'],
             'ms'       => $elapsed,
+            'timeout'  => $timeout,
+            'attempts' => $attempts,
+            'budget'   => $this->deadline > 0.0 ? round($this->remainingSeconds(), 1) : null,
         ]);
 
         return $response;
@@ -467,8 +904,21 @@ class PasarGuardClient
      * @var array<int, array{0: array<int, string>, 1: string}>
      */
     private const MESSAGE_RULES = [
-        [['incorrect', 'invalid credential', 'username', 'password', 'bad credentials'], 'نام کاربری یا رمز عبور اشتباه است.'],
-        [['unauthorized', 'not authenticated', 'token expired'], 'نشست شما منقضی شده است. دوباره وارد شوید.'],
+        // ⚠️ ترتیب سطرها مهم است: قواعد قبل از این بررسی می‌شوند.
+        // «Could not validate credentials» عیناً پیام واقعی FastAPI در
+        // `POST /api/admin/token` است و شامل کلمهٔ `credentials` است، پس باید
+        // **قبل** از سطر عمومی بیاید وگرنه کاربر پیام بی‌معنای
+        // «نشست شما منقضی شده» می‌دید و رمزش را عوض می‌کرد بی‌دلیل.
+        [['could not validate credentials', 'invalid credential', 'bad credentials', 'incorrect credential'], 'نام کاربری یا رمز عبور پنل اشتباه است.'],
+        [['not authenticated', 'unauthorized', 'token expired'], 'نشست شما منقضی شده است. دوباره وارد شوید.'],
+        // ⚠️ این سطر باید **قبل** از سطر `not allowed` باشد.
+        // پیام واقعی FastAPI برای ۴۰۵ «Method Not Allowed» است و شامل
+        // «not allowed» هم می‌شود؟ نه — ولی «You are not allowed to perform
+        // this action» (۴۰۳) شامل «not allowed» است. اگر این سطر بعد از قاعدهٔ
+        // عمومی می‌آمد، خطای «نسخهٔ پنل پشتیبانی نمی‌کند» — که یک باگ واقعی
+        // در کد ماست — به کاربر نشان داده می‌شد و طوری به نظر می‌رسید که مشکل
+        // از حساب اوست. الان زودتر بررسی می‌شود و فقط ۴۰۵ را می‌گیرد.
+        [['method not allowed', '405 method'], 'این عملیات روی نسخهٔ فعلی پنل پشتیبانی نمی‌شود. لطفاً با پشتیبانی تماس بگیرید.'],
         [['forbidden', 'permission', 'not allowed'], 'دسترسی لازم برای این عملیات را ندارید.'],
         [['not found', 'does not exist', 'no such'], 'موردی با این مشخصات پیدا نشد.'],
         [['already exists', 'duplicate', 'is taken'], 'این مورد از قبل وجود دارد.'],
@@ -555,6 +1005,7 @@ class PasarGuardClient
     {
         return match ($response['status']) {
             404 => 'موردی با این مشخصات در پنل پیدا نشد.',
+            405 => 'این عملیات روی نسخهٔ فعلی پنل پشتیبانی نمی‌شود. لطفاً با پشتیبانی تماس بگیرید.',
             409 => 'این عملیات با وضعیت فعلی پنل تداخل دارد.',
             422 => 'داده‌های ارسالی نامعتبر است.',
             429 => 'درخواست‌های زیادی به پنل ارسال شده است؛ کمی بعد دوباره تلاش کنید.',

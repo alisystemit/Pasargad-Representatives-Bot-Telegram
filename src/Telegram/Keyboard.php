@@ -124,10 +124,18 @@ final class Keyboard
     /**
      * دکمهٔ بازگشت (به‌تنهایی در یک ردیف).
      *
+     * اگر $data خام باشد (مثل 'menu' یا 'admin.home') به‌صورت خودکار
+     * به فرمت JSON استاندارد تبدیل می‌شود تا مسیریاب Kernel آن را بفهمد.
+     * اگر از قبل encode شده باشد (با { شروع شود) دست‌نخورده می‌ماند.
+     *
      * @return array<int, array<int, array<string, mixed>>>
      */
     public static function back(string $data = 'menu', string $text = '🔙 بازگشت'): array
     {
+        if ($data !== '' && $data[0] !== '{') {
+            $data = BotApi::encodeData($data);
+        }
+
         return [[['text' => $text, 'data' => $data]]];
     }
 
