@@ -84,16 +84,55 @@ try {
 echo "\n▶ ساختار پاسخ API\n";
 // ------------------------------------------------------------------
 
-// بررسی اینکه مسیرهای اصلی در openapi وجود دارند
-$openapi = null;
-try {
-    $response = \Pasargad\Support\Http::json('GET', rtrim($panelUrl, '/') . '/openapi.json', null, ['timeout' => 20]);
-    if (is_array($response['data'])) {
-        $openapi = $response['data'];
+// بررسی اینکه مسیرهای اصلی در openapi وجود دارند.
+//
+// ⚠️ نکتهٔ مهم: timeout عمداً ۴۵ ثانیه است، نه ۲۰.
+//
+// فایل `openapi.json` این پنل حدود ۳۶۰ کیلوبایت است و بار دانلودش قابل‌توجه
+// است. با timeout کوتاه، این بخش گاهی بی‌سروصدا رد می‌شد و تست سبز می‌ماند —
+// یعنی دقیقاً همان بررسی‌ای که بعد از یک باگ واقعی اضافه شده بود، بدون
+// اجرا رد می‌شد. «بی‌سروصدا رد شدن» بدترین حالت برای یک نگهبان است.
+$openapi     = null;
+$openapiNote = '';
+
+// ⚠️ چرا حلقهٔ تلاش دستی و نه `attempts` داخل `Http::json`؟
+//
+// دو دلیل:
+//   ۱) `openapi.json` این پنل ~۳۶۰ کیلوبایت است و **گاهی واقعاً ۴۸ ثانیه**
+//      طول می‌کشد (اندازه‌گیری شد). یک تلاش ۲۰ ثانیه‌ای تقریباً همیشه
+//      شکست می‌خورد.
+//   ۲) با `attempts = 2` و `timeout = 45` بدترین حالت ۹۰ ثانیه می‌شود و
+//      باز هم ممکن است کم باشد. اینجا چهار تلاش کوتاه می‌دهیم: مجموعاً هم
+//      پایدارتر است و هم اگر واقعاً شکست بخورد، لاگ خواناتری داریم.
+for ($attempt = 1; $attempt <= 4 && $openapi === null; $attempt++) {
+    try {
+        $response = \Pasargad\Support\Http::json(
+            'GET',
+            rtrim($panelUrl, '/') . '/openapi.json',
+            null,
+            ['timeout' => 40, 'attempts' => 1]
+        );
+
+        if ($response['status'] === 200 && is_array($response['data'])) {
+            $openapi = $response['data'];
+        } else {
+            $openapiNote = sprintf(
+                'تلاش %d: status=%d, error=%s',
+                $attempt,
+                $response['status'],
+                substr((string) $response['error'], 0, 60)
+            );
+        }
+    } catch (\Throwable $e) {
+        $openapiNote = sprintf('تلاش %d: %s', $attempt, $e->getMessage());
     }
-} catch (\Throwable) {
-    // بی‌اهمیت
+
+    if ($openapi === null) {
+        usleep(500_000);
+    }
 }
+
+check('اسپک پنل (openapi.json) دریافت شد', $openapi !== null, $openapiNote);
 
 if ($openapi !== null) {
     $paths = $openapi['paths'] ?? [];
@@ -205,8 +244,6 @@ if ($openapi !== null) {
         check("فیلتر «{$needed}» در GET /api/users وجود دارد",
             in_array($needed, $userParams, true));
     }
-} else {
-    echo "  ⚠️  دریافت openapi.json ممکن نشد — بررسی ساختار رد شد\n";
 }
 
 echo "\n───────────────\n";

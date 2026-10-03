@@ -65,9 +65,21 @@ foreach ($suites as [$name, $path, $optional]) {
     $text = implode("\n", $output);
     echo $text . "\n";
 
-    if (preg_match('/نتیجه:\s*(\d+)\s*موفق،?\s*(\d+)\s*ناموفق/u', $text, $m) === 1) {
-        $totalPassed += (int) $m[1];
-        $totalFailed += (int) $m[2];
+    // ⚠️ پیشوند «نتیجه:» اجباری نیست؛ بعضی مجموعه‌ها (مثل regression و
+    // payment_security) خلاصه را بدون آن چاپ می‌کنند و با الگوی سخت‌گیرانه
+    // اصلاً شمرده نمی‌شدند — یعنی «مجموع کل» کمتر از واقعیت گزارش می‌شد.
+    // آخرین خط «N موفق، M ناموفق» همان خلاصهٔ واقعی هر مجموعه است.
+    $found = preg_match_all(
+        '/(?:نتیجه[:ٔ]?\s*)?(\d+)\s*موفق،?\s*(\d+)\s*ناموفق/u',
+        $text,
+        $matches,
+        PREG_SET_ORDER
+    );
+
+    if ($found > 0) {
+        $last         = end($matches);
+        $totalPassed += (int) $last[1];
+        $totalFailed += (int) $last[2];
     }
 
     if ($exitCode !== 0) {
