@@ -34,7 +34,6 @@ final class SupportCenter
     private Settings $settings;
     private FeatureFlags $flags;
     private SessionStore $sessions;
-    private OrderRepository $orders;
 
     public function __construct(
         BotApi $bot,
@@ -42,8 +41,7 @@ final class SupportCenter
         ?TicketRepository $tickets = null,
         ?Settings $settings = null,
         ?FeatureFlags $flags = null,
-        ?SessionStore $sessions = null,
-        ?OrderRepository $orders = null
+        ?SessionStore $sessions = null
     ) {
         $this->bot       = $bot;
         $this->notifier  = $notifier;
@@ -51,7 +49,6 @@ final class SupportCenter
         $this->settings  = $settings ?? new Settings();
         $this->flags     = $flags ?? new FeatureFlags($this->settings);
         $this->sessions  = $sessions ?? new SessionStore();
-        $this->orders    = $orders ?? new OrderRepository();
     }
 
     // ------------------------------------------------------------------

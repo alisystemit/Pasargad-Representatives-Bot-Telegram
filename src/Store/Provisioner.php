@@ -597,7 +597,11 @@ final class Provisioner
      * همگام‌سازی وضعیت پنل‌های یک کاربر (برای دکمهٔ «بروزرسانی»).
      *
      * @param  array<string, mixed> $user
-     * @return array{ok:bool, message:string, results?:array<int, array<string, mixed>>}
+     * @return array{
+     *     ok: bool,
+     *     message: string,
+     *     results?: array{checked:int, synced:int, failed:int, skipped:int, budget_used:bool}
+     * }
      */
     public function syncUserPanels(array $user): array
     {

@@ -134,7 +134,7 @@ final class Kernel
     private function channelGuard(): ChannelGuard
     {
         if ($this->channelGuard === null) {
-            $this->channelGuard = new ChannelGuard($this->bot, $this->settings, $this->notifier);
+            $this->channelGuard = new ChannelGuard($this->bot, $this->settings);
         }
 
         return $this->channelGuard;
@@ -223,8 +223,7 @@ final class Kernel
                 new TicketRepository(),
                 $this->settings,
                 $this->flags,
-                $this->sessions,
-                $this->orders
+                $this->sessions
             );
         }
 
@@ -2181,8 +2180,12 @@ final class Kernel
     /**
      * @param array<string, mixed> $order
      * @param array{discount:int, code:string, coupon_id:int, referral:string} $discount
+     *        خروجی `resolveDiscount()`؛ عمداً **بدون مقدار پیش‌فرض** چون
+     *        شکلش دقیقاً همین است و `[]` باعث می‌شد هر خواندنی از کلید
+     *        `discount` روی آرایهٔ خالی undefined بدهد. اگر روزی فراخوان بدون
+     *        تخفیف اضافه شد، باید صریح `$this->resolveDiscount($user, …)` بگیرد.
      */
-    private function showPaymentMethods(int $chatId, array $order, array $discount = []): void
+    private function showPaymentMethods(int $chatId, array $order, array $discount): void
     {
         $gateways = $this->payments->activeGateways();
 

@@ -29,13 +29,11 @@ final class ChannelGuard
 {
     private BotApi $bot;
     private Settings $settings;
-    private Notifier $notifier;
 
-    public function __construct(BotApi $bot, Settings $settings, ?Notifier $notifier = null)
+    public function __construct(BotApi $bot, Settings $settings)
     {
         $this->bot      = $bot;
         $this->settings = $settings;
-        $this->notifier = $notifier ?? new Notifier($bot);
     }
 
     /**
