@@ -194,6 +194,9 @@ class BotApi
             return $last;
         }
 
+        // هیچ‌وقت بدون text به تلگرام نفرست؛ همیشه خودتِ متن را بنشان
+        $options['text'] = $text;
+
         $result = $this->call('sendMessage', $options);
 
         if ($result['ok'] ?? false) {
