@@ -762,10 +762,17 @@ final class Kernel
             case 'menu':
                 $this->sessions->clear($telegramId);
                 $name = (string) ($user['first_name'] ?? $user['username'] ?? 'دوست عزیز');
-                // کیبورد ثابتِ قدیمی (اگر از نسخهٔ قبلیِ ربات با همین اکانت مانده باشد)
-                // تا اینجا روی دستگاهِ مخاطب بوده و هرگز پاک نشده — با remove_keyboard حذف می‌شود.
+                // کیبوردِ ثابتِ شیشه‌ای کنار دکمه‌های اینلاین:
+                // این پیام دکمه‌های پایینی را می‌سازد، پیام منو دکمه‌های اینلاین را.
                 $this->bot->sendMessage($chatId, Text::welcome($name, $this->hasPanels($user)), [
-                    'reply_markup' => ['remove_keyboard' => true],
+                    'reply_markup' => [
+                        'keyboard' => [
+                            [['text' => '🏠 منوی اصلی'], ['text' => '🛒 فروشگاه']],
+                            [['text' => '👤 حساب من'], ['text' => '🎫 پشتیبانی']],
+                        ],
+                        'resize_keyboard' => true,
+                        'is_persistent'  => true,
+                    ],
                 ]);
                 $this->showMainMenu($chatId, $user, $isAdmin);
                 break;
@@ -853,6 +860,27 @@ final class Kernel
 
     private function handleMenuText(Update $update, array $user, bool $isAdmin, string $text): void
     {
+        // دکمه‌های ثابت (ردیفِ پایینِ صفحه) به همان مسیرهای ربات مپ می‌شوند
+        switch ($text) {
+            case '🏠 منوی اصلی':
+                $this->sessions->clear((int) $update->userId());
+                $this->showMainMenu((int) $update->chatId(), $user, $isAdmin);
+
+                return;
+            case '🛒 فروشگاه':
+                $this->showShop((int) $update->chatId(), $user, PackageRepository::KIND_AGENCY);
+
+                return;
+            case '👤 حساب من':
+                $this->showAccount((int) $update->chatId(), $user);
+
+                return;
+            case '🎫 پشتیبانی':
+                $this->supportCenter()->start((int) $update->chatId(), $user);
+
+                return;
+        }
+
         $this->bot->sendMessage((int) $update->chatId(), 'برای مشاهدهٔ گزینه‌ها روی دکمه‌های زیر بزنید 👇', [
             'reply_markup' => $this->bot->buildMarkup($this->mainMenuKeyboard($user, $isAdmin)),
         ]);
