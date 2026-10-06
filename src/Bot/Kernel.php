@@ -16,6 +16,7 @@ use Pasargad\Store\PanelSyncer;
 use Pasargad\Store\Provisioner;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TicketRepository;
+use Pasargad\Store\TestConfigRepository;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
 use Pasargad\Support\Invoice;
@@ -55,6 +56,7 @@ final class Kernel
     private ?AdminController $adminController = null;
     private ?SupportCenter $supportCenter = null;
     private ?DiscountService $discounts = null;
+    private TestConfigRepository $testRepo;
     private ?\Pasargad\Store\Security $security = null;
     private FloodGuard $flood;
 
@@ -86,6 +88,7 @@ final class Kernel
         $this->provisioner = $provisioner ?? new Provisioner($panel, $this->orders, $this->users, $this->settings, $this->panels);
         $this->payments    = $payments ?? new PaymentService($this->orders, $this->provisioner, $this->settings, $this->flags);
         $this->flood       = $floodGuard ?? new FloodGuard();
+        $this->testRepo    = new TestConfigRepository();
 
         $this->payments->setNotifier($this->notifier);
     }
@@ -289,6 +292,22 @@ final class Kernel
         // 🛡️ ضدتکرار و محافظ بار سرور (fail-open: با خطا، دستور اجرا می‌شود)
         // ------------------------------------------------------------------
         if ($this->isDuplicateOrFlood($update, $userId, $chatId)) {
+            return;
+        }
+
+        // ------------------------------------------------------------------
+        // 🛡️ محدودیت نرخ ضداسپم: اگر کاربر بیش از حد پیام بدهد، محدود می‌شود.
+        // ------------------------------------------------------------------
+        if ($this->flood->isSpamRateLimited($userId, 15, 60)) {
+            if ($update->isCallbackQuery()) {
+                $this->bot->answerCallback(
+                    (string) ($update->raw()['callback_query']['id'] ?? ''),
+                    '⏳ پیام‌های شما بیش از حد است! لطفاً کمی استراحت کنید. 🙏'
+                );
+            } else {
+                $this->bot->sendMessage($chatId, '⏳ پیام‌های شما بیش از حد مجاز است! لطفاً ۶۰ ثانیه صبر کنید. 🙏');
+            }
+
             return;
         }
 
@@ -1358,7 +1377,7 @@ final class Kernel
 
         if ($ns === 'panel.subscribe') {
             $this->bot->answerCallback($callbackId);
-            $this->panelCenter()->showSubscribe($chatId, $user);
+            $this->panelCenter()->showSubscribe($chatId, $user, (int) ($data['id'] ?? 0));
             return;
         }
 
@@ -1371,12 +1390,6 @@ final class Kernel
         if ($ns === 'panel.subscribe.premium') {
             $this->bot->answerCallback($callbackId, 'در حال خرید اشتراک premium...');
             $this->panelCenter()->purchaseSubscribe($chatId, $user, (int) ($data['id'] ?? 0));
-            return;
-        }
-
-        if ($ns === 'panel.subscribe') {
-            $this->bot->answerCallback($callbackId);
-            $this->panelCenter()->showSubscribe($chatId, $user);
             return;
         }
 
@@ -2057,6 +2070,15 @@ final class Kernel
         $lines[] = '🎉 دوست شما با این کد <b>' . Str::faNumber($percent) . '٪</b> تخفیف می‌گیرد.';
         $lines[] = '💰 شما به ازای هر خرید موفق او <b>' . Str::formatToman($summary['bonus_each'])
             . '</b> پاداش می‌گیرید (به کیف پولتان اضافه می‌شود).';
+
+        // پاداش اسلات (bonus slate) — پاداش اضافی برای دعوت‌های موفق
+        $db = Pasargad\Support\Db::instance();
+        $slateCount = $db->count('SELECT COUNT(*) FROM referrals WHERE referrer_user_id = ? AND slate_bonus_toman > 0', [(int) $user['id']]);
+
+        if ($slateCount > 0) {
+            $lines[] = '';
+            $lines[] = '💎 پاداش اسلات: <b>' . Str::faNumber($slateCount) . '</b> دعوت موفق';
+        }
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
             'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([

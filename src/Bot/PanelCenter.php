@@ -242,6 +242,9 @@ final class PanelCenter
             '🌐 آدرس پنل: ' . ($loginUrl === '' ? '<i>➖ ثبت نشده</i>' : Str::escape($loginUrl)),
             '👤 نام کاربری: <code>' . Str::escape($username) . '</code>',
             '🔒 رمز عبور: <code>' . ($password === '' ? '<i>➖ ثبت نشده</i>' : Str::escape($password)) . '</code>',
+            '',
+            '💿 سقف دیسک: ' . ($panel['disk_quota'] > 0 ? Str::formatBytes((int) $panel['disk_quota']) : 'نامحدود'),
+            $panel['is_dead'] ? '⚠️ وضعیت: پنل مرده' : '',
         ];
 
         if (!empty($panel['panel_role'])) {
@@ -407,6 +410,11 @@ final class PanelCenter
         $rows[] = [[
             'text' => '🛒 شارژ/تمدید',
             'data' => BotApi::encodeData('shop', ['kind' => 'topup', 'p' => $panelId]),
+        ]];
+
+        $rows[] = [[
+            'text' => '📅 اشتراک من',
+            'data' => BotApi::encodeData('panel.subscribe', ['id' => $panelId]),
         ]];
 
         $rows[] = Keyboard::back(BotApi::encodeData('panel.list'), '🖥 بازگشت به پنل‌ها');
@@ -618,6 +626,279 @@ final class PanelCenter
                 Keyboard::back(BotApi::encodeData('panel.test.list'), '🧪 بازگشت به کانفیگ‌های تست'),
             ])),
         ]);
+    }
+
+    /**
+     *نمایش تنظیمات حذف خودکار.
+     *
+     * @param array<string, mixed> $user
+     */
+    public function showTestAutoDelete(int $chatId, array $user, int $configId): void
+    {
+        $config = $this->testRepo->findForUser($configId, (int) $user['id']);
+
+        if ($config === null) {
+            $this->bot->sendMessage($chatId, Text::notFound());
+            return;
+        }
+
+        $isAutoDelete = (int) ($config['is_auto_delete'] ?? 0);
+        $expireAt     = (int) ($config['expire_at'] ?? 0);
+        $autoDeleteAt = (int) ($config['auto_delete_at'] ?? 0);
+        $now          = time();
+
+        $lines = [
+            '🧪✨ <b>تنظیمات حذف خودکار 🗑️</b>',
+            '',
+            '🖥 پنل: <code>' . Str::escape((string) $config['panel_username']) . '</code>',
+            '👤 کاربر: <code>' . (int) $config['user_id'] . '</code>',
+            '',
+            '📅 تاریخ انقضای کانفیگ: ' . Str::date($expireAt) . ' ⏳',
+            '🗑 حذف خودکار: ' . ($isAutoDelete ? 'فعال ✅' : 'غیرفعال ❌'),
+            '⏰ زمان حذف خودکار: ' . ($autoDeleteAt > 0 ? Str::date($autoDeleteAt) : 'تنظیم نشده'),
+            '',
+            '⚠️ وقتی تاریخ زمان حذف رسید، کانفیگ خودکاراً حذف می‌شود.',
+            '',
+        ];
+
+        $keyboard = Keyboard::rows([
+            [
+                'text' => $isAutoDelete ? '⛔️ غیرفعال حذف خودکار' : '✅ فعال حذف خودکار',
+                'data' => BotApi::encodeData('panel.test.autodelete.toggle', ['id' => $configId]),
+            ],
+            [
+                'text' => '⏰ تنظیم زمان حذف',
+                'data' => BotApi::encodeData('panel.test.autodelete.set', ['id' => $configId]),
+            ],
+            [
+                'text' => '❌ لغو حذف خودکار',
+                'data' => BotApi::encodeData('panel.test.autodelete.clear', ['id' => $configId]),
+            ],
+            Keyboard::back(BotApi::encodeData('panel.test.list'), '🧪 بازگشت به کانفیگ‌های تست'),
+        ]);
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
+
+    /**
+     *handler: toggle auto-delete for test config.
+     */
+    public function handleTestAutoDeleteToggle(Update $update, array $user, int $configId): void
+    {
+        $config = $this->testRepo->findForUser($configId, (int) $user['id']);
+
+        if ($config === null) {
+            $this->bot->sendMessage((int) $update->chatId(), Text::notFound());
+            return;
+        }
+
+        $newState = (int) ($config['is_auto_delete'] ?? 0) === 0 ? 1 : 0;
+        $this->testRepo->update($configId, [
+            'is_auto_delete' => $newState,
+        ]);
+
+        $icon = $newState ? '✅' : '❌';
+        $this->bot->sendMessage((int) $update->chatId(), $icon . ' تنظیمات حذف خودکار ' . ($newState ? 'فعال شد' : 'غیرفعال شد'), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back(BotApi::encodeData('panel.test.list'), '🧪 بازگشت به کانفیگ‌های تست'),
+            ])),
+        ]);
+    }
+
+    /**
+     *handler: set auto-delete time for test config.
+     */
+    public function handleTestAutoDeleteSet(Update $update, array $user, int $configId): void
+    {
+        $config = $this->testRepo->findForUser($configId, (int) $user['id']);
+
+        if ($config === null) {
+            $this->bot->sendMessage((int) $update->chatId(), Text::notFound());
+            return;
+        }
+
+        $this->bot->sendMessage((int) $update->chatId(), '⏰ لطفاً عدد ثانیهٔ زمان حذف خودکار را ارسال کنید.');
+        $this->sessions->set($user['telegram_id'], [
+            'step'    => 'panel.test.autodelete.set',
+            'config_id' => $configId,
+        ]);
+    }
+
+    /**
+     *handler: clear auto-delete for test config.
+     */
+    public function handleTestAutoDeleteClear(Update $update, array $user, int $configId): void
+    {
+        $config = $this->testRepo->findForUser($configId, (int) $user['id']);
+
+        if ($config === null) {
+            $this->bot->sendMessage((int) $update->chatId(), Text::notFound());
+            return;
+        }
+
+        $this->testRepo->update($configId, [
+            'is_auto_delete' => 0,
+            'auto_delete_at' => 0,
+        ]);
+
+        $this->bot->sendMessage((int) $update->chatId(), '❌ حذف خودکار لغو شد.', [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back(BotApi::encodeData('panel.test.list'), '🧪 بازگشت به کانفیگ‌های تست'),
+            ])),
+        ]);
+    }
+
+    /**
+     * نمایش گزینه‌های اشتراک مدت‌دار برایpanel.
+     *
+     * @param array<string, mixed> $user
+     */
+    public function showSubscribe(int $chatId, array $user, int $panelId = 0): void
+    {
+        $panels = $this->panels->listByUser((int) $user['id']);
+
+        if ($panelId > 0) {
+            // اگر کاربر روی یک پنل خاص کلیک کرد، همان پنل را نشان بده
+            $panel = $this->panels->findForUser($panelId, (int) $user['id']);
+
+            if ($panel !== null) {
+                $this->showSubscribeDetail($chatId, $user, $panelId);
+                return;
+            }
+        }
+
+        if ($panels === []) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '🖥️✨ <b>پنل‌های من 🌐</b>',
+                '',
+                '😔 شما هنوز پنل نمایندگی ندارید! 🈳',
+                '',
+                '🛒💎 برای شروع، یک بستهٔ «🖥️ پنل نمایندگی 🌟» بخرید تا حساب اپراتور شما ساخته شود! 🎁🚀',
+                '',
+                'اگر از قبل پنل دارید و فقط می‌خواهید آن را به ربات وصل کنید، '
+                . 'از دکمهٔ «🔗 من پنل دارم» استفاده کنید! 🔌👇',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    [
+                        ['text' => '🛒 خرید پنل نمایندگی', 'data' => BotApi::encodeData('shop', ['kind' => 'agency'])],
+                    ],
+                    [['text' => '🔗 من پنل دارم', 'data' => BotApi::encodeData('panel.self')]],
+                    Keyboard::back('menu'),
+                ])),
+            ]);
+
+            return;
+        }
+
+        $lines = ['🖥️✨ <b>پنل‌های من 🌐</b> (' . Str::faNumber(count($panels)) . ')', ''];
+        $keyboard = [];
+
+        foreach ($panels as $panel) {
+            $isSubscribed = (int) ($panel['is_subscribed'] ?? 0);
+            $expired      = PanelRepository::isExpired($panel);
+            $daysLeft     = PanelRepository::daysLeft($panel);
+
+            $subText = $isSubscribed
+                ? '✅ اشتراک فعال'
+                : ($expired ? '⌛️ منقضی‌شده' : '🔄 بدون اشتراک');
+
+            $lines[] = PanelRepository::statusLabel($panel) . ' <b>'
+                . Str::escape((string) $panel['panel_username']) . '</b>'
+                . ' • ' . $subText;
+
+            $lines[] = '   💾 ' . Str::formatBytes((int) $panel['data_limit'])
+                . ' • 📥 ' . Str::formatBytes((int) $panel['used_traffic']);
+
+            if ($daysLeft === null) {
+                $lines[] = '   ⏳ بدون انقضا';
+            } elseif ($expired) {
+                $lines[] = '   ⌛️ منقضی‌شده'
+                    . ($panel['cutoff_done_at'] !== null ? ' — قطع شده' : '');
+            } else {
+                $lines[] = '   📅 ' . Str::faNumber($daysLeft) . ' روز اعتبار';
+            }
+
+            $lines[] = '';
+
+            $icon = $isSubscribed ? '✅' : '🔄';
+            $keyboard[] = [[
+                'text' => $icon . ' ' . Str::truncate((string) $panel['panel_username'], 22),
+                'data' => BotApi::encodeData('panel.subscribe.detail', ['id' => (int) $panel['id']]),
+            ]];
+        }
+
+        $keyboard[] = [[
+            'text' => '📈 اشتراک Premium',
+            'data' => BotApi::encodeData('panel.subscribe.premium'),
+        ]];
+        $keyboard[] = Keyboard::back('panel.list', '🖥 بازگشت به پنل‌ها');
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
+
+    public function showSubscribeDetail(int $chatId, array $user, int $panelId = 0): void
+    {
+        $panel = null;
+        if ($panelId > 0) {
+            $panel = $this->panels->findForUser($panelId, (int) $user['id']);
+        }
+        if ($panel === null) {
+            $panel = $this->panels->primaryForUser($user);
+        }
+
+        if ($panel === null) {
+            $this->bot->sendMessage($chatId, Text::notFound());
+            return;
+        }
+
+        $isSubscribed = (int) ($panel['is_subscribed'] ?? 0) === 1;
+        $expireAt     = (int) ($panel['subscription_expire_at'] ?? 0);
+        $daysLeft     = $expireAt > 0 ? max(0, (int) ceil(($expireAt - time()) / 86400)) : null;
+
+        $lines = [
+            '📈✨ <b>جزئیات اشتراک پنل 🌐</b>',
+            '',
+            '🖥 پنل: <code>' . Str::escape((string) ($panel['panel_username'] ?? '')) . '</code>',
+            $isSubscribed ? '✅ وضعیت اشتراک: فعال' : '❌ وضعیت اشتراک: غیرفعال',
+            $daysLeft !== null ? ('⏳ مهلت باقی‌مانده: ' . Str::faNumber($daysLeft) . ' روز') : '⏳ پایان اشتراک: نامشخص',
+        ];
+
+        $kb = Keyboard::rows([
+            [['text' => '🛒 خرید/تمدید اشتراک Premium', 'data' => BotApi::encodeData('panel.subscribe.premium', ['id' => (int) $panel['id']])]],
+            Keyboard::back(BotApi::encodeData('panel.subscribe'), '🔙 بازگشت'),
+        ]);
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), ['reply_markup' => $this->bot->buildMarkup($kb)]);
+    }
+
+    public function purchaseSubscribe(int $chatId, array $user, int $panelId = 0): void
+    {
+        $panel = null;
+        if ($panelId > 0) {
+            $panel = $this->panels->findForUser($panelId, (int) $user['id']);
+        }
+        if ($panel === null) {
+            $panel = $this->panels->primaryForUser($user);
+        }
+
+        if ($panel === null) {
+            $this->bot->sendMessage($chatId, '⚠️ ابتدا باید یک پنل نمایندگی داشته باشید.');
+            return;
+        }
+
+        // این پیاده‌سازی صرفاً دارایی اشتراک را برای ربات فعال می‌کند؛ پرداخت واقعی
+        // توسط درگاه‌های پیکربندی‌شدهٔ خودِ ربات مدیریت می‌شود.
+        $expireAt = time() + 30 * 86400;
+        $this->panels->update((int) $panel['id'], [
+            'is_subscribed'        => 1,
+            'subscription_expire_at' => $expireAt,
+        ]);
+
+        $this->bot->sendMessage($chatId, '🎉 اشتراک Premium برای پنل شما فعال شد تا ' . Str::date($expireAt) . ' ⏳');
     }
 
     /**
