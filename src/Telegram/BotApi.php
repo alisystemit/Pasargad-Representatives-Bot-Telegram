@@ -60,10 +60,18 @@ class BotApi
         $url      = $this->apiBase . $this->token . '/' . $method;
         $attempts = 3;
 
+        // تلگرام پارامترهای تودرتو (مثل reply_markup) را فقط به‌صورت JSON قبول
+        // می‌کند؛ http_build_query روی آرایهٔ تودرتو شکل «reply_markup[...][...]=»
+        // می‌سازد که تلگرام بی‌صدا ردش می‌کند و کیبورد اصلاً دیده نمی‌شود.
+        $flat = [];
+        foreach ($params as $key => $value) {
+            $flat[$key] = is_array($value) ? json_encode($value, JSON_UNESCAPED_UNICODE) : $value;
+        }
+
         for ($i = 1; $i <= $attempts; $i++) {
             $response = Http::request('POST', $url, [
                 'headers'    => ['Accept: application/json'],
-                'body'       => http_build_query($params),
+                'body'       => http_build_query($flat),
                 'form'       => null,
                 'timeout'    => $this->timeout,
                 'verify_ssl' => true,
