@@ -451,18 +451,58 @@ php tools/cli.php backup --prune    # فقط پاک‌سازی نسخه‌های
 - دامنه با HTTPS (تلگرام وبهوک را روی HTTP قبول نمی‌کند)
 - دسترسی SSH برای کرون (اختیاری ولی برای اطمینان توصیه می‌شود)
 
-روی لینوکس می‌توانید کل نصب را با اسکریپت خودکار انجام دهید:
+### نصب با اسکریپت (توصیه‌شده)
 
 ```bash
 bash tools/install.sh
 ```
 
-این اسکریپت PHP و افزونه‌ها را بررسی می‌کند، `config.php` را می‌سازد،
-کلیدهای تصادفی تولید می‌کند، از دیتابیس موجود بکاپ می‌گیرد، مایگریشن و بسته‌های
-پیش‌فرض را می‌سازد، تنظیمات بحرانی را چک می‌کند و در صورت تمایل وبهوک (و وبهوک
-ربات مدیریتی) را ثبت می‌کند.
+اسکریپت **فقط سه سؤال** می‌پرسد و بقیه را خودکار انجام می‌دهد:
 
-### گام ۱ — کپی و پیکربندی
+| # | سؤال | چه می‌نویسد |
+|---|---|---|
+| ۱ | توکن ربات از `@BotFather` | `bot_token` |
+| ۲ | آیدی عددی تلگرامی شما | `super_admins` |
+| ۳ | آدرس وب سایت (بدون اسلش انتهایی) | `base_url` |
+
+بقیهٔ کارها بدون پرسش انجام می‌شود:
+
+- ساخت `config.php` از قالب (اگر نبود)
+- تولید `crypto_key`، `webhook_secret` و `admin_webhook_secret` — فقط وقتی
+  هنوز مقدار نمونه داشته باشند؛ **هرگز** کلیدی که قبلاً تنظیم شده عوض نمی‌شود
+- بکاپ دیتابیسِ موجود، سپس مایگریشن و ساخت بسته‌های پیش‌فرض
+- تأیید توکن با `getMe` و نوشتن خودکار `bot_username`
+- ثبت وبهوک اصلی (و وبهوک مدیریتی اگر `admin_bot_token` تنظیم شده باشد)
+- اجرای `tools/healthcheck.php` و گزارش پایانی
+
+اعتبارسنجی ورودی هم داخل اسکریپت هست؛ مثلاً توکن بدون `:` یا آدرس بدون
+`https://` پذیرفته نمی‌شود و دوباره پرسیده می‌شود.
+
+بدون تعامل (مناسب CI یا نصب مجدد):
+
+```bash
+BOT_TOKEN=123456789:AAH... ADMIN_ID=123456789 BASE_URL=https://bot.example.com \
+  bash tools/install.sh
+```
+
+> ⚠️ اگر ثبت وبهوک شکست بخورد (مثلاً سرور به `api.telegram.org` دسترسی
+> نداشته باشد) اسکریپت با **کد خروج ۱** تمام می‌شود و پیام «نصب انجام شد ولی
+> وبهوک ثبت نشد» چاپ می‌کند — هرگز پیام موفقیت چاپ نمی‌کند مگر اینکه واقعاً
+> موفق شده باشد. بعد از رفع مشکل:
+
+```bash
+php tools/cli.php set-webhook     # کد خروج ۱ یعنی ناموفق
+php tools/cli.php get-me          # ۰=توکن درست، ۱=نامعتبر، ۲=بدون شبکه
+```
+
+> ℹ️ اگر سرور Bot API خودتان را راه انداخته‌اید، `telegram_api_base` را در
+> `config.php` روی پایهٔ آن بگذارید (مثل `http://localhost:8081` یا
+> `http://localhost:8081/bot` — هر دو قبول است، «/bot» خودکار اضافه می‌شود).
+> خالی یعنی `api.telegram.org`.
+
+### نصب دستی
+
+#### گام ۱ — کپی و پیکربندی
 
 ```bash
 git clone <repo-url>
@@ -496,14 +536,14 @@ cp config.example.php config.php
 برای تولید `crypto_key` هم دقیقاً همین دستور را اجرا کنید — کلید رمزنگاری
 رمزهای پنل کاربران است و باید حداقل ۳۲ کاراکتر باشد.
 
-### گام ۲ — نصب دیتابیس و بسته‌های پیش‌فرض
+#### گام ۲ — نصب دیتابیس و بسته‌های پیش‌فرض
 
 ```bash
 php tools/cli.php migrate
 php tools/seed.php
 ```
 
-### گام ۳ — تست اتصال پنل
+#### گام ۳ — تست اتصال پنل
 
 ```bash
 php tools/cli.php health
@@ -514,7 +554,7 @@ php tools/healthcheck.php
 بکاپ، کرون و فروشگاه را بررسی می‌کند و با کد خروج غیرصفر تمام می‌شود اگر
 خطایی باشد (مناسب برای مانیتورینگ).
 
-### گام ۴ — تنظیم وبهوک
+#### گام ۴ — تنظیم وبهوک
 
 ```bash
 php tools/cli.php set-webhook
@@ -525,13 +565,13 @@ php tools/cli.php set-webhook
 php tools/cli.php webhook-info
 ```
 
-### گام ۵ — کرون (مهم)
+#### گام ۵ — کرون (مهم)
 
 ```cron
 */5 * * * * php /path/to/cron/worker.php
 ```
 
-### گام ۶ — تست
+#### گام ۶ — تست
 
 ```bash
 php tools/run_tests.php
@@ -691,13 +731,14 @@ src/
 
 cron/worker.php            ← پردازش صف، هشدارها، پاداش معرفی، بکاپ
 
-tools/cli.php              ← migrate / set-webhook / backup / health / selftest
+tools/cli.php              ← migrate / get-me / set-webhook / backup / health / selftest
+tools/configure.php        ← نوشتن توکن/آیدی/آدرس در config.php (دقیق، فقط سطح بالا)
 tools/healthcheck.php      ← گزارش سلامت کامل
 tools/switches.php         ← مدیریت سوییچ‌ها از خط فرمان
 tools/run_tests.php        ← اجرای همهٔ تست‌ها
 tools/selftest.php         ← تست هستهٔ سیستم
 tools/seed.php             ← ساخت بسته‌های پیش‌فرض
-tools/install.sh           ← نصب خودکار (لینوکس)
+tools/install.sh           ← نصب سریع (فقط ۳ سؤال، بقیه خودکار)
 
 tests/
   TestDb.php               ← دیتابیس در حافظه
@@ -716,6 +757,7 @@ tests/
   discount_test.php        ← ★ کد تخفیف، معرفی، فاکتور
   support_test.php         ← ★ تیکت پشتیبانی و آمار کاربران پنل
   admin_webhook_test.php   ← ★ دروازهٔ ربات مدیریتی و سیاست بکاپ
+  configure_test.php       ← ★ پیکربندی نصب (مراقب panel.base_url و کلیدها)
   alerts_test.php          ← ★ هشدار حجم، انقضا و سقف کاربران
   shop_test.php            ← منطق خرید، اجرا و تلاش مجدد
   switches_test.php        ← کلیدهای فعال/غیرفعال و متن‌ها
@@ -735,7 +777,8 @@ tests/
 ```bash
 php tools/cli.php migrate           # اعمال مایگریشن‌ها
 php tools/cli.php health            # وضعیت دیتابیس
-php tools/cli.php set-webhook       # تنظیم وبهوک ربات کاربران
+php tools/cli.php get-me            # تأیید توکن (۰=درست، ۱=نامعتبر، ۲=بدون شبکه)
+php tools/cli.php set-webhook       # تنظیم وبهوک ربات کاربران (کد خروج ۱ = ناموفق)
 php tools/cli.php set-webhook-admin # تنظیم وبهوک ربات مدیریتی (اختیاری)
 php tools/cli.php webhook-info      # اطلاعات وبهوک
 php tools/cli.php webhook-info-admin

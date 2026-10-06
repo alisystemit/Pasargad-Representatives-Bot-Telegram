@@ -7,6 +7,7 @@ declare(strict_types=1);
  *
  * استفاده:
  *   php tools/cli.php migrate
+ *   php tools/cli.php get-me
  *   php tools/cli.php set-webhook
  *   php tools/cli.php health
  *   php tools/cli.php selftest
@@ -47,17 +48,49 @@ try {
             out($ran === [] ? 'دیتابیس به‌روز است (مایگریشن جدیدی نبود).' : 'مایگریشن‌های اجراشده: ' . implode(', ', $ran), 'ok');
             break;
 
+        case 'get-me':
+            // تأیید توکن نزد تلگرام.
+            //
+            // کدهای خروج بخشی از قرارداد با tools/install.sh هستند:
+            //   0 → توکن درست است؛ فقط نام ربات (بدون @) روی stdout
+            //   1 → توکن نامعتبر است
+            //   2 → به تلگرام دسترسی نیست (خطای شبکه، نه توکن)
+            $token = trim(Config::str('bot_token', ''));
+            if ($token === '' || $token === 'PUT_BOT_TOKEN_HERE') {
+                fwrite(STDERR, "bot_token در config.php تنظیم نشده است.\n");
+                exit(1);
+            }
+
+            $me = (new \Pasargad\Telegram\BotApi($token))->call('getMe');
+
+            if ($me['ok'] ?? false) {
+                echo (string) ($me['result']['username'] ?? '');
+                exit(0);
+            }
+
+            $code = (int) ($me['error_code'] ?? 0);
+            $desc = (string) ($me['description'] ?? 'خطای نامشخص');
+
+            if ($code === 0) {
+                // error_code صفر یعنی اصلاً پاسخی نگرفتیم → مشکل شبکه است، نه توکن.
+                fwrite(STDERR, "دسترسی به تلگرام برقرار نشد: {$desc}\n");
+                exit(2);
+            }
+
+            fwrite(STDERR, "توکن ربات نامعتبر است: {$desc}\n");
+            exit(1);
+
         case 'set-webhook':
             if (!class_exists(\Pasargad\Telegram\BotApi::class)) {
-                out('کلاس BotApi هنوز ساخته نشده است.', 'warn');
-                break;
+                out('کلاس BotApi هنوز ساخته نشده است.', 'err');
+                exit(1);
             }
             $url = rtrim(Config::str('base_url'), '/') . '/bot.php';
             $bot = new \Pasargad\Telegram\BotApi(Config::str('bot_token'));
             $secret = $options['secret'] ?? Config::str('webhook_secret', '');
             if ($secret === '' || $secret === 'CHANGE-THIS-RANDOM-SECRET') {
-                out('ابتدا webhook_secret را در config.php مقداردهی کنید.', 'warn');
-                break;
+                out('ابتدا webhook_secret را در config.php مقداردهی کنید.', 'err');
+                exit(1);
             }
             $result = $bot->call('setWebhook', [
                 'url'             => $url,
@@ -70,6 +103,9 @@ try {
                 out('وبهوک تنظیم شد: ' . $url, 'ok');
             } else {
                 out('خطا در تنظیم وبهوک: ' . json_encode($result, JSON_UNESCAPED_UNICODE), 'err');
+                // بدون exit(1) این خطا هرگز به نصب‌کننده نمی‌رسید و او با
+                // «نصب کامل شد» تمام می‌کرد در حالی که ربات هیچ پیامی نمی‌گرفت.
+                exit(1);
             }
             break;
 
@@ -80,15 +116,15 @@ try {
             if ($adminToken === '') {
                 out('admin_bot_token در config.php تنظیم نشده است — وبهوک مدیریتی غیرفعال است.', 'warn');
                 out('برای فعال‌سازی: یک ربات دوم از @BotFather بسازید و توکنش را بگذارید.', 'info');
-                break;
+                exit(1);
             }
 
             $adminSecret = trim(Config::str('admin_webhook_secret', ''));
 
             if ($adminSecret === '' || $adminSecret === 'CHANGE-THIS-RANDOM-SECRET') {
-                out('ابتدا admin_webhook_secret را در config.php مقداردهی کنید (یک رشتهٔ تصادفی).', 'warn');
+                out('ابتدا admin_webhook_secret را در config.php مقداردهی کنید (یک رشتهٔ تصادفی).', 'err');
                 out('پیشنهاد: php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"', 'info');
-                break;
+                exit(1);
             }
 
             $adminUrl  = rtrim(Config::str('base_url'), '/') . '/admin.php';
@@ -106,6 +142,7 @@ try {
                 out('فقط پیام‌های سوپرادمین‌ها به این وبهوک می‌رسند.', 'info');
             } else {
                 out('خطا: ' . json_encode($result, JSON_UNESCAPED_UNICODE), 'err');
+                exit(1);
             }
             break;
 
@@ -168,6 +205,7 @@ try {
         default:
             out("دستورهای موجود:\n"
                 . "  migrate\n"
+                . "  get-me                  تأیید توکن (۰=درست، ۱=نامعتبر، ۲=بدون شبکه)\n"
                 . "  set-webhook\n"
                 . "  set-webhook-admin      وبهوک ربات مدیریتی (اختیاری)\n"
                 . "  webhook-info\n"

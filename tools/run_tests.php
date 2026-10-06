@@ -35,6 +35,8 @@ $suites = [
     ['تخفیف و معرفی و فاکتور', $root . '/tests/discount_test.php',    false],
     ['تیکت پشتیبانی',         $root . '/tests/support_test.php',     false],
     ['وبهوک مدیریتی و بکاپ', $root . '/tests/admin_webhook_test.php', false],
+    ['پیکربندی نصب',        $root . '/tests/configure_test.php', false],
+    ['بذر فروشگاه',          $root . '/tests/seed_test.php',      false],
     ['سرویس هشدارها',          $root . '/tests/alerts_test.php',      false],
     ['سوییچ‌ها و متن‌ها',       $root . '/tests/switches_test.php',    false],
     ['جریان کامل ربات',        $root . '/tests/bot_flow_test.php',  false],

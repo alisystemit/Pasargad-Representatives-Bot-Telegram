@@ -20,6 +20,7 @@ class BotApi
     private const API_BASE = 'https://api.telegram.org/bot';
 
     private string $token;
+    private string $apiBase;
     private int $timeout;
     private ?int $lastUpdateId = null;
 
@@ -30,6 +31,18 @@ class BotApi
     {
         $this->token   = $token ?? Config::str('bot_token', '');
         $this->timeout = Config::int('http_timeout', 30);
+
+        // پایهٔ سفارشی فقط وقتی تنظیم شده باشد. برای سرور Bot API خودی یا
+        // تست بدون اینترنت. آدرس نهایی مثل تلگرام است:
+        //   {پایه}/bot{توکن}/{متد}
+        // لازم نیست کاربر خودش «/bot» را بنویسد؛ هر دو حالت پذیرفته می‌شود:
+        //   http://127.0.0.1:8100    ← خودکار «/bot» اضافه می‌شود
+        //   http://127.0.0.1:8100/bot
+        $custom = rtrim(trim(Config::str('telegram_api_base', '')), '/');
+        if ($custom !== '' && !str_ends_with($custom, '/bot')) {
+            $custom .= '/bot';
+        }
+        $this->apiBase = $custom !== '' ? $custom : self::API_BASE;
 
         if ($this->token === '' || $this->token === 'PUT_BOT_TOKEN_HERE') {
             throw new \RuntimeException('توکن ربات در تنظیمات (bot_token) تعریف نشده است.');
@@ -44,7 +57,7 @@ class BotApi
      */
     public function call(string $method, array $params = []): array
     {
-        $url      = self::API_BASE . $this->token . '/' . $method;
+        $url      = $this->apiBase . $this->token . '/' . $method;
         $attempts = 3;
 
         for ($i = 1; $i <= $attempts; $i++) {

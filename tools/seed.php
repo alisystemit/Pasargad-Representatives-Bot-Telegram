@@ -7,6 +7,9 @@ declare(strict_types=1);
  *
  * استفاده: php tools/seed.php [--force]
  *   --force : بسته‌های موجود را هم به‌روزرسانی می‌کند
+ *
+ * منطق داخل تابع `pasargad_seed_packages()` است تا تست‌ها بتوانند آن را
+ * دو بار صدا بزنند و بی‌اثر بودنش (نبودِ بستهٔ تکراری) را اثبات کنند.
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -20,114 +23,135 @@ use Pasargad\Store\PackageRepository;
 use Pasargad\Support\Db;
 use Pasargad\Support\Migrator;
 
-$force = in_array('--force', $argv, true);
-
-$db = Db::instance();
-(new Migrator($db))->migrate();
-
-$repo = new PackageRepository($db);
-
 /**
- * بسته‌های پیش‌فرض.
+ * دو خانواده بستهٔ پیش‌فرض.
  *
- * دو خانواده:
  *   • `agency` — خرید پنل نمایندگی تازه (حساب اپراتور جدید ساخته می‌شود).
  *     قیمت‌ها بالاتر است چون شامل راه‌اندازی حساب می‌شود.
  *   • `topup`  — شارژ/تمدید پنل‌های موجود؛ ارزان‌تر چون حساب از قبل هست.
  *
- * قیمت‌ها به تومان‌اند و نمونه‌اند؛ حتماً قبل از فروش واقعی بازبینی‌شوند.
+ * قیمت‌ها به تومان‌اند و نمونه‌اند؛ حتماً قبل از فروش واقعی بازبینی شوند.
  *
  * نکتهٔ مهم: `max_per_user` روی ۰ (نامحدود) گذاشته شده تا هر نماینده بتواند
  * چند پنل بخرد. اگر محدودیت می‌خواهید، این عدد را در پنل مدیریت تغییر دهید.
+ *
+ * @return array{created:int, updated:int, skipped:int}
  */
-$defaults = [
-    // ---- خرید پنل نمایندگی ----
-    [
-        'title'         => '🥉 پنل نمایندگی برنزی',
-        'kind'          => PackageRepository::KIND_AGENCY,
-        'volume_gb'     => 100,
-        'duration_days' => 30,
-        'price_toman'   => 750000,
-        'sort_order'    => 10,
-        'description'   => 'پنل نمایندگی تازه با نقش اپراتور، ۱۰۰ گیگابایت و اعتبار ۳۰ روز.',
-    ],
-    [
-        'title'         => '🥈 پنل نمایندگی نقره‌ای',
-        'kind'          => PackageRepository::KIND_AGENCY,
-        'volume_gb'     => 300,
-        'duration_days' => 30,
-        'price_toman'   => 1800000,
-        'sort_order'    => 20,
-        'description'   => 'پنل نمایندگی با نقش اپراتور، ۳۰۰ گیگابایت و اعتبار ۳۰ روز.',
-    ],
-    [
-        'title'         => '🥇 پنل نمایندگی طلایی',
-        'kind'          => PackageRepository::KIND_AGENCY,
-        'volume_gb'     => 700,
-        'duration_days' => 60,
-        'bonus_gb'      => 100,
-        'price_toman'   => 3900000,
-        'sort_order'    => 30,
-        'description'   => 'پنل نمایندگی با ۷۰۰ گیگابایت (۱۰۰ گیگ هدیه) و اعتبار ۶۰ روز.',
-    ],
+function pasargad_seed_packages(bool $force = false): array
+{
+    $db = Db::instance();
+    (new Migrator($db))->migrate();
 
-    // ---- شارژ / تمدید پنل موجود ----
-    [
-        'title'         => '⚡️ شارژ ۵۰ گیگابایت',
-        'kind'          => PackageRepository::KIND_TOPUP,
-        'volume_gb'     => 50,
-        'duration_days' => 30,
-        'price_toman'   => 350000,
-        'sort_order'    => 110,
-        'description'   => 'افزودن ۵۰ گیگابایت و ۳۰ روز اعتبار به یکی از پنل‌های شما.',
-    ],
-    [
-        'title'         => '⚡️ شارژ ۱۵۰ گیگابایت',
-        'kind'          => PackageRepository::KIND_TOPUP,
-        'volume_gb'     => 150,
-        'duration_days' => 30,
-        'price_toman'   => 850000,
-        'sort_order'    => 120,
-        'description'   => 'افزودن ۱۵۰ گیگابایت و ۳۰ روز اعتبار به یکی از پنل‌های شما.',
-    ],
-    [
-        'title'         => '⚡️ شارژ ۵۰۰ گیگابایت',
-        'kind'          => PackageRepository::KIND_TOPUP,
-        'volume_gb'     => 500,
-        'duration_days' => 60,
-        'bonus_gb'      => 50,
-        'price_toman'   => 2500000,
-        'sort_order'    => 130,
-        'description'   => 'افزودن ۵۰۰ گیگابایت (۵۰ گیگ هدیه) و ۶۰ روز اعتبار.',
-    ],
-];
+    $repo = new PackageRepository($db);
 
-$created = 0;
-$skipped = 0;
-$updated = 0;
+    $defaults = [
+        // ---- خرید پنل نمایندگی ----
+        [
+            'title'         => '🥉 پنل نمایندگی برنزی',
+            'kind'          => PackageRepository::KIND_AGENCY,
+            'volume_gb'     => 100,
+            'duration_days' => 30,
+            'price_toman'   => 750000,
+            'sort_order'    => 10,
+            'description'   => 'پنل نمایندگی تازه با نقش اپراتور، ۱۰۰ گیگابایت و اعتبار ۳۰ روز.',
+        ],
+        [
+            'title'         => '🥈 پنل نمایندگی نقره‌ای',
+            'kind'          => PackageRepository::KIND_AGENCY,
+            'volume_gb'     => 300,
+            'duration_days' => 30,
+            'price_toman'   => 1800000,
+            'sort_order'    => 20,
+            'description'   => 'پنل نمایندگی تازه با نقش اپراتور، ۳۰۰ گیگابایت و اعتبار ۳۰ روز.',
+        ],
+        [
+            'title'         => '🥇 پنل نمایندگی طلایی',
+            'kind'          => PackageRepository::KIND_AGENCY,
+            'volume_gb'     => 700,
+            'duration_days' => 60,
+            'bonus_gb'      => 100,
+            'price_toman'   => 3900000,
+            'sort_order'    => 30,
+            'description'   => 'پنل نمایندگی با ۷۰۰ گیگابایت و ۱۰۰ گیگ هدیه، اعتبار ۶۰ روز.',
+        ],
 
-foreach ($defaults as $package) {
-    $slug = slugify((string) $package['title']);
-    $existing = $repo->findBySlug($slug);
+        // ---- شارژ / تمدید پنل موجود ----
+        [
+            'title'         => '⚡️ شارژ ۵۰ گیگابایت',
+            'kind'          => PackageRepository::KIND_TOPUP,
+            'volume_gb'     => 50,
+            'duration_days' => 30,
+            'price_toman'   => 350000,
+            'sort_order'    => 110,
+            'description'   => 'افزودن ۵۰ گیگابایت و ۳۰ روز به یکی از پنل‌های شما.',
+        ],
+        [
+            'title'         => '⚡️ شارژ ۱۵۰ گیگابایت',
+            'kind'          => PackageRepository::KIND_TOPUP,
+            'volume_gb'     => 150,
+            'duration_days' => 30,
+            'price_toman'   => 850000,
+            'sort_order'    => 120,
+            'description'   => 'افزودن ۱۵۰ گیگابایت و ۳۰ روز به یکی از پنل‌های شما.',
+        ],
+        [
+            'title'         => '⚡️ شارژ ۵۰۰ گیگابایت',
+            'kind'          => PackageRepository::KIND_TOPUP,
+            'volume_gb'     => 500,
+            'duration_days' => 60,
+            'price_toman'   => 2500000,
+            'sort_order'    => 130,
+            'description'   => 'افزودن ۵۰۰ گیگابایت و ۶۰ روز اعتبار.',
+        ],
+    ];
 
-    if ($existing !== null) {
-        if ($force) {
-            $repo->update((int) $existing['id'], $package);
-            $updated++;
-            echo "🔄 به‌روزرسانی: {$package['title']}\n";
-        } else {
-            $skipped++;
-            echo "⏭  وجود دارد (برای به‌روزرسانی --force بزنید): {$package['title']}\n";
+    $created = 0;
+    $skipped = 0;
+    $updated = 0;
+
+    foreach ($defaults as $package) {
+        $slug = slugify((string) $package['title']);
+
+        $existing = $repo->findBySlug($slug);
+
+        if ($existing === null) {
+            // نسخه‌های قدیمی‌تر slug را از عنوان فارسی می‌ساختند و
+            // `uniqueSlug` حروف فارسی را حذف می‌کرد؛ یعنی در دیتابیس
+            // «package»، «package-2»… داشتیم. با عنوان هم می‌گردیم تا
+            // اجرای دوباره روی دیتابیس قدیمی بستهٔ تکراری نسازد.
+            $existing = $repo->findByTitle((string) $package['title']);
         }
-        continue;
+
+        if ($existing !== null) {
+            if ($force) {
+                $repo->update((int) $existing['id'], $package);
+                $updated++;
+                echo "🔄 به‌روزرسانی: {$package['title']}\n";
+            } else {
+                $skipped++;
+                echo "⏭  وجود دارد (برای به‌روزرسانی --force بزنید): {$package['title']}\n";
+            }
+            continue;
+        }
+
+        // slug باید همراه عنوان برود تا `findBySlug` اجرای بعدی پیدایش کند؛
+        // وگرنه seed همیشه فکر می‌کرد بسته نیست و هر بار شش تا می‌ساخت.
+        $repo->create(array_merge($package, ['slug' => $slug]));
+        $created++;
+        echo "✅ ساخته شد: {$package['title']}\n";
     }
 
-    $repo->create($package);
-    $created++;
-    echo "✅ ساخته شد: {$package['title']}\n";
+    return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped];
 }
 
-echo "\nخلاصه: {$created} ساخته، {$updated} به‌روزرسانی، {$skipped} رد شد\n";
+// فقط وقتی مستقیم اجرا شود: تست‌ها این فایل را require می‌کنند تا
+// `pasargad_seed_packages()` را صدا بزنند؛ نباید همان لحظه seed بزند.
+if (isset($argv[0]) && realpath($argv[0]) === realpath(__FILE__)) {
+    $force  = in_array('--force', $argv, true);
+    $result = pasargad_seed_packages($force);
+
+    echo "\nخلاصه: {$result['created']} ساخته، {$result['updated']} به‌روزرسانی، {$result['skipped']} رد شد\n";
+}
 
 function slugify(string $text): string
 {

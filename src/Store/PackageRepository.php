@@ -129,6 +129,22 @@ final class PackageRepository
     }
 
     /**
+     * جست‌وجو بر اساس عنوان.
+     *
+     * چرا لازم است: `tools/seed.php` بسته‌ها را با slug پیدا می‌کند، ولی
+     * نسخه‌های قدیمی‌تر slug را از عنوانِ فارسی می‌ساختند و `uniqueSlug`
+     * همهٔ حروف فارسی را حذف می‌کند؛ نتیجه «package»، «package-2»… بود.
+     * بدون این جست‌وجو، اجرای دوبارهٔ seed هر بسته را یکی دیگر می‌ساخت
+     * (فروشگاه پر از بستهٔ تکراری می‌شد).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findByTitle(string $title): ?array
+    {
+        return $this->db->first('SELECT * FROM packages WHERE title = ?', [trim($title)]);
+    }
+
+    /**
      * @return array<int, array<string, mixed>>
      */
     public function activePackages(): array
