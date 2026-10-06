@@ -110,6 +110,29 @@ final class UserRepository
         $this->db->update('users', ['last_seen_at' => time(), 'updated_at' => time()], ['id' => $userId]);
     }
 
+    public function addLoyaltyPoints(int $userId, int $points): void
+    {
+        $this->db->run(
+            'UPDATE users SET loyalty_points = loyalty_points + ?, updated_at = ? WHERE id = ?',
+            [max(0, $points), time(), $userId]
+        );
+    }
+
+    public function deductLoyaltyPoints(int $userId, int $points): void
+    {
+        $this->db->run(
+            'UPDATE users SET loyalty_points = MAX(0, loyalty_points - ?), updated_at = ? WHERE id = ?',
+            [max(0, $points), time(), $userId]
+        );
+    }
+
+    public function loyaltyPoints(int $userId): int
+    {
+        $row = $this->db->first('SELECT loyalty_points FROM users WHERE id = ?', [$userId]);
+
+        return (int) ($row['loyalty_points'] ?? 0);
+    }
+
     /**
      * به‌روزرسانی وضعیت پنل کاربر (از مسیرهای قدیمی که کلید کاربر می‌دادند).
      *

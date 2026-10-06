@@ -220,6 +220,7 @@ final class PackageRepository
             'is_active'     => (int) (bool) ($data['is_active'] ?? true),
             'max_per_user'  => (int) ($data['max_per_user'] ?? 0),
             'max_users'     => max(0, (int) ($data['max_users'] ?? 0)),
+            'prices'        => isset($data['prices']) ? (string) $data['prices'] : null,
             'created_at'    => $now,
             'updated_at'    => $now,
         ]);
@@ -266,6 +267,12 @@ final class PackageRepository
             $payload['is_active'] = (int) (bool) $data['is_active'];
         }
 
+        if (array_key_exists('prices', $data)) {
+            $payload['prices'] = ($data['prices'] === null || trim((string) $data['prices']) === '')
+                ? null
+                : trim((string) $data['prices']);
+        }
+
         if (array_key_exists('slug', $data)) {
             $payload['slug'] = $this->uniqueSlug((string) $data['slug'], $id);
         }
@@ -275,6 +282,47 @@ final class PackageRepository
         }
 
         $this->db->update('packages', $payload, ['id' => $id]);
+    }
+
+    /**
+     * گزینه‌های مدت/قیمت پکیج.
+     *
+     * اگر ستون `prices` پر باشد فرمت آن «روز:قیمت,روز:قیمت» است؛
+     * مثلا «30:500000,90:1350000,365:4800000».
+     * در غیر این صورت همان بستهٔ تکی (duration_days + price_toman) برگردانده می‌شود.
+     *
+     * @param array<string, mixed> $package
+     * @return array<int, array{duration_days:int, price_toman:int}>
+     */
+    public static function periodOptions(array $package): array
+    {
+        $raw = trim((string) ($package['prices'] ?? ''));
+        $out = [];
+
+        if ($raw !== '') {
+            foreach (explode(',', $raw) as $part) {
+                $seg = explode(':', trim($part), 2);
+                if (count($seg) !== 2) {
+                    continue;
+                }
+                $days  = (int) trim($seg[0]);
+                $price = (int) trim($seg[1]);
+                if ($days > 0 && $price >= 0) {
+                    $out[] = ['duration_days' => $days, 'price_toman' => $price];
+                }
+            }
+        }
+
+        if ($out === []) {
+            $out[] = [
+                'duration_days' => (int) ($package['duration_days'] ?? 30),
+                'price_toman'   => (int) ($package['price_toman'] ?? 0),
+            ];
+        }
+
+        usort($out, static fn (array $a, array $b): int => $a['duration_days'] <=> $b['duration_days']);
+
+        return $out;
     }
 
     public function toggle(int $id): bool

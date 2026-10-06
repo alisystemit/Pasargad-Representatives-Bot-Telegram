@@ -309,6 +309,8 @@ final class FeatureFlags
             'tickets'       => $this->isTicketsEnabled(),
             'shop'          => $this->settings->bool(Settings::SHOP_OPENED, true),
             'auto_apply'    => $this->settings->bool(Settings::AUTO_APPLY, true),
+            'report_daily'  => $this->settings->bool(Settings::REPORT_DAILY, false),
+            'report_weekly' => $this->settings->bool(Settings::REPORT_WEEKLY, false),
         ];
     }
 }

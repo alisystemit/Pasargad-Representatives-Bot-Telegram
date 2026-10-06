@@ -278,6 +278,75 @@ final class AdminController
                 $this->setBackupKeep($chatId, (int) ($data['n'] ?? 14));
                 break;
 
+            // ---------------- اشتراک مدت‌دار ----------------
+            case 'admin.panel.subscribe':
+                $this->showPanelSubscribe($chatId, (int) ($data['id'] ?? 0));
+                break;
+
+            case 'admin.panel.subscribe.toggle':
+                $this->togglePanelSubscription($chatId, (int) ($data['id'] ?? 0));
+                break;
+
+            // ---------------- ریفرال / معرفی ----------------
+            case 'admin.referrals':
+                $this->showReferrals($chatId);
+                break;
+
+            // ---------------- تست / حذف خودکار ----------------
+            case 'admin.testconfigs':
+                $this->showTestConfigsList($chatId);
+                break;
+
+            case 'admin.testconfig.autodelete.toggle':
+                $this->toggleTestAutoDelete($chatId, (int) ($data['id'] ?? 0));
+                break;
+
+            // ---------------- سهمیه دیسک / ربات مرده ----------------
+            case 'admin.panel.disk_quota':
+                $this->showPanelDiskQuota($chatId, (int) ($data['id'] ?? 0));
+                break;
+
+            case 'admin.panel.disk_quota.save':
+                $this->savePanelDiskQuota($chatId, (int) ($data['id'] ?? 0), (int) ($data['v'] ?? 0));
+                break;
+
+            case 'admin.panel.dead_bot':
+                $this->showDeadBots($chatId);
+                break;
+
+            // ---------------- مانیتورینگ مرکزی ----------------
+            case 'admin.monitoring':
+                $this->showMonitoring($chatId);
+                break;
+
+            // ---------------- عملیات گروهی ----------------
+            case 'admin.bulk_ops':
+                $this->showBulkOps($chatId);
+                break;
+
+            case 'admin.bulk_ops.execute':
+                $this->executeBulkOp($chatId, (string) ($data['op'] ?? ''));
+                break;
+
+            // ---------------- انتقال مالکیت / کلون ----------------
+            case 'admin.panel.transfer':
+                $this->showTransferOwnership($chatId, (int) ($data['id'] ?? 0));
+                break;
+
+            case 'admin.panel.clone':
+                $this->showClonePanel($chatId, (int) ($data['id'] ?? 0));
+                break;
+
+            // ---------------- لاگ حسابرسی ----------------
+            case 'admin.audit_log':
+                $this->showAuditLog($chatId);
+                break;
+
+            // ---------------- داشبورد درآمد ----------------
+            case 'admin.revenue':
+                $this->showRevenueDashboard($chatId);
+                break;
+
             case 'admin.rules.edit':
                 $this->startEditRules($chatId, (int) $update->userId());
                 break;
@@ -588,6 +657,8 @@ final class AdminController
             '📅 انقضا: ' . ($panel['access_expire_at'] === null
                 ? '♾️ بدون محدودیت'
                 : Str::date((int) $panel['access_expire_at']) . ' 🗓'),
+            $panel['disk_quota'] > 0 ? '💿 سقف دیسک: ' . Str::formatBytes((int) $panel['disk_quota']) : '',
+            $panel['is_dead'] ? '⚠️ وضعیت: پنل مرده' : '',
         ];
 
         if ($daysLeft !== null && !$expired) {
@@ -1394,6 +1465,8 @@ final class AdminController
         $botOn     = $flags->isBotEnabled();
         $channelOn = $this->settings->bool(Settings::CHANNEL_ENFORCED, false);
         $channel   = trim((string) $this->settings->get(Settings::CHANNEL, ''));
+        $dailyReport  = $this->settings->bool(Settings::REPORT_DAILY, false);
+        $weeklyReport = $this->settings->bool(Settings::REPORT_WEEKLY, false);
 
         $lines = [
             '⚙️✨ <b>تنظیمات ربات 🤖</b>',
@@ -1515,6 +1588,8 @@ final class AdminController
                  'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::TICKETS_ENABLED])],
             ],
             [['text' => '💳 مدیریت درگاه‌های پرداخت', 'data' => BotApi::encodeData('admin.gateways')]],
+            [['text' => ($dailyReport ? '🔴' : '🟢') . ' گزارش روزانه ادمین', 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::REPORT_DAILY])]],
+            [['text' => ($weeklyReport ? '🔴' : '🟢') . ' گزارش هفتگی ادمین', 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::REPORT_WEEKLY])]],
             [
                 ['text' => '🖥 پنل‌ها', 'data' => BotApi::encodeData('admin.panels')],
                 ['text' => '📊 آمار', 'data' => BotApi::encodeData('admin.stats')],

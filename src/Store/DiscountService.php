@@ -302,6 +302,28 @@ final class DiscountService
 
             $result['rewarded']++;
             $result['toman'] += $bonus;
+
+            // سطح دوم: پدر/مادرمعرفِ همین معرف هم درصد ثابتی از همان پاداش می‌گیرد
+            $parent = $this->referrals->findByReferee($referrerId);
+            if ($parent !== null && (int) $parent['referrer_user_id'] > 0
+                && (int) $parent['referrer_user_id'] !== $referrerId) {
+                $level2 = $this->settings->int(Settings::REFERRAL_BONUS_LEVEL2, 25000);
+                if ($level2 > 0) {
+                    try {
+                        $users = new UserRepository();
+                        $users->adjustWallet(
+                            (int) $parent['referrer_user_id'],
+                            $level2,
+                            'پاداش معرفی سطح دوم: ' . (($row['first_name'] ?? '') ?: 'کاربر جدید'),
+                            0,
+                            'referral_level2'
+                        );
+                        $result['level2'] = ($result['level2'] ?? 0) + $level2;
+                    } catch (\Throwable $e) {
+                        Logger::warning('Level2 referral reward failed', ['error' => $e->getMessage()]);
+                    }
+                }
+            }
         }
 
         if ($result['rewarded'] > 0 && $notifier !== null) {

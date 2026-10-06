@@ -48,12 +48,13 @@ final class PackageEditor
                 '⚠️ <b>فرمت ورودی نامعتبر است</b>',
                 '',
                 'فرمت صحیح:',
-                '<code>عنوان | نوع | حجم_گیگ | مدت_روز | قیمت_تومان | سقف_کاربران</code>',
+                '<code>عنوان | نوع | حجم_گیگ | مدت_روز | قیمت_تومان | سقف_کاربران | دوره‌ها</code>',
                 '',
                 'مثال:',
-                '<code>پنل ۱۰۰ گیگ ۳۰ روزه | agency | 100 | 30 | 500000 | 50</code>',
+                '<code>پنل ۱۰۰ گیگ ۳۰ روزه | agency | 100 | 30 | 500000 | 50 | 30:500000,90:1350000,365:4500000</code>',
                 '',
                 '💡 بخش آخر (سقف تعداد کاربران پنل) اختیاری است؛ اگر ننویسید نامحدود ♾️ می‌شود.',
+                '💡 بخش دوره‌ها اختیاری است و برای قیمت‌گذاری ماهانه/سه‌ماهه/سالانه استفاده می‌شود.',
                 '',
                 'نوع بسته:',
                 '• <code>agency</code> (یا «پنل نمایندگی») — ساخت پنل تازه',
@@ -107,6 +108,24 @@ final class PackageEditor
             ? (int) Str::toEnglishDigits(trim($parts[5]))
             : 0;
 
+        // گزینه‌های چنددوره‌ای اختیاری (بخش هفتم)؛ مانند «30:500000,90:1400000,365:4800000»
+        $prices = null;
+        if (isset($parts[6]) && trim($parts[6]) !== '') {
+            $raw = trim($parts[6]);
+            $ok = true;
+            foreach (explode(',', $raw) as $seg) {
+                $p = explode(':', trim($seg), 2);
+                if (count($p) !== 2 || (int) trim($p[0]) <= 0 || (int) trim($p[1]) < 0) {
+                    $ok = false;
+                    break;
+                }
+            }
+            if (!$ok) {
+                return null;
+            }
+            $prices = $raw;
+        }
+
         // اعتبارسنجی
         if ($title === '' || mb_strlen($title) > 100) {
             return null;
@@ -130,7 +149,7 @@ final class PackageEditor
             return null;   // سقف منطقی تعداد کاربر
         }
 
-        return [
+        $out = [
             'title'         => $title,
             'kind'          => $kind,
             'volume_gb'     => $vol,
@@ -138,6 +157,14 @@ final class PackageEditor
             'price_toman'   => $price,
             'max_users'     => $maxUsers,
         ];
+
+        // فقط وقتی دوره‌ها وارد شده باشند کلید prices اضافه شود؛ در غیر این صورت
+        // در حالت ویرایش، یک بستهٔ چنددوره‌ای با null پاک نمی‌شود.
+        if ($prices !== null) {
+            $out['prices'] = $prices;
+        }
+
+        return $out;
     }
 
     private function showPackagesMenu(int $chatId): void

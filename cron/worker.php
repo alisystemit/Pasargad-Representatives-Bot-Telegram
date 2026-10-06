@@ -273,6 +273,58 @@ try {
         count($panels->listWatchable(500))
     );
 
+    // ۴-ب) گزارش دوره‌ای به ادمین
+    try {
+        $rep = new \Pasargad\Store\Settings($db);
+        $mkReport = function (int $days) use ($db, $alertResult, $panels): string {
+            $since = time() - $days * 86400;
+            $count = (int) $db->value(
+                "SELECT COUNT(*) FROM orders WHERE status IN ('paid','applied') AND paid_at IS NOT NULL AND paid_at >= ?",
+                [$since]
+            );
+            $sum = (int) $db->value(
+                "SELECT COALESCE(SUM(price_toman),0) FROM orders WHERE status IN ('paid','applied') AND paid_at IS NOT NULL AND paid_at >= ?",
+                [$since]
+            );
+            $low  = (int) ($alertResult['low_volume'] ?? 0);
+            $exp  = (int) (($alertResult['expiring'] ?? 0) + ($alertResult['expired'] ?? 0));
+            $watch = count($panels->listWatchable(500));
+
+            return "📊✨ <b>گزارش"
+                . ($days >= 7 ? ' هفتگی' : ' روزانه')
+                . "</b>\n\n"
+                . '🛒 فروش‌ها: <b>' . $count . "</b>\n"
+                . '💰 مبلغ: <b>' . \Pasargad\Support\Str::formatToman($sum) . "</b>\n"
+                . '⚠️ پنل کم‌حجم: <b>' . $low . "</b>\n"
+                . '⌛️ اعتبار تمام‌شده/نزدیک: <b>' . $exp . "</b>\n"
+                . '🟢 پنل‌های فعال: <b>' . $watch . "</b>";
+        };
+
+        if ($rep->bool(\Pasargad\Store\Settings::REPORT_DAILY)) {
+            $last = (int) ($rep->get(\Pasargad\Store\Settings::REPORT_DAILY_LAST) ?? 0);
+            if ($last + 86400 <= time() && $notifier !== null) {
+                foreach ($notifier->adminIds() as $adminId) {
+                    $notifier->notifyUser((int) $adminId, $mkReport(1));
+                }
+                $rep->set(\Pasargad\Store\Settings::REPORT_DAILY_LAST, (string) time());
+                echo "گزارش روزانه ارسال شد.\n";
+            }
+        }
+
+        if ($rep->bool(\Pasargad\Store\Settings::REPORT_WEEKLY)) {
+            $last = (int) ($rep->get(\Pasargad\Store\Settings::REPORT_WEEKLY_LAST) ?? 0);
+            if ($last + 604800 <= time() && $notifier !== null) {
+                foreach ($notifier->adminIds() as $adminId) {
+                    $notifier->notifyUser((int) $adminId, $mkReport(7));
+                }
+                $rep->set(\Pasargad\Store\Settings::REPORT_WEEKLY_LAST, (string) time());
+                echo "گزارش هفتگی ارسال شد.\n";
+            }
+        }
+    } catch (Throwable $e) {
+        echo 'خطای گزارش دوره‌ای: ' . $e->getMessage() . "\n";
+    }
+
     Logger::info('Worker finished', $result);
     exit(0);
 } catch (Throwable $e) {

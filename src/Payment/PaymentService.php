@@ -326,6 +326,8 @@ final class PaymentService
                 'review_admin_id' => $adminId,
             ]);
 
+            (new \Pasargad\Store\AuditLogger())->log($adminId, 'reject_payment', 'order', $orderId, $note);
+
             $payment = $this->orders->lastPayment($orderId);
             if ($payment !== null) {
                 $this->orders->updatePayment((int) $payment['id'], ['status' => 'failed']);
@@ -366,6 +368,9 @@ final class PaymentService
             'review_admin_id' => $adminId,
             'review_note'     => Str::truncate($note, 200),
         ]);
+
+        (new \Pasargad\Store\AuditLogger())->log($adminId, 'approve_payment', 'order', $orderId, $note);
+
 
         $payment = $this->orders->lastPayment($orderId);
         if ($payment !== null) {
@@ -497,6 +502,15 @@ final class PaymentService
                 'got'        => $payload['pay_amount'] ?? $payload['price_amount'] ?? null,
                 'currency'   => $payload['pay_currency'] ?? $payload['price_currency'] ?? null,
             ]);
+
+            // این یک رویداد امنیتی/مالی است؛ به سوپرادمین‌ها هم اعلام کن.
+            try {
+                $this->notifier?->notifyAdmins(
+                    '⚠️💳 <b>پرداخت نامعتبر</b>\n\nسفارش: <code>' . Str::escape((string) ($order['code'] ?? '')) . "</code>\n"
+                    . 'مبلغ مورد انتظار: <b>' . Str::formatToman((int) $order['price_toman']) . "</b>\n"
+                    . 'مبلغ دریافتی گزارش‌شده: <code>' . Str::escape((string) ($payload['pay_amount'] ?? $payload['price_amount'] ?? '?')) . '</code>'
+                );
+            } catch (\Throwable $e) {}
 
             return ['ok' => false, 'message' => 'مبلغ پرداخت با مبلغ سفارش مطابقت ندارد.'];
         }
@@ -747,6 +761,11 @@ final class PaymentService
         }
 
         $this->notifier->notifyUser($telegramId, $message);
+
+        // امتیاز وفاداری: برای هر خرید موفق ۱۰ امتیاز
+        try {
+            $this->users->addLoyaltyPoints((int) $order['user_id'], 10);
+        } catch (\Throwable $e) {}
     }
 
     /**

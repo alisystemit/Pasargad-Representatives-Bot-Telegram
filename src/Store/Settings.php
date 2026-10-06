@@ -166,6 +166,9 @@ final class Settings
     /** پاداش معرف به تومان (به کیف پول او اضافه می‌شود) */
     public const REFERRAL_BONUS = 'referral_bonus_toman';
 
+    /** پاداش سطح دوم معرفی (پدر/مادرمعرف) به تومان */
+    public const REFERRAL_BONUS_LEVEL2 = 'referral_bonus_level2_toman';
+
     // ------------------------------------------------------------------
     // تیکت پشتیبانی
     // ------------------------------------------------------------------
@@ -202,6 +205,30 @@ final class Settings
     public const WELCOME_TEXT = 'welcome_text';
     public const SUPPORT_TEXT = 'support_text';
     public const HELP_TEXT = 'help_text';
+
+    // ------------------------------------------------------------------
+    // وفاداری
+    // ------------------------------------------------------------------
+    /** درصد تخفیفِ وفاداری روی خرید بعدی */
+    public const LOYALTY_DISCOUNT = 'loyalty_discount_percent';
+    /** حداقل امتیاز برای فعال‌شدن تخفیف وفاداری */
+    public const LOYALTY_REDEEM   = 'loyalty_redeem_points';
+
+    // ------------------------------------------------------------------
+    // ضد brute-force
+    // ------------------------------------------------------------------
+    /** حداکثر تلاش ناموفق قبل از قفل */
+    public const LOGIN_MAX_ATTEMPTS = 'login_max_attempts';
+    /** مدت قفل به دقیقه */
+    public const LOGIN_LOCK_MINUTES = 'login_lock_minutes';
+
+    // ------------------------------------------------------------------
+    // گزارش ادمین
+    // ------------------------------------------------------------------
+    public const REPORT_DAILY  = 'admin_daily_report';
+    public const REPORT_WEEKLY = 'admin_weekly_report';
+    public const REPORT_DAILY_LAST = 'admin_daily_report_last_at';
+    public const REPORT_WEEKLY_LAST = 'admin_weekly_report_last_at';
 
     // ------------------------------------------------------------------
     // بکاپ‌گیری خودکار
@@ -262,5 +289,7 @@ final class Settings
         self::COUPONS_ENABLED,
         self::REFERRAL_ENABLED,
         self::TICKETS_ENABLED,
+        self::REPORT_DAILY,
+        self::REPORT_WEEKLY,
     ];
 }

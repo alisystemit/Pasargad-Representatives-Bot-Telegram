@@ -78,6 +78,7 @@ final class Text
 
         $lines[] = '';
         $lines[] = '💰👛 کیف پول: <b>' . Str::formatToman((int) ($user['wallet_balance'] ?? 0)) . '</b> ✨';
+        $lines[] = '⭐ امتیاز وفاداری: <b>' . Str::faNumber((int) ($user['loyalty_points'] ?? 0)) . '</b>';
         $lines[] = '';
         $lines[] = '🖥️🌐 <b>پنل‌های من: ' . Str::faNumber(count($panels)) . ' 🎯</b>';
 

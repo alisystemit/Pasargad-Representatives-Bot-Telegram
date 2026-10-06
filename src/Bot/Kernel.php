@@ -55,6 +55,7 @@ final class Kernel
     private ?AdminController $adminController = null;
     private ?SupportCenter $supportCenter = null;
     private ?DiscountService $discounts = null;
+    private ?\Pasargad\Store\Security $security = null;
     private FloodGuard $flood;
 
     public function __construct(
@@ -237,6 +238,15 @@ final class Kernel
         }
 
         return $this->discounts;
+    }
+
+    private function security(): \Pasargad\Store\Security
+    {
+        if ($this->security === null) {
+            $this->security = new \Pasargad\Store\Security();
+        }
+
+        return $this->security;
     }
 
     public function tickets(): TicketRepository
@@ -905,6 +915,40 @@ final class Kernel
         $step       = (string) ($state['step'] ?? '');
 
         switch ($step) {
+            case 'panel.test.autodelete.set':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                if ($text === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ عدد ثانیه‌ای وارد نشده. لطفاً عدد بفرستید.');
+                    return true;
+                }
+
+                $configId = (int) ($state['config_id'] ?? 0);
+                $seconds  = (int) $text;
+
+                //	max 365 days auto-delete
+                if ($seconds > 365 * 86400) {
+                    $this->bot->sendMessage($chatId, '⚠️ حداکثر زمان ۳۶۵ روز است.');
+                    return true;
+                }
+
+                $this->testRepo->update($configId, [
+                    'is_auto_delete' => 1,
+                    'auto_delete_at' => time() + $seconds,
+                ]);
+
+                $this->sessions->clear($telegramId);
+                $this->bot->sendMessage($chatId, '✅ زمان حذف خودکار ' . Str::faNumber($seconds / 86400) . ' روز تنظیم شد.', [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        Keyboard::back(BotApi::encodeData('panel.test.list'), '🧪 بازگشت به کانفیگ‌های تست'),
+                    ])),
+                ]);
+                return true;
+
             case 'coupon:apply':
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
@@ -976,18 +1020,32 @@ final class Kernel
 
                 $this->sessions->clear($telegramId);
 
+                // 🛡️ ضد brute-force: قبل از ارسال به پنل، قفل را چک کن
+                $security = $this->security();
+                if ($security->isLocked($telegramId, 'panel_login')) {
+                    $lockMin = max(1, $this->settings->int(Settings::LOGIN_LOCK_MINUTES, 15));
+                    $this->bot->sendMessage($chatId, "⛔️ تعداد تلاش‌هایتان زیاد شد؛ {$lockMin} دقیقه بعد دوباره تلاش کنید.");
+                    return true;
+                }
+
                 if ($password === '' || $username === '') {
                     $this->bot->sendMessage($chatId, '❌ ثبت پنل ناموفق بود. دوباره تلاش کنید.');
                     return true;
                 }
 
-                // نکتهٔ حیاتی: نتیجه باید بررسی شود. finishSelfRegister روی
-                // خطا فقط آرایه برمی‌گرداند و پیامی نمی‌فرستد — پس اگر اینجا
-                // نتیجه نادیده گرفته شود، کاربر رمز اشتباه می‌فرستد و هیچ
-                // پاسخی نمی‌گیرد و فکر می‌کند ربات هنگ کرده است.
+                $maxAttempts = max(3, $this->settings->int(Settings::LOGIN_MAX_ATTEMPTS, 5));
+                $lockMin = max(1, $this->settings->int(Settings::LOGIN_LOCK_MINUTES, 15));
+
                 $result = $this->panelCenter()->finishSelfRegister($chatId, $user, $username, $password);
 
                 if (!($result['ok'] ?? false)) {
+                    $fail = $security->recordFailure($telegramId, 'panel_login', $maxAttempts, $lockMin * 60);
+
+                    if ($fail['locked']) {
+                        $this->bot->sendMessage($chatId, "⛔️ تلاش‌های ناموفق زیاد؛ {$lockMin} دقیقه قفل شدید.");
+                        return true;
+                    }
+
                     // نتیجه ممکن است HTML آماده (مثل Text::loginFailed) یا متن
                     // ساده باشد؛ BotApi خودش در صورت خطای parse به متن ساده
                     // برمی‌گردد، پس اینجا escape نمی‌کنیم تا تگ‌ها خراب نشوند.
@@ -997,7 +1055,12 @@ final class Kernel
                             Keyboard::back('menu'),
                         ])),
                     ]);
+
+                    return true;
                 }
+
+                // تلاش موفق ⇒ قفل/شمارنده پاک شود
+                $security->clear($telegramId, 'panel_login');
 
                 return true;
 
@@ -1269,6 +1332,54 @@ final class Kernel
             return;
         }
 
+        if ($ns === 'panel.test.autodelete.show') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->showTestAutoDelete($chatId, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
+        if ($ns === 'panel.test.autodelete.toggle') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->handleTestAutoDeleteToggle($update, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
+        if ($ns === 'panel.test.autodelete.set') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->handleTestAutoDeleteSet($update, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
+        if ($ns === 'panel.test.autodelete.clear') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->handleTestAutoDeleteClear($update, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
+        if ($ns === 'panel.subscribe') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->showSubscribe($chatId, $user);
+            return;
+        }
+
+        if ($ns === 'panel.subscribe.detail') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->showSubscribeDetail($chatId, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
+        if ($ns === 'panel.subscribe.premium') {
+            $this->bot->answerCallback($callbackId, 'در حال خرید اشتراک premium...');
+            $this->panelCenter()->purchaseSubscribe($chatId, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
+        if ($ns === 'panel.subscribe') {
+            $this->bot->answerCallback($callbackId);
+            $this->panelCenter()->showSubscribe($chatId, $user);
+            return;
+        }
+
         // ---------------- حساب / کیف پول / پرداخت‌ها ----------------
         if ($ns === 'user.account') {
             $this->bot->answerCallback($callbackId);
@@ -1309,7 +1420,7 @@ final class Kernel
 
         if ($ns === 'pkg.buy') {
             $this->bot->answerCallback($callbackId);
-            $this->createOrder($chatId, $user, (int) ($data['id'] ?? 0), (int) ($data['p'] ?? 0));
+            $this->createOrder($chatId, $user, (int) ($data['id'] ?? 0), (int) ($data['p'] ?? 0), (int) ($data['d'] ?? 0));
             return;
         }
 
@@ -1727,10 +1838,19 @@ final class Kernel
             }
         }
 
-        $keyboard = [[[
-            'text' => '🛒 خرید این بسته',
-            'data' => BotApi::encodeData('pkg.buy', ['id' => $packageId, 'p' => $panelId]),
-        ]]];
+        $periods = PackageRepository::periodOptions($package);
+        $keyboard = [];
+
+        foreach ($periods as $period) {
+            $label = '🛒 خرید این بسته';
+            if (count($periods) > 1) {
+                $label .= ' — ' . $period['duration_days'] . ' روزه • ' . Str::formatToman($period['price_toman']);
+            }
+            $keyboard[] = [[
+                'text' => $label,
+                'data' => BotApi::encodeData('pkg.buy', ['id' => $packageId, 'p' => $panelId, 'd' => $period['duration_days']]),
+            ]];
+        }
 
         if ($kind === PackageRepository::KIND_TOPUP && $panelId > 0) {
             $target  = $this->panels->find($panelId);
@@ -1993,7 +2113,7 @@ final class Kernel
      *
      * @param  array<string, mixed> $user
      */
-    private function createOrder(int $chatId, array $user, int $packageId, int $panelId = 0): void
+    private function createOrder(int $chatId, array $user, int $packageId, int $panelId = 0, int $periodDays = 0): void
     {
         if (!$this->shopIsOpen()) {
             $this->bot->sendMessage($chatId, Text::shopClosed());
@@ -2005,6 +2125,17 @@ final class Kernel
         if ($package === null || (int) $package['is_active'] !== 1) {
             $this->bot->sendMessage($chatId, Text::notFound());
             return;
+        }
+
+        // اگر کاربر گزینهٔ مدت/قیمت را انتخاب کرده، آن را اعمال کن
+        if ($periodDays > 0) {
+            foreach (PackageRepository::periodOptions($package) as $opt) {
+                if ((int) $opt['duration_days'] === $periodDays) {
+                    $package['duration_days'] = (int) $opt['duration_days'];
+                    $package['price_toman']   = (int) $opt['price_toman'];
+                    break;
+                }
+            }
         }
 
         $minOrder = Config::int('store.min_order_toman', 50000);
@@ -2065,6 +2196,20 @@ final class Kernel
         $listPrice  = (int) $package['price_toman'];
         $discount   = $this->resolveDiscount($user, $listPrice);
         $finalPrice = max(0, $listPrice - $discount['discount']);
+
+        // تخفیف وفاداری: اگر کاربر امتیاز لازم را دارد، درصد ثابتی روی مبلغ نهایی
+        $loyaltyExtra = 0;
+        $loyaltyPoints = (int) ($user['loyalty_points'] ?? 0);
+        $redeemPoints  = max(1, $this->settings->int(Settings::LOYALTY_REDEEM, 100));
+        $loyaltyPercent = max(0, min(100, $this->settings->int(Settings::LOYALTY_DISCOUNT, 5)));
+
+        if ($loyaltyPercent > 0 && $loyaltyPoints >= $redeemPoints) {
+            $loyaltyExtra = (int) floor($finalPrice * $loyaltyPercent / 100);
+            if ($loyaltyExtra > 0) {
+                $finalPrice -= $loyaltyExtra;
+                $discount['discount'] += $loyaltyExtra;
+            }
+        }
 
         // حداقل مبلغ خرید **بعد** از تخفیف سنجیده می‌شود. اگر قبل از تخفیف
         // سنجیده شود، یک بستهٔ ۵۰ هزار تومانی با کد ۱۰۰٪ عملاً رایگان می‌شد و
@@ -2151,6 +2296,10 @@ final class Kernel
 
         if ($order === null) {
             return;
+        }
+
+        if ($loyaltyExtra > 0) {
+            $this->users->deductLoyaltyPoints((int) $user['id'], $redeemPoints);
         }
 
         $this->users->refreshOrderStats((int) $user['id']);
