@@ -197,6 +197,15 @@ class BotApi
         // هیچ‌وقت بدون text به تلگرام نفرست؛ همیشه خودتِ متن را بنشان
         $options['text'] = $text;
 
+        // اگر خودِ متن خالی باشد، تلگرام همان خطای message text is empty می‌دهد
+        if (trim($text) === '') {
+            Logger::warning('sendMessage primary skipped: empty text', [
+                'chat_id' => $chatId,
+            ]);
+
+            return ['ok' => false, 'error_code' => 0, 'description' => 'متن پیام خالی است.'];
+        }
+
         $result = $this->call('sendMessage', $options);
 
         if ($result['ok'] ?? false) {
@@ -235,6 +244,7 @@ class BotApi
         Logger::warning('sendMessage failed', [
             'chat_id' => $chatId,
             'error'   => $description,
+            'text_len' => mb_strlen($text),
         ]);
 
         return $result;
