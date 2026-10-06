@@ -762,7 +762,11 @@ final class Kernel
             case 'menu':
                 $this->sessions->clear($telegramId);
                 $name = (string) ($user['first_name'] ?? $user['username'] ?? 'دوست عزیز');
-                $this->bot->sendMessage($chatId, Text::welcome($name, $this->hasPanels($user)));
+                // کیبورد ثابتِ قدیمی (اگر از نسخهٔ قبلیِ ربات با همین اکانت مانده باشد)
+                // تا اینجا روی دستگاهِ مخاطب بوده و هرگز پاک نشده — با remove_keyboard حذف می‌شود.
+                $this->bot->sendMessage($chatId, Text::welcome($name, $this->hasPanels($user)), [
+                    'reply_markup' => ['remove_keyboard' => true],
+                ]);
                 $this->showMainMenu($chatId, $user, $isAdmin);
                 break;
 
