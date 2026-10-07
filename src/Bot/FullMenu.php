@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Bot;
 
+use Pasargad\Support\Config;
 use Pasargad\Support\Str;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Telegram\BotApi;
@@ -20,6 +21,31 @@ final class FullMenu
     public function __construct(BotApi $bot)
     {
         $this->bot = $bot;
+    }
+
+    /**
+     * آدرس Mini App.
+     *
+     * ⚠️ چرا `base_url` کانفیگ و نه `HTTP_HOST`؟
+     *
+     * `HTTP_HOST` را **کلاینت** می‌فرستد. اگر آدرس Mini App از آن ساخته
+     * شود، یک درخواست با `Host: دامنهٔ-م attacker` باعث می‌شود ربات در پیام
+     * خودش لینکی به دامنهٔ مهاجم بسازد — و آن لینک را برای همهٔ کاربران
+     * بفرستد. یعنی یک سرریز مستقیم اطلاعات از طریق ربات.
+     *
+     * اگر `base_url` تنظیم نشده باشد، رشتهٔ خالی برمی‌گردد و
+     * `BotApi::normalizeButton()` آن دکمه را حذف می‌کند (بی‌سروصدا، بهتر
+     * از یک دکمهٔ شکسته که کاربر را گمراه کند).
+     */
+    private function webAppUrl(): string
+    {
+        $base = rtrim(trim(Config::str('base_url', '')), '/');
+
+        if ($base === '' || !str_starts_with($base, 'https://')) {
+            return '';
+        }
+
+        return $base . '/webapp.php';
     }
 
     // ------------------------------------------------------------------
@@ -65,11 +91,9 @@ final class FullMenu
                 ['text' => '🧪 تست کانفیگ', 'data' => BotApi::encodeData('panel.test.list')],
                 ['text' => '🎁 دعوت دوستان', 'data' => BotApi::encodeData('referral.my')],
             ],
-            // ردیف پنجم
-            [
-                ['text' => '⚙️ تنظیمات', 'data' => BotApi::encodeData('settings')],
-                ['text' => '📱 اپلیکیشن وب', 'web_app' => 'https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/webapp.php'],
-            ],
+            // ردیف پنجم — دکمهٔ Mini App
+            [['text' => '⚙️ تنظیمات', 'data' => BotApi::encodeData('settings')]],
+            $this->webAppButton(),
         ]);
 
         if ($isAdmin) {
@@ -79,6 +103,36 @@ final class FullMenu
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
             'reply_markup' => $this->bot->buildMarkup($keyboard),
         ]);
+    }
+
+    /**
+     * ردیف دکمهٔ Mini App (یا خالی اگر آدرس معتبر نباشد).
+     *
+     * @return array<int, array<int, array<string, mixed>>>
+     */
+    private function webAppButton(): array
+    {
+        $url = $this->webAppUrl();
+
+        if ($url === '') {
+            return [];
+        }
+
+        return [[['text' => '📱 اپلیکیشن وب', 'web_app' => $url]]];
+    }
+
+    /**
+     * همان ردیف، برای وقتی که کلاس دیگری کیبورد را می‌سازد.
+     *
+     * عمومی است چون `Kernel::mainMenuKeyboard()` هم کیبورد خودش را دارد و باید
+     * همان دکمه را داشته باشد؛ تکرار ساختن URL در دو جا یعنی یکی از آن دو
+     * جا بعداً با دیگری ناهماهنگ می‌شود.
+     *
+     * @return array<int, array<int, array<string, mixed>>>
+     */
+    public function webAppRows(): array
+    {
+        return $this->webAppButton();
     }
 
     // ------------------------------------------------------------------

@@ -24,7 +24,7 @@ class BotApi
     private int $timeout;
     private ?int $lastUpdateId = null;
 
-    /** @var array<int, array<string, mixed>> پاسخ خطاهای اخیر برای لاگ */
+        /** @var array<int, array<string, mixed>> پاسخ خطاهای اخیر برای لاگ */
     private array $errorLog = [];
 
     public function __construct(?string $token = null)
@@ -983,6 +983,22 @@ class BotApi
             return ['text' => $text, 'url' => $url];
         }
 
+        // دکمهٔ Mini App
+        //
+        // ⚠️ این شاخه **قبل** از شاخهٔ callback می‌آید. قبلاً نبود و دکمهٔ
+        // «📱 اپلیکیشن وب» در منوی اصلی به‌جای باز شدن اپ، یک
+        // `callback_data: noop` می‌ساخت و بی‌صدا هیچ کاری نمی‌کرد.
+        if (isset($button['web_app'])) {
+            $url = trim((string) $button['web_app']);
+
+            if (!$this->isTrustedWebAppUrl($url)) {
+                Logger::warning('Skipping button with untrusted web_app url', ['text' => $text, 'url' => $url]);
+                return null;
+            }
+
+            return ['text' => $text, 'web_app' => $url];
+        }
+
         // دکمهٔ callback
         $data = trim((string) ($button['data'] ?? $button['callback_data'] ?? ''));
 
@@ -996,6 +1012,62 @@ class BotApi
         }
 
         return ['text' => $text, 'callback_data' => $data];
+    }
+
+    /**
+     * آیا این URL برای دکمهٔ Mini App قابل اعتماد است؟
+     *
+     * سه شرط، و هر سه لازم‌اند:
+     *   ۱) HTTPS — تلگرام در غیر این صورت دکمه را رد می‌کند و در برخی نسخه‌ها
+     *      کل کیبورد را باطل می‌کند.
+     *   ۲) مبدأ == `base_url` کانفیگ (یعنی سرور خودِ ربات).
+     *   ۳) ویژگی `userinfo`/`fragment` نداشته باشد؛
+     *      `https://example.com@evil.tld/` در نگاه اول مبدأ ما را دارد ولی
+     *      در واقع به `evil.tld` می‌رود. تلگرام این را «باز کردن لینک در
+     *      Mini Appِ ما» نشان می‌دهد ولی کاربر را جای دیگری می‌برد.
+     */
+    private function isTrustedWebAppUrl(string $url): bool
+    {
+        if ($url === '' || preg_match('#^https://#i', $url) !== 1) {
+            return false;
+        }
+
+        $parts = parse_url($url);
+
+        if (!is_array($parts) || empty($parts['host'])) {
+            return false;
+        }
+
+        if (isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])) {
+            return false;
+        }
+
+        $base = trim(Config::str('base_url', ''));
+
+        if ($base === '') {
+            return false;
+        }
+
+        $baseHost = parse_url($base, PHP_URL_HOST);
+
+        if (!is_string($baseHost) || $baseHost === '') {
+            return false;
+        }
+
+        $host   = strtolower((string) $parts['host']);
+        $baseOk = strtolower($baseHost);
+
+        if ($host !== $baseOk && !str_ends_with($host, '.' . $baseOk)) {
+            Logger::warning('WebApp host does not match base_url', ['host' => $host, 'base_host' => $baseOk]);
+            return false;
+        }
+
+        // اجازهٔ میزبانی روی زیردامنهٔ رسمی تلگرام هم هست (مثلاً وب‌اپ‌هایی که
+        // روی pages.dev سرو می‌شوند ولی به تلهگرام وصل‌اند) — ولی فقط وقتی
+        // که `base_url` خودش به آن دامنه اشاره کند، که در شرط بالا بررسی شد.
+        unset($parts);
+
+        return true;
     }
 
     /**

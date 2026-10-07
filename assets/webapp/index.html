@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<meta name="color-scheme" content="dark light">
+<title>پنل نمایندگان پاسارگاد</title>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="webapp.php?asset=app.css">
+
+<script>
+/* پیکربندی از PHP تزریق می‌شود (جایگزینی متنی در webapp.php).
+   اگر این بلوک اجرا نشد، اپ خودش را «آفلاین» علامت می‌زند. */
+window.WEBAPP_BOOT = __WEBAPP_BOOT__;
+</script>
+</head>
+<body>
+
+<!-- ═══ لایهٔ بارگذاری ═══ -->
+<div class="boot" id="boot">
+  <div class="boot-logo" aria-hidden="true">
+    <svg viewBox="0 0 64 64" width="72" height="72">
+      <defs>
+        <linearGradient id="bootGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#7c5cff"/>
+          <stop offset="100%" stop-color="#22d3ee"/>
+        </linearGradient>
+      </defs>
+      <rect x="6" y="10" width="52" height="36" rx="9" fill="none" stroke="url(#bootGrad)" stroke-width="3.5"/>
+      <path d="M14 41v6a3 3 0 0 0 3 3h30a3 3 0 0 0 3-3v-6" fill="none" stroke="url(#bootGrad)" stroke-width="3.5" stroke-linecap="round"/>
+      <circle cx="32" cy="28" r="5" fill="url(#bootGrad)"/>
+    </svg>
+  </div>
+  <div class="boot-title">پنل نمایندگان</div>
+  <div class="boot-bar"><span></span></div>
+  <div class="boot-hint" id="bootHint">در حال اتصال…</div>
+</div>
+
+<!-- ═══ نوار بالا ═══ -->
+<header class="appbar" id="appbar" hidden>
+  <button class="appbar-btn" id="backBtn" type="button" aria-label="بازگشت">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <div class="appbar-title" id="appbarTitle">پنل من</div>
+  <button class="appbar-btn" id="refreshBtn" type="button" aria-label="بروزرسانی">
+    <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</header>
+
+<!-- ═══ محتوا ═══ -->
+<main class="content" id="content" hidden></main>
+
+<!-- ═══ ناوبری پایین ═══ -->
+<nav class="tabbar" id="tabbar" hidden>
+  <button class="tab is-active" data-tab="home" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8v8a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/></svg>
+    <span>خانه</span>
+  </button>
+  <button class="tab" data-tab="panels" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/></svg>
+    <span>پنل‌ها</span>
+  </button>
+  <button class="tab" data-tab="shop" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h2l2.4 11.2a2 2 0 0 0 2 1.6h7.2a2 2 0 0 0 2-1.6L21 8H7"/><circle cx="10.5" cy="20.5" r="1.3"/><circle cx="18" cy="20.5" r="1.3"/></svg>
+    <span>فروشگاه</span>
+  </button>
+  <button class="tab" data-tab="orders" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5l9-4.5 9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5l9 4.5 9-4.5M12 12v9"/></svg>
+    <span>سفارش‌ها</span>
+  </button>
+  <button class="tab" data-tab="more" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+    <span>بیشتر</span>
+  </button>
+</nav>
+
+<!-- ═══ لایهٔ مودال ═══ -->
+<div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" hidden>
+  <div class="sheet-grip"></div>
+  <div class="sheet-head">
+    <h3 id="sheetTitle"></h3>
+    <button class="sheet-close" id="sheetClose" type="button" aria-label="بستن">✕</button>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
+
+<!-- ═══ توست ═══ -->
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="webapp.php?asset=app.js"></script>
+</body>
+</html>

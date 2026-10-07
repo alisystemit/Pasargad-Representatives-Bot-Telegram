@@ -21,3 +21,10 @@ Options -Indexes
 <FilesMatch "^(composer\.(json|lock)|README\.md)$">
     Require all denied
 </FilesMatch>
+
+# خروجی ابزار پیش‌نمایش مینی‌اپ.
+# ⚠️ اگر این فایل روی سرور باشد، `initData` معتبر داخلش هست و یعنی هر کسی
+# می‌تواند خود را جای هر کاربری جا بزند. باید از دسترس وب خارج بماند.
+<Files "_preview.html">
+    Require all denied
+</Files>

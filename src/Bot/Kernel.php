@@ -1586,6 +1586,11 @@ final class Kernel
             ];
         }
 
+        // دکمهٔ Mini App روی منوی اصلی ربات هم هست تا کاربر از داخل چت
+        // (جایی که اکثر تعامل‌ها اتفاق می‌افتد) بتواند وارد اپ شود.
+        $webApp = new \Pasargad\Bot\FullMenu($this->bot);
+        $rows   = array_merge($rows, $webApp->webAppRows());
+
         if ($isAdmin) {
             $rows[] = [['text' => '🛠✨ پنل مدیریت', 'data' => BotApi::encodeData('admin.home')]];
         }
