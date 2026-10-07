@@ -237,4 +237,92 @@ final class FloodGuard
 
         return $out;
     }
+
+    /**
+     * محدودیت نرخ ضد اسپم: اگر کاربر بیش از N درخواست در T ثانیه بفرستد، محدود می‌شود.
+     *
+     * @param int $telegramId شناسهٔ تلگرام کاربر
+     * @param int $maxCount  حداکثر تعداد درخواست در پنجره
+     * @param int $windowSec  طول پنجره (ثانیه)
+     * @return bool true یعنی محدود شود
+     */
+    public function isSpamRateLimited(int $telegramId, int $maxCount = 10, int $windowSec = 60): bool
+    {
+        if (!$this->enabled || $telegramId <= 0) {
+            return false;
+        }
+
+        $key = 'spam:' . $telegramId;
+        $now = time();
+
+        try {
+            $row = $this->db->first(
+                'SELECT COUNT(*) AS cnt FROM flood_guard WHERE key = ? AND updated_at >= ?',
+                [$key, $now - $windowSec]
+            );
+
+            $count = (int) ($row['cnt'] ?? 0);
+
+            if ($count >= $maxCount) {
+                Logger::warning('Spam rate limit triggered', [
+                    'user_id' => $telegramId,
+                    'count'   => $count,
+                    'window'  => $windowSec,
+                ]);
+                return true;
+            }
+
+            $this->db->run(
+                'INSERT INTO flood_guard (key, updated_at) VALUES (:k, :t)
+                 ON CONFLICT(key) DO UPDATE SET updated_at = excluded.updated_at',
+                ['k' => $key, 't' => $now]
+            );
+
+            return false;
+        } catch (\Throwable $e) {
+            Logger::debug('Spam rate limit check failed', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
+    /**
+     * بررسی آیا کاربر به‌دلیل اسپم مسدود شده است؟
+     */
+    public function isBlockedForSpam(int $telegramId): bool
+    {
+        if (!$this->enabled || $telegramId <= 0) {
+            return false;
+        }
+
+        try {
+            $row = $this->db->first(
+                'SELECT updated_at FROM flood_guard WHERE key = ?',
+                ['blocked:' . $telegramId]
+            );
+
+            return $row !== null && (time() - (int) $row['updated_at']) < 3600;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * مسدود کردن کاربر برای یک ساعت به‌دلیل اسپم.
+     */
+    public function blockForSpam(int $telegramId): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        try {
+            $this->db->run(
+                'INSERT INTO flood_guard (key, updated_at) VALUES (:k, :t)
+                 ON CONFLICT(key) DO UPDATE SET updated_at = excluded.updated_at',
+                ['k' => 'blocked:' . $telegramId, 't' => time()]
+            );
+        } catch (\Throwable $e) {
+            Logger::debug('Block for spam failed', ['error' => $e->getMessage()]);
+        }
+    }
 }

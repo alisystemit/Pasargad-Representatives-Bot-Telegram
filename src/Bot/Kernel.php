@@ -934,6 +934,39 @@ final class Kernel
         $step       = (string) ($state['step'] ?? '');
 
         switch ($step) {
+            case 'admin_disk_quota':
+                $panelId = (int) ($state['panel_id'] ?? 0);
+
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                if ($text === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ مقداری نفرستادید! دوباره بفرستید یا /cancel را بزنید.');
+                    return true;
+                }
+
+                // تبدیل مگابایت به بایت اگر با M یا MB تمام شده باشد
+                $text = strtoupper(trim($text));
+                if (preg_match('/^(\d+(?:\.\d+)?)\s*(MB|M)$/i', $text, $m)) {
+                    $bytes = (int) round((float) $m[1] * 1024 * 1024);
+                } elseif (preg_match('/^(\d+(?:\.\d+)?)\s*(GB|G)$/i', $text, $m)) {
+                    $bytes = (int) round((float) $m[1] * 1024 * 1024 * 1024);
+                } else {
+                    $bytes = (int) preg_replace('/\D/', '', $text);
+                }
+
+                if ($bytes < 0) {
+                    $this->bot->sendMessage($chatId, '⚠️ مقدار نمی‌تواند منفی باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $this->adminController()->savePanelDiskQuota($chatId, $panelId, $bytes);
+                return true;
+
             case 'panel.test.autodelete.set':
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
@@ -949,7 +982,6 @@ final class Kernel
                 $configId = (int) ($state['config_id'] ?? 0);
                 $seconds  = (int) $text;
 
-                //	max 365 days auto-delete
                 if ($seconds > 365 * 86400) {
                     $this->bot->sendMessage($chatId, '⚠️ حداکثر زمان ۳۶۵ روز است.');
                     return true;
@@ -1351,6 +1383,7 @@ final class Kernel
             return;
         }
 
+        // ----------------  تست کانفیگ / اشتراک ----------------
         if ($ns === 'panel.test.autodelete.show') {
             $this->bot->answerCallback($callbackId);
             $this->panelCenter()->showTestAutoDelete($chatId, $user, (int) ($data['id'] ?? 0));
@@ -1485,13 +1518,13 @@ final class Kernel
 
     private function showMainMenu(int $chatId, array $user, bool $isAdmin, bool $force = false): void
     {
-        $hasPanels = $this->hasPanels($user);
+        // غنی‌سازی داده کاربر برای منوی زیبا
+        $user['panel_count']   = count($this->panels->listByUser((int) ($user['id'] ?? 0)));
+        $user['wallet_balance'] = (int) ($user['wallet_balance'] ?? 0);
+        $user['loyalty_points'] = (int) ($user['loyalty_points'] ?? 0);
 
-        $this->bot->sendMessage(
-            $chatId,
-            Text::mainMenu($isAdmin, $hasPanels, $this->settings->bool(Settings::SHOP_OPENED, true)),
-            ['reply_markup' => $this->bot->buildMarkup($this->mainMenuKeyboard($user, $isAdmin))]
-        );
+        $fullMenu = new \Pasargad\Bot\FullMenu($this->bot);
+        $fullMenu->mainMenu($chatId, $user, $isAdmin);
     }
 
     /**

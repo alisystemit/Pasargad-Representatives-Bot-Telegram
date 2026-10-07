@@ -102,7 +102,7 @@ final class Keyboard
      */
     public static function isButton(array $candidate): bool
     {
-        return isset($candidate['text']) || isset($candidate['url']);
+        return isset($candidate['text']) || isset($candidate['url']) || isset($candidate['web_app']);
     }
 
     /**

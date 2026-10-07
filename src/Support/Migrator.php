@@ -549,43 +549,38 @@ final class Migrator
         ],
 
         // ------------------------------------------------------------------
-        // 011: features requested by user
+        // 011: ویژگی‌های درخواستی کاربر
         // ------------------------------------------------------------------
         '011_user_features' => [
-            // ---------------- ۱) اشتراک مدت‌دار برای ربات‌های hijo ----------------
+            // ۱) اشتراک مدت‌دار برای ربات‌های فرزند
             'ALTER TABLE panels ADD COLUMN subscription_expire_at INTEGER',
             'ALTER TABLE panels ADD COLUMN is_subscribed INTEGER NOT NULL DEFAULT 0',
 
-            // ---------------- ۲) سیستم معرفی (ریفرال) پاداش اسلات ----------------
-            //extend referrals table with slate bonus
+            // ۲) سیستم معرفی (ریفرال) پاداش اسلات
             'ALTER TABLE referrals ADD COLUMN slate_bonus_toman INTEGER NOT NULL DEFAULT 0',
 
-            // ---------------- ۳) ربات آزمایشی با حذف خودکار ----------------
+            // ۳) ربات آزمایشی با حذف خودکار
             'ALTER TABLE test_configs ADD COLUMN auto_delete_at INTEGER',
             'ALTER TABLE test_configs ADD COLUMN is_auto_delete INTEGER NOT NULL DEFAULT 0',
 
-            // ---------------- ۴) سی dihdisc quota and dead bot ----------------
+            // ۴) سهمیه دیسک و ربات مرده
             'ALTER TABLE panels ADD COLUMN disk_quota INTEGER NOT NULL DEFAULT 0',
             'ALTER TABLE panels ADD COLUMN is_dead INTEGER NOT NULL DEFAULT 0',
             'ALTER TABLE panels ADD COLUMN last_seen_at INTEGER',
 
-            // ---------------- ۵) مانیتورینگ مرکزی ربات‌های hijo ----------------
+            // ۵) مانیتورینگ مرکزی ربات‌های فرزند
             'ALTER TABLE panels ADD COLUMN monitor_status TEXT NOT NULL DEFAULT \'online\'',
             'ALTER TABLE panels ADD COLUMN monitor_last_check INTEGER',
 
-            // ---------------- ۶) عملیات گروهی در «همه ربات‌ها» ----------------
-            // Nothing DB-level; handled via admin UI selection.
-
-            // ---------------- ۷) انتقال مالکیت + کپی (کلون) ربات ----------------
+            // ۷) انتقال مالکیت
             'ALTER TABLE panels ADD COLUMN original_user_id INTEGER',
-            'ALTER TABLE panels ADD COLUMN clone_source_panel_id INTEGER',
 
-            // ---------------- ۸) لاگ حسابرسی ادمین ----------------
+            // ۸) لاگ حسابرسی ادمین
             'CREATE TABLE IF NOT EXISTS admin_logs (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 admin_user_id   INTEGER NOT NULL,
                 action          TEXT NOT NULL,
-                target_type     TEXT NOT NULL,   -- panel | order | user | referral
+                target_type     TEXT NOT NULL,
                 target_id       INTEGER NOT NULL,
                 details         TEXT,
                 ip_address      TEXT,
@@ -595,16 +590,7 @@ final class Migrator
             'CREATE INDEX IF NOT EXISTS idx_admin_logs_target ON admin_logs(target_type, target_id)',
             'CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created_at)',
 
-            // ---------------- ۹) محدودیت نرخ Against spam ----------------
-            'CREATE TABLE IF NOT EXISTS flood_extra (
-                key         TEXT PRIMARY KEY,
-                updated_at  INTEGER NOT NULL
-            )',
-            // users.is_blocked و users.blocked_reason از قبل در 001 وجود دارند؛
-            // دوباره ADD کردنشان خطای duplicate column می‌داد و مایگریشن 011 نمی‌گرفت.
-
-            // ---------------- ۱۰) داشبورد درآمد ----------------
-            //Additional columns on orders for revenue tracking
+            // ۱۰) داشبورد درآمد
             'ALTER TABLE orders ADD COLUMN revenue_share_toman INTEGER NOT NULL DEFAULT 0',
             'ALTER TABLE orders ADD COLUMN is_referred INTEGER NOT NULL DEFAULT 0',
         ],
