@@ -988,15 +988,26 @@ class BotApi
         // ⚠️ این شاخه **قبل** از شاخهٔ callback می‌آید. قبلاً نبود و دکمهٔ
         // «📱 اپلیکیشن وب» در منوی اصلی به‌جای باز شدن اپ، یک
         // `callback_data: noop` می‌ساخت و بی‌صدا هیچ کاری نمی‌کرد.
+        //
+        // ⚠️ شکل درست طبق مستندات Bot API یک آبجکت است:
+        //   {"text": "…", "web_app": {"url": "https://…"}}
+        // اگر رشتهٔ خالی (`"web_app": "https://…"`) فرستاده شود، تلگرام کل
+        // پیام را با خطای `can't parse inline keyboard button` رد می‌کند و
+        // کاربر اصلاً دکمه را نمی‌بیند — یا لینک را دستی در مرورگر باز
+        // می‌کند که initData ندارد و اپ روی «دادهٔ ورودی معتبر نیست» می‌ماند.
         if (isset($button['web_app'])) {
-            $url = trim((string) $button['web_app']);
+            $candidate = $button['web_app'];
+            if (is_array($candidate)) {
+                $candidate = $candidate['url'] ?? '';
+            }
+            $url = trim((string) $candidate);
 
             if (!$this->isTrustedWebAppUrl($url)) {
                 Logger::warning('Skipping button with untrusted web_app url', ['text' => $text, 'url' => $url]);
                 return null;
             }
 
-            return ['text' => $text, 'web_app' => $url];
+            return ['text' => $text, 'web_app' => ['url' => $url]];
         }
 
         // دکمهٔ callback

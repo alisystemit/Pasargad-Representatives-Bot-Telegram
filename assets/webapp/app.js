@@ -2491,6 +2491,15 @@ async function boot() {
     document.getElementById('sheetClose').addEventListener('click', () => sheet.close());
     document.getElementById('sheetBackdrop').addEventListener('click', () => sheet.close());
 
+    // اگر اسکریپت تلگرام لود نشده یا initData خالی است، یعنی صفحه در مرورگر
+    // عادی (یا مرورگر درون‌برنامه‌ای بدون WebApp) باز شده — نه از دکمهٔ
+    // web_app داخل ربات. در این حالت initData نداریم و همهٔ درخواست‌های API
+    // با 401 رد می‌شوند؛ پس زود و با پیام واضح می‌ایستیم.
+    if (!tg || !t().initData) {
+        fatal('این برنامه فقط داخل تلگرام کار می‌کند. لطفاً از دکمهٔ «📱 اپلیکیشن وب» داخل همین ربات بازش کنید و لینک را در مرورگر کپی نکنید.');
+        return;
+    }
+
     el.bootHint.textContent = 'در حال دریافت اطلاعات…';
 
     try {

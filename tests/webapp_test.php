@@ -652,12 +652,16 @@ $markup = $testBot->build([
     [['text' => '📱 اپلیکیشن', 'web_app' => 'https://bot.example.com/webapp.php']],
 ]);
 
-check('دکمهٔ web_app ساخته می‌شود',
-    ($markup['inline_keyboard'][0][0]['web_app'] ?? '') === 'https://bot.example.com/webapp.php',
+check('دکمهٔ web_app ساخته می‌شود (شکل آبجکت تلگرام)',
+    ($markup['inline_keyboard'][0][0]['web_app']['url'] ?? '') === 'https://bot.example.com/webapp.php',
     json_encode($markup, JSON_UNESCAPED_SLASHES));
 
 check('دکمهٔ web_app باید callback_data نداشته باشد',
     !isset($markup['inline_keyboard'][0][0]['callback_data']));
+
+check('ورودی آبجکتی web_app هم پذیرفته می‌شود',
+    ($testBot->build([[['text' => 'x', 'web_app' => ['url' => 'https://bot.example.com/webapp.php']]]])
+        ['inline_keyboard'][0][0]['web_app']['url'] ?? '') === 'https://bot.example.com/webapp.php');
 
 check('web_app با http رد می‌شود',
     $testBot->build([[['text' => 'x', 'web_app' => 'http://bot.example.com/webapp.php']]]) === null);
@@ -673,7 +677,7 @@ check('web_app با fragment رد می‌شود',
 
 check('زیردامنهٔ base_url پذیرفته می‌شود',
     ($testBot->build([[['text' => 'x', 'web_app' => 'https://api.bot.example.com/webapp.php']]])
-        ['inline_keyboard'][0][0]['web_app'] ?? '') === 'https://api.bot.example.com/webapp.php');
+        ['inline_keyboard'][0][0]['web_app']['url'] ?? '') === 'https://api.bot.example.com/webapp.php');
 
 check('دکمهٔ callback عادی سالم است',
     ($testBot->build([[['text' => 'x', 'data' => 'menu']]])['inline_keyboard'][0][0]['callback_data'] ?? '') === 'menu');
