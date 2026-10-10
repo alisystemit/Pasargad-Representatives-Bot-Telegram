@@ -950,16 +950,23 @@ final class Kernel
 
                 // تبدیل مگابایت به بایت اگر با M یا MB تمام شده باشد
                 $text = strtoupper(trim($text));
+                $bytes = 0;
+                
                 if (preg_match('/^(\d+(?:\.\d+)?)\s*(MB|M)$/i', $text, $m)) {
                     $bytes = (int) round((float) $m[1] * 1024 * 1024);
+                } elseif (preg_match('/^(\d+(?:\.\d+)?)\s*(TB|T)$/i', $text, $m)) {
+                    $bytes = (int) round((float) $m[1] * 1024 * 1024 * 1024 * 1024);
                 } elseif (preg_match('/^(\d+(?:\.\d+)?)\s*(GB|G)$/i', $text, $m)) {
                     $bytes = (int) round((float) $m[1] * 1024 * 1024 * 1024);
                 } else {
                     $bytes = (int) preg_replace('/\D/', '', $text);
                 }
 
-                if ($bytes < 0) {
-                    $this->bot->sendMessage($chatId, '⚠️ مقدار نمی‌تواند منفی باشد.');
+                // بررسی overflow: حداکثر ۱۰TB = 10995116277760 بایت
+                $maxBytes = 10 * 1024 * 1024 * 1024 * 1024;
+                
+                if ($bytes < 0 || $bytes > $maxBytes) {
+                    $this->bot->sendMessage($chatId, '⚠️ مقدار باید بین ۰ تا ۱۰ ترابایت باشد.');
                     return true;
                 }
 
@@ -987,10 +994,39 @@ final class Kernel
                     return true;
                 }
 
-                $this->testRepo->update($configId, [
-                    'is_auto_delete' => 1,
-                    'auto_delete_at' => time() + $seconds,
-                ]);
+                if ($seconds <= 0) {
+                    $this->bot->sendMessage($chatId, '⚠️ زمان باید بیشتر از صفر باشد.');
+                    return true;
+                }
+
+                // رفع Race Condition: استفاده از transaction برای atomicity
+                try {
+                    $db = Db::instance();
+                    $db->transaction(function () use ($db, $configId, $seconds) {
+                        // بررسی کنتورل: آیا کانفیگ توسط کاربر دیگری تغییر نیافته؟
+                        $config = $db->fetchOne(
+                            'SELECT id, user_id, is_auto_delete FROM test_configs WHERE id = ?',
+                            [$configId]
+                        );
+                        
+                        if (!$config) {
+                            throw new \Exception('کانفیگ تست یافت نشد.');
+                        }
+                        
+                        // اگر قبلاً auto_delete فعال شده، دوباره set نشود
+                        if ((int) ($config['is_auto_delete'] ?? 0) === 1) {
+                            throw new \Exception('این کانفیگ قبلاً برای حذف خودکار تنظیم شده است.');
+                        }
+
+                        $this->testRepo->update($configId, [
+                            'is_auto_delete' => 1,
+                            'auto_delete_at' => time() + $seconds,
+                        ]);
+                    });
+                } catch (\Exception $e) {
+                    $this->bot->sendMessage($chatId, '⚠️ خطا: ' . $e->getMessage());
+                    return true;
+                }
 
                 $this->sessions->clear($telegramId);
                 $this->bot->sendMessage($chatId, '✅ زمان حذف خودکار ' . Str::faNumber($seconds / 86400) . ' روز تنظیم شد.', [
@@ -1046,6 +1082,151 @@ final class Kernel
                 }
 
                 $this->supportCenter()->submit($chatId, $user, $category, $text, $ticketId);
+                return true;
+
+            // ============ تنظیمات Pasargad ============
+            case 'admin_panel_base_url':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $url = trim($text);
+                if (!str_starts_with($url, 'https://') && !str_starts_with($url, 'http://')) {
+                    $this->bot->sendMessage($chatId, '⚠️ باید با https:// یا http:// شروع شود.');
+                    return true;
+                }
+
+                if ($url === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ آدرس خالی نیست.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $settings->set('panel_base_url', $url);
+                $this->bot->sendMessage($chatId, '✅ آدرس پنل به‌روزرسانی شد (نیاز به restart ربات دارد).');
+                return true;
+
+            case 'admin_owner_username':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $username = trim($text);
+                if (strlen($username) < 3) {
+                    $this->bot->sendMessage($chatId, '⚠️ نام کاربری باید حداقل ۳ کاراکتر باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $settings->set('panel_owner_username', $username);
+                $this->bot->sendMessage($chatId, '✅ نام کاربری Owner ذخیره شد.');
+                return true;
+
+            case 'admin_owner_password':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $password = trim($text);
+                if (strlen($password) < 6) {
+                    $this->bot->sendMessage($chatId, '⚠️ رمز عبور باید حداقل ۶ کاراکتر باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $encrypted = \Pasargad\Support\Crypto::encrypt($password);
+                $settings->set('panel_owner_password', $encrypted);
+                $this->bot->sendMessage($chatId, '✅ رمز عبور Owner ذخیره و رمزشده شد.');
+                return true;
+
+            case 'admin_rep_role':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $roleId = (int) Str::toEnglishDigits(trim($text));
+                if ($roleId < 0) {
+                    $this->bot->sendMessage($chatId, '⚠️ شناسهٔ نقش نمی‌تواند منفی باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $settings->set('panel_rep_role', (string) $roleId);
+                $this->bot->sendMessage($chatId, '✅ نقش نماینده تنظیم شد: ' . ($roleId > 0 ? \Pasargad\Support\Str::faNumber($roleId) : 'خودکار'));
+                return true;
+
+            case 'admin_payment_card':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $card = preg_replace('/\D/', '', trim($text));
+                if (strlen($card) !== 16) {
+                    $this->bot->sendMessage($chatId, '⚠️ شماره کارت باید ۱۶ رقم باشد.');
+                    return true;
+                }
+
+                if (!Str::isValidCardNumber($card)) {
+                    $this->bot->sendMessage($chatId, '⚠️ شماره کارت معتبر نیست (فیلتر Luhn).');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $settings->set('payment_card_number', $card);
+                $this->bot->sendMessage($chatId, '✅ شماره کارت ذخیره شد: ' . \Pasargad\Support\Str::maskCardNumber($card));
+                return true;
+
+            case 'admin_payment_owner':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $owner = trim($text);
+                if (strlen($owner) < 3) {
+                    $this->bot->sendMessage($chatId, '⚠️ نام صاحب کارت باید حداقل ۳ کاراکتر باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $settings->set('payment_card_owner', $owner);
+                $this->bot->sendMessage($chatId, '✅ نام صاحب کارت ذخیره شد.');
+                return true;
+
+            case 'admin_payment_bank':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $bank = trim($text);
+                if (strlen($bank) < 2) {
+                    $this->bot->sendMessage($chatId, '⚠️ نام بانک باید حداقل ۲ کاراکتر باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                $settings = new \Pasargad\Store\Settings();
+                $settings->set('payment_card_bank', $bank);
+                $this->bot->sendMessage($chatId, '✅ نام بانک ذخیره شد.');
                 return true;
 
             case 'panel:username':

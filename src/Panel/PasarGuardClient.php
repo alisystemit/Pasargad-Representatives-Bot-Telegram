@@ -394,7 +394,32 @@ class PasarGuardClient
      */
     public function listAdmins(string $username, string $password, array $query = []): array
     {
-        $query = array_merge(['offset' => 0, 'limit' => 50], $query);
+        // Validation بهتر برای جلوگیری از SQL injection
+        $allowedKeys = ['offset', 'limit', 'username', 'ids'];
+        $filteredQuery = [];
+        
+        foreach ($query as $key => $value) {
+            if (!in_array($key, $allowedKeys, true)) {
+                continue; // کلیدهای نامعتبر نادیده گرفته می‌شوند
+            }
+            
+            // Validation برای هر کلید
+            if ($key === 'offset' || $key === 'limit') {
+                $intValue = (int) $value;
+                if ($intValue < 0) $intValue = 0;
+                if ($key === 'limit' && $intValue > 1000) $intValue = 1000; // حداکثر limit
+                $filteredQuery[$key] = $intValue;
+            } elseif ($key === 'username') {
+                // تنها حروف، اعداد، نقطه و خط‌فاصله
+                if (preg_match('/^[a-zA-Z0-9._-]+$/', (string) $value)) {
+                    $filteredQuery[$key] = (string) $value;
+                }
+            } elseif ($key === 'ids') {
+                $filteredQuery[$key] = (int) $value;
+            }
+        }
+        
+        $query = array_merge(['offset' => 0, 'limit' => 50], $filteredQuery);
 
         return $this->request('GET', '/api/admins?' . http_build_query($query), $username, $password);
     }

@@ -277,4 +277,58 @@ final class Str
     {
         return preg_match('/^[A-Za-z0-9_.-]{3,64}$/', $username) === 1;
     }
+
+    /**
+     * مخفی کردن شماره کارت (نمایش فقط ۴ رقم آخر).
+     * 
+     * مثال: 1234567890123456 → ••••••••••••3456
+     */
+    public static function maskCardNumber(string $cardNumber): string
+    {
+        $cleaned = preg_replace('/\D/', '', $cardNumber);
+        
+        if (strlen($cleaned) < 4) {
+            return '••••••••••••••••';
+        }
+        
+        $last4 = substr($cleaned, -4);
+        $masked = str_repeat('•', strlen($cleaned) - 4) . $last4;
+        
+        return $masked;
+    }
+
+    /**
+     * تأیید صحت شماره کارت (الگوریتم Luhn).
+     * 
+     * @return bool
+     */
+    public static function isValidCardNumber(string $cardNumber): bool
+    {
+        $number = preg_replace('/\D/', '', $cardNumber);
+        
+        // فقط کارت‌های ۱۶ رقمی ایران
+        if (strlen($number) !== 16) {
+            return false;
+        }
+        
+        // الگوریتم Luhn
+        $sum = 0;
+        $isEven = false;
+        
+        for ($i = strlen($number) - 1; $i >= 0; $i--) {
+            $digit = (int) $number[$i];
+            
+            if ($isEven) {
+                $digit *= 2;
+                if ($digit > 9) {
+                    $digit -= 9;
+                }
+            }
+            
+            $sum += $digit;
+            $isEven = !$isEven;
+        }
+        
+        return ($sum % 10) === 0;
+    }
 }

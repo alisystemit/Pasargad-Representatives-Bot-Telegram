@@ -195,7 +195,78 @@ final class AdminController
                 $this->showSettings($chatId);
                 break;
 
-            case 'admin.gateways':
+            case 'admin.settings.pasargad':
+                (new PasarguardSettings($this->bot))->mainMenu($chatId);
+                break;
+
+            case 'admin.settings.panel.base_url':
+                (new PasarguardSettings($this->bot))->setPanelBaseUrl($chatId);
+                $this->sessions->set($update->userId(), ['step' => 'admin_panel_base_url']);
+                break;
+
+            case 'admin.settings.panel.owner':
+                (new PasarguardSettings($this->bot))->setOwnerAccount($chatId, (string) ($data['step'] ?? null));
+                if (($data['step'] ?? null) === 'username') {
+                    $this->sessions->set($update->userId(), ['step' => 'admin_owner_username']);
+                } elseif (($data['step'] ?? null) === 'password') {
+                    $this->sessions->set($update->userId(), ['step' => 'admin_owner_password']);
+                }
+                break;
+
+            case 'admin.settings.panel.role':
+                (new PasarguardSettings($this->bot))->setRepRole($chatId);
+                $this->sessions->set($update->userId(), ['step' => 'admin_rep_role']);
+                break;
+
+            case 'admin.settings.payment':
+                (new PasarguardSettings($this->bot))->paymentSettings($chatId);
+                break;
+
+            case 'admin.settings.payment.card':
+                $this->sessions->set($update->userId(), ['step' => 'admin_payment_card']);
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    '💳 <b>شماره کارت</b>',
+                    '',
+                    '۱۶ رقم کارت را بفرستید:',
+                    '/cancel برای لغو',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        Keyboard::back(BotApi::encodeData('admin.settings.payment'), '🔙 بازگشت'),
+                    ])),
+                ]);
+                break;
+
+            case 'admin.settings.payment.owner':
+                $this->sessions->set($update->userId(), ['step' => 'admin_payment_owner']);
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    '👤 <b>نام صاحب کارت</b>',
+                    '',
+                    'نام صاحب کارت را بفرستید:',
+                    '/cancel برای لغو',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        Keyboard::back(BotApi::encodeData('admin.settings.payment'), '🔙 بازگشت'),
+                    ])),
+                ]);
+                break;
+
+            case 'admin.settings.payment.bank':
+                $this->sessions->set($update->userId(), ['step' => 'admin_payment_bank']);
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    '🏦 <b>نام بانک</b>',
+                    '',
+                    'نام بانک را بفرستید:',
+                    '/cancel برای لغو',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        Keyboard::back(BotApi::encodeData('admin.settings.payment'), '🔙 بازگشت'),
+                    ])),
+                ]);
+                break;
+
+            case 'admin.settings.autocard':
+                (new PasarguardSettings($this->bot))->autocardSettings($chatId, (string) ($data['step'] ?? null));
+                break;
                 $this->showGateways($chatId);
                 break;
 
@@ -1646,6 +1717,7 @@ final class AdminController
                 ['text' => '🖥 پنل‌ها', 'data' => BotApi::encodeData('admin.panels')],
                 ['text' => '📊 آمار', 'data' => BotApi::encodeData('admin.stats')],
             ],
+            [['text' => '🌐 تنظیمات Pasargad', 'data' => BotApi::encodeData('admin.settings.pasargad')]],
             [['text' => '🔙 بازگشت به پنل مدیریت 🛠', 'data' => BotApi::encodeData('admin.home')]],
         ]);
 

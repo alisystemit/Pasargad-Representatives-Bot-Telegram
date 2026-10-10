@@ -227,6 +227,6 @@ final class Keyboard
      */
     public static function link(string $text, string $url): array
     {
-        return [[[ 'text' => $text, 'url' => $url, 'style' => 'url' ]]];
+        return [['text' => $text, 'url' => $url]];
     }
 }

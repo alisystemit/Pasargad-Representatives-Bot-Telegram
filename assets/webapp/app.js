@@ -2310,6 +2310,20 @@ document.addEventListener('click', (ev) => {
         return;
     }
 
+    // لینک‌های خارجی (فاکتور، کانال، شارژ کیف پول)
+    const linkBtn = ev.target.closest('a[href]');
+    if (linkBtn && linkBtn.href) {
+        ev.preventDefault();
+        try {
+            t().openLink(linkBtn.href);
+        } catch (e) {
+            // اگر در Telegram نبود، لینک را در مرورگر باز کن
+            window.open(linkBtn.href, '_blank');
+        }
+        haptic.tap();
+        return;
+    }
+
     const goBtn = ev.target.closest('[data-go]');
     if (goBtn) {
         haptic.tap();

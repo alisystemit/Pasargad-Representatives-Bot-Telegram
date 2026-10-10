@@ -510,7 +510,12 @@ final class PaymentService
                     . 'مبلغ مورد انتظار: <b>' . Str::formatToman((int) $order['price_toman']) . "</b>\n"
                     . 'مبلغ دریافتی گزارش‌شده: <code>' . Str::escape((string) ($payload['pay_amount'] ?? $payload['price_amount'] ?? '?')) . '</code>'
                 );
-            } catch (\Throwable $e) {}
+            } catch (\Throwable $e) {
+                Logger::warning('Failed to notify admins about invalid payment', [
+                    'error' => $e->getMessage(),
+                    'order_id' => $order['id'] ?? null,
+                ]);
+            }
 
             return ['ok' => false, 'message' => 'مبلغ پرداخت با مبلغ سفارش مطابقت ندارد.'];
         }
@@ -765,7 +770,12 @@ final class PaymentService
         // امتیاز وفاداری: برای هر خرید موفق ۱۰ امتیاز
         try {
             $this->users->addLoyaltyPoints((int) $order['user_id'], 10);
-        } catch (\Throwable $e) {}
+        } catch (\Throwable $e) {
+            Logger::warning('Failed to add loyalty points', [
+                'user_id' => $order['user_id'] ?? null,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

@@ -544,7 +544,15 @@ final class PanelCenter
         $keyboard = [];
 
         if (!empty($details['sub_url'])) {
-            $keyboard[] = Keyboard::link('📂 دریافت کانفیگ', (string) $details['sub_url']);
+            // دکمه دریافت کانفیگ با لینک مستقیم
+            $keyboard[] = [[
+                'text' => '📂 دریافت کانفیگ',
+                'url' => (string) $details['sub_url']
+            ]];
+        } else {
+            // اگر لینک نبود، پیام خطا نمایش بده
+            $lines[] = '';
+            $lines[] = '⚠️ <b>توجه:</b> لینک دریافت کانفیگ موجود نیست. لطفاً با پشتیبانی تماس بگیرید.';
         }
 
         $keyboard[] = [['text' => '⛔️ غیرفعال کردن تست', 'data' => BotApi::encodeData('panel.test.off', ['id' => $id])]];
