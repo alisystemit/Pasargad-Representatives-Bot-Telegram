@@ -26,7 +26,7 @@ final class PanelSyncManager
      */
     public static function syncWithRetry(int $panelId, PasarGuardClient $client): array
     {
-        $panel = $this->getPanelInfo($panelId);
+        $panel = self::getPanelInfo($panelId);
         if (!$panel) {
             return ['ok' => false, 'message' => 'Panel not found'];
         }

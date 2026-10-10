@@ -1,1 +1,156 @@
-<?php\n\ndeclare(strict_types=1);\n\nnamespace Pasargad\\Support;\n\n/**\n * Centralized error handling with context and user-friendly messages\n */\nfinal class ErrorHandler\n{\n    /**\n     * Log error and return user-friendly message\n     */\n    public static function handle(\\Throwable $e, string $context = '', array $meta = []): string\n    {\n        // Log with full context\n        Logger::error($context ?: 'An error occurred', [\n            'exception' => get_class($e),\n            'message' => $e->getMessage(),\n            'code' => $e->getCode(),\n            'file' => $e->getFile(),\n            'line' => $e->getLine(),\n            'meta' => $meta,\n        ]);\n\n        // Return user-friendly message based on exception type\n        if ($e instanceof \\Pasargad\\Panel\\PanelException) {\n            return self::panelErrorMessage($e);\n        }\n\n        if ($e instanceof \\Pasargad\\Bot\\ShopException) {\n            return self::shopErrorMessage($e);\n        }\n\n        // Generic error message\n        return '❌ خطایی پیش آمد. لطفاً بعداً دوباره تلاش کنید.';\n    }\n\n    /**\n     * Handle panel connection errors\n     */\n    private static function panelErrorMessage(\\Pasargad\\Panel\\PanelException $e): string\n    {\n        if ($e->isAuthError()) {\n            return '🔐 خطای احراز هویت: نام کاربری یا رمز عبور نادرست است.';\n        }\n\n        if ($e->isBudgetExceeded()) {\n            return '⏱️ بودجهٔ زمانی درخواست‌های API تمام شده است. لطفاً کمی بعد تلاش کنید.';\n        }\n\n        if ($e->isPermissionError()) {\n            return '🔒 شما مجوز انجام این کار را ندارید.';\n        }\n\n        return '📡 ارتباط با پنل ناموفق بود: ' . $e->getMessage();\n    }\n\n    /**\n     * Handle shop operation errors\n     */\n    private static function shopErrorMessage(\\Pasargad\\Bot\\ShopException $e): string\n    {\n        return '🛒 خطا در فروشگاه: ' . $e->getMessage();\n    }\n\n    /**\n     * Validate input with context\n     */\n    public static function validateInput(string $input, string $type, array $rules = []): ?string\n    {\n        $input = trim($input);\n\n        // Check minimum length\n        if (($rules['min_length'] ?? 0) > 0 && mb_strlen($input) < $rules['min_length']) {\n            return sprintf('⚠️ حداقل %d کاراکتر وارد کنید.', $rules['min_length']);\n        }\n\n        // Check maximum length\n        if (($rules['max_length'] ?? 0) > 0 && mb_strlen($input) > $rules['max_length']) {\n            return sprintf('⚠️ حداکثر %d کاراکتر مجاز است.', $rules['max_length']);\n        }\n\n        // Type-specific validation\n        return match ($type) {\n            'email' => self::validateEmail($input),\n            'url' => self::validateUrl($input),\n            'card_number' => self::validateCardNumber($input),\n            'numeric' => self::validateNumeric($input, $rules),\n            'username' => self::validateUsername($input),\n            default => null,\n        };\n    }\n\n    private static function validateEmail(string $email): ?string\n    {\n        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {\n            return '⚠️ آدرس ایمیل نامعتبر است.';\n        }\n        return null;\n    }\n\n    private static function validateUrl(string $url): ?string\n    {\n        if (!filter_var($url, FILTER_VALIDATE_URL)) {\n            return '⚠️ آدرس وب نامعتبر است. باید با https:// شروع شود.';\n        }\n        return null;\n    }\n\n    private static function validateCardNumber(string $card): ?string\n    {\n        $card = preg_replace('/\\D/', '', $card);\n        if (strlen($card) !== 16) {\n            return '⚠️ شماره کارت باید ۱۶ رقم باشد.';\n        }\n        if (!Str::isValidCardNumber($card)) {\n            return '⚠️ شماره کارت معتبر نیست (فیلتر Luhn).';\n        }\n        return null;\n    }\n\n    private static function validateNumeric(string $input, array $rules): ?string\n    {\n        if (!is_numeric($input)) {\n            return '⚠️ فقط عدد وارد کنید.';\n        }\n\n        $num = (int) $input;\n\n        if (($rules['min'] ?? 0) > 0 && $num < $rules['min']) {\n            return sprintf('⚠️ حداقل %d وارد کنید.', $rules['min']);\n        }\n\n        if (($rules['max'] ?? 0) > 0 && $num > $rules['max']) {\n            return sprintf('⚠️ حداکثر %d مجاز است.', $rules['max']);\n        }\n\n        return null;\n    }\n\n    private static function validateUsername(string $username): ?string\n    {\n        if (strlen($username) < 3) {\n            return '⚠️ نام کاربری باید حداقل ۳ کاراکتر باشد.';\n        }\n        if (!preg_match('/^[a-zA-Z0-9_]+$/', $username)) {\n            return '⚠️ فقط حروف انگلیسی، عدد و _ مجاز است.';\n        }\n        return null;\n    }\n}\n"}}
+<?php
+
+declare(strict_types=1);
+
+namespace Pasargad\Support;
+
+use Pasargad\Bot\ShopException;
+use Pasargad\Panel\PanelException;
+
+/**
+ * Centralized error handling with context and user-friendly messages
+ */
+final class ErrorHandler
+{
+    /**
+     * Log error and return user-friendly message
+     */
+    public static function handle(\Throwable $e, string $context = '', array $meta = []): string
+    {
+        // Log with full context
+        Logger::error($context ?: 'An error occurred', [
+            'exception' => get_class($e),
+            'message' => $e->getMessage(),
+            'code' => $e->getCode(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+            'meta' => $meta,
+        ]);
+
+        // Return user-friendly message based on exception type
+        if ($e instanceof PanelException) {
+            return self::panelErrorMessage($e);
+        }
+
+        if ($e instanceof ShopException) {
+            return self::shopErrorMessage($e);
+        }
+
+        // Generic error message
+        return '❌ خطایی پیش آمد. لطفاً بعداً دوباره تلاش کنید.';
+    }
+
+    /**
+     * Handle panel connection errors
+     */
+    private static function panelErrorMessage(PanelException $e): string
+    {
+        if ($e->isAuthError()) {
+            return '🔐 خطای احراز هویت: نام کاربری یا رمز عبور نادرست است.';
+        }
+
+        if ($e->isBudgetExceeded()) {
+            return '⏱️ بودجهٔ زمانی درخواست‌های API تمام شده است. لطفاً کمی بعد تلاش کنید.';
+        }
+
+        if ($e->isPermissionError()) {
+            return '🔒 شما مجوز انجام این کار را ندارید.';
+        }
+
+        return '📡 ارتباط با پنل ناموفق بود: ' . $e->getMessage();
+    }
+
+    /**
+     * Handle shop operation errors
+     */
+    private static function shopErrorMessage(ShopException $e): string
+    {
+        return '🛒 خطا در فروشگاه: ' . $e->getMessage();
+    }
+
+    /**
+     * Validate input with context
+     */
+    public static function validateInput(string $input, string $type, array $rules = []): ?string
+    {
+        $input = trim($input);
+
+        // Check minimum length
+        if (($rules['min_length'] ?? 0) > 0 && mb_strlen($input) < $rules['min_length']) {
+            return sprintf('⚠️ حداقل %d کاراکتر وارد کنید.', $rules['min_length']);
+        }
+
+        // Check maximum length
+        if (($rules['max_length'] ?? 0) > 0 && mb_strlen($input) > $rules['max_length']) {
+            return sprintf('⚠️ حداکثر %d کاراکتر مجاز است.', $rules['max_length']);
+        }
+
+        // Type-specific validation
+        return match ($type) {
+            'email' => self::validateEmail($input),
+            'url' => self::validateUrl($input),
+            'card_number' => self::validateCardNumber($input),
+            'numeric' => self::validateNumeric($input, $rules),
+            'username' => self::validateUsername($input),
+            default => null,
+        };
+    }
+
+    private static function validateEmail(string $email): ?string
+    {
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return '⚠️ آدرس ایمیل نامعتبر است.';
+        }
+        return null;
+    }
+
+    private static function validateUrl(string $url): ?string
+    {
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            return '⚠️ آدرس وب نامعتبر است. باید با https:// شروع شود.';
+        }
+        return null;
+    }
+
+    private static function validateCardNumber(string $card): ?string
+    {
+        $card = preg_replace('/\D/', '', $card);
+        if (strlen($card) !== 16) {
+            return '⚠️ شماره کارت باید ۱۶ رقم باشد.';
+        }
+        if (!Str::isValidCardNumber($card)) {
+            return '⚠️ شماره کارت معتبر نیست (فیلتر Luhn).';
+        }
+        return null;
+    }
+
+    private static function validateNumeric(string $input, array $rules): ?string
+    {
+        if (!is_numeric($input)) {
+            return '⚠️ فقط عدد وارد کنید.';
+        }
+
+        $num = (int) $input;
+
+        if (($rules['min'] ?? 0) > 0 && $num < $rules['min']) {
+            return sprintf('⚠️ حداقل %d وارد کنید.', $rules['min']);
+        }
+
+        if (($rules['max'] ?? 0) > 0 && $num > $rules['max']) {
+            return sprintf('⚠️ حداکثر %d مجاز است.', $rules['max']);
+        }
+
+        return null;
+    }
+
+    private static function validateUsername(string $username): ?string
+    {
+        if (strlen($username) < 3) {
+            return '⚠️ نام کاربری باید حداقل ۳ کاراکتر باشد.';
+        }
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $username)) {
+            return '⚠️ فقط حروف انگلیسی، عدد و _ مجاز است.';
+        }
+        return null;
+    }
+}
