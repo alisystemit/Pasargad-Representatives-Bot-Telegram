@@ -183,8 +183,54 @@ check('توکن کانفیگ با فاصلهٔ ابتدا/انتها هم پذی
 
 Config::set('bot_token', TOKEN);
 
+// ------------------------------------------------------------------
+echo "\n▶ ۴) initData کلاینت جدید تلگرام (همراه signature)\n";
+// ------------------------------------------------------------------
+//
+// تلگرام ۸ به بعد کنار `hash`، فیلد `signature` (امضای Ed25519) را هم می‌فرستد.
+// طبق مستندات رسمی، `signature` هم باید از data-check-string **حذف** شود.
+//
+// کد قبلی آن را نگه می‌داشت و روی هر کلاینت جدید امضا همیشه نادرست می‌شد —
+// همان چیزی که کل Mini App را از کار انداخته بود.
+
+$sigRaw = static function (int $userId, string $token = TOKEN): string {
+    $pairs = [
+        'auth_date' => (string) time(),
+        'query_id'  => 'AAHQ_newclient',
+        'user'      => json_encode(['id' => $userId, 'first_name' => 'نو', 'username' => 'new'], JSON_UNESCAPED_UNICODE),
+    ];
+    ksort($pairs, SORT_STRING);
+
+    $check = [];
+    foreach ($pairs as $k => $v) {
+        $check[] = $k . '=' . $v;
+    }
+
+    $checkString = implode("\n", $check);
+
+    // `signature` دقیقاً همان چیزی است که تلگرام برای اعتبارسنجی شخص‌ثالث
+    // می‌فرستد (base64url). اینجا مقدار ساختگی است؛ فقط «وجود داشتنش» مهم است.
+    $pairs['signature'] = rtrim(strtr(base64_encode(hash('sha256', $checkString, true)), '+/', '-_'), '=');
+    $pairs['hash']      = hash_hmac('sha256', $checkString, hash_hmac('sha256', 'WebAppData', $token, true));
+
+    $out = [];
+    foreach ($pairs as $k => $v) {
+        $out[] = urlencode($k) . '=' . urlencode((string) $v);
+    }
+
+    return implode('&', $out);
+};
+
+$newClient = InitData::parse($sigRaw(7002));
+
+check('کلاینت جدید (با signature) پذیرفته شد', ($newClient['ok'] ?? false) === true, $newClient['message'] ?? '');
+check('کاربر درست استخراج شد', (int) ($newClient['user']['id'] ?? 0) === 7002);
+
+// کلاینت قدیمی (بدون signature) همچنان باید کار کند.
+$oldClient = InitData::parse($initFor(7003));
 // ==================================================================
 echo "\n▶ ۳) اتصال پنل جدید از پنل مدیریت\n";
+// ==================================================================
 // ==================================================================
 
 $bot->reset();
