@@ -204,18 +204,15 @@ final class AdminController
                 $this->sessions->set($update->userId(), ['step' => 'admin_panel_base_url']);
                 break;
 
-            case 'admin.settings.panel.owner':
-                (new PasarguardSettings($this->bot))->setOwnerAccount($chatId, (string) ($data['step'] ?? null));
-                if (($data['step'] ?? null) === 'username') {
-                    $this->sessions->set($update->userId(), ['step' => 'admin_owner_username']);
-                } elseif (($data['step'] ?? null) === 'password') {
-                    $this->sessions->set($update->userId(), ['step' => 'admin_owner_password']);
-                }
-                break;
+            // ⚠️ فقط کلید API. قدم‌های نام‌کاربری/رمز حذف شده‌اند و `setOwnerAccount`
+                // خودش پیام راهنما می‌دهد، پس اینجا نشستی ساخته نمی‌شود.
+                case 'admin.settings.panel.owner':
+                    (new PasarguardSettings($this->bot))->setOwnerAccount($chatId);
+                    break;
 
-            case 'admin.settings.panel.owner.test':
-                (new PasarguardSettings($this->bot))->testOwnerConnection($chatId);
-                break;
+                case 'admin.settings.panel.owner.test':
+                    (new PasarguardSettings($this->bot))->testOwnerConnection($chatId);
+                    break;
 
             case 'admin.settings.panel.role':
                 (new PasarguardSettings($this->bot))->setRepRole($chatId);

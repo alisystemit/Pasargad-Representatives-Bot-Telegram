@@ -38,8 +38,7 @@ $db = TestDb::boot();
 (new Migrator($db))->migrate();
 
 // اکانت سازندهٔ پنل را فعال می‌کنیم تا بتوان پنل نمایندگی ساخت.
-Config::set('panel.owner_username', 'root');
-Config::set('panel.owner_password', 'rootpass');
+Config::set('panel.api_key', 'pg_key_test_global');
 Config::set('store.card_number', '6037997512345678');
 Config::set('store.card_owner', 'علی رضایی');
 
@@ -180,18 +179,26 @@ echo "\n▶ مرحلهٔ ۲: «من پنل دارم» برای ادمینی که
 
 $panel->addAdmin('existing_admin', ['data_limit' => 200 * 1073741824, 'used_traffic' => 20 * 1073741824]);
 
+// کلید باید صریحاً به این ادمین نسبت داده شود، وگرنه فیک اولین ادمین را
+// برمی‌گرداند و جریان روی پنل اشتباه ثبت می‌شود — همان رفتاری که روی پنل
+// واقعی با هر کلیدِ متفاوت اتفاق می‌افتد.
+$panel->apiKeyUsername = 'existing_admin';
+// فقط این کلید معتبر است، تا «کلید اشتباه» واقعاً اشتباه باشد و مسیر خطا
+// اجرا شود — وگرنه هر رشته‌ای کلید درست شمرده می‌شد.
+$panel->validApiKeys = ['pg_key_existing'];
+
 $bot->reset();
 $kernel->handle(cb(6001, ['n' => 'panel.self']));
-check('جریان «من پنل دارم» شروع شد', str_contains($bot->lastText(), 'من پنل دارم'), $bot->lastText());
-check('نام کاربری خواسته شد', str_contains($bot->lastText(), 'اطلاعات'), $bot->lastText());
+check('جریان «من پنل دارم» شروع شد', str_contains($bot->lastText(), 'آدرس پنل'), $bot->lastText());
+check('نام کاربری دیگر پرسیده نمی‌شود', !str_contains($bot->allText(), 'نام کاربری'), $bot->allText());
 
 $bot->reset();
-$kernel->handle(msg(6001, 'existing_admin'));
-check('درخواست رمز عبور داده شد', str_contains($bot->lastText(), 'رمز عبور'), $bot->lastText());
+$kernel->handle(msg(6001, 'https://existing.example.com'));
+check('درخواست کلید داده شد', str_contains($bot->lastText(), 'کلید API'), $bot->lastText());
 
 $bot->reset();
-$kernel->handle(msg(6001, 'correct-pass'));
-check('ثبت پنل موفق گزارش شد', str_contains($bot->allText(), 'به ربات اضافه شد'), $bot->allText());
+$kernel->handle(msg(6001, 'pg_key_existing'));
+check('ثبت پنل موفق گزارش شد', str_contains($bot->allText(), 'با موفقیت وصل شد'), $bot->allText());
 
 $selfUser  = $users->findByTelegramId(6001);
 $selfPanel = $panels->findByPanelUsername('existing_admin');
@@ -200,30 +207,35 @@ check('پنل در ربات ثبت شد', $selfPanel !== null);
 check('پنل به کاربر درست لینک شد', (int) $selfPanel['user_id'] === (int) $selfUser['id']);
 check('منبع پنل «ثبت دستی» است', $selfPanel['source'] === PanelRepository::SOURCE_SELF);
 check('حجم پنل از API خوانده شد', (int) $selfPanel['data_limit'] === 200 * 1073741824);
-check('رمز رمزنگاری شد', $panels->plainPassword($selfPanel) === 'correct-pass');
-check('رمز خام در دیتابیس نیست',
-    !str_contains((string) $selfPanel['panel_password'], 'correct-pass'));
+check(
+    'کلید قابل بازیابی است',
+    (new \Pasargad\Store\PanelAccess($panels))->apiKeyOf($selfPanel) === 'pg_key_existing'
+);
+check('کلید خام در دیتابیس نیست',
+    !str_contains((string) $selfPanel['api_key'], 'pg_key_existing'));
+check('هیچ رمز عبوری ذخیره نشد', (string) $selfPanel['panel_password'] === '');
 check('اطلاعات کامل پنل به کاربر نشان داده شد',
     str_contains($bot->allText(), 'آدرس پنل')
     && str_contains($bot->allText(), 'نام کاربری')
-    && str_contains($bot->allText(), 'رمز عبور'), $bot->allText());
-check('دکمهٔ تست کانفیگ هست', $bot->hasButton('تست کانفیگ'));
+    && str_contains($bot->allText(), 'کلید API'), $bot->allText());
 
-// رمز اشتباه
-//
 // FloodGuard پیام‌های *کاملاً یکسان* را در پنجرهٔ چندثانیه‌ای رد می‌کند و در
 // این تست همهٔ پیام‌ها در چند میلی‌ثانیه رخ می‌دهند. کاربر واقعی بعد از چند
-// ثانیه دوباره همان نام را می‌فرستد، پس اینجا فقط جدول ضدتکرار خالی می‌شود تا
+// ثانیه دوباره همان متن را می‌فرستد، پس اینجا فقط جدول ضدتکرار خالی می‌شود تا
 // «گذر زمان» شبیه‌سازی شود.
 $db->run('DELETE FROM flood_guard');
 
+// ⚠️ شمارهٔ پیام‌ها باید تازه باشد.
+//
+// `FloodGuard::isDuplicateUpdate()` روی **همان update_id + همان اثر انگشت**
+// تکراری می‌گیرد. پیش‌فرضِ توابع `cb()` و `msg()` عدد ثابتی است، پس جریان
+// دوم همان عدد را با همان محتوا می‌فرستد و ربات آن را «تلگرام دوباره فرستاده»
+// رد می‌کند — در حالی که در واقع کاربر تازه‌ای دکمه زده است.
 $bot->reset();
-$kernel->handle(cb(6001, ['n' => 'panel.self']));
-$kernel->handle(msg(6001, 'existing_admin'));
-$panel->loginError = 'نام کاربری نامعتبر';
-$kernel->handle(msg(6001, 'wrong-pass'));
-$panel->loginError = '';
-check('خطای ثبت پنل نمایش داده شد', str_contains($bot->lastText(), 'اطلاعات پنل درست نیست'), $bot->lastText());
+$kernel->handle(cb(6001, ['n' => 'panel.self'], 101));
+$kernel->handle(msg(6001, 'https://existing.example.com', 102));
+$kernel->handle(msg(6001, 'pg_key_wrong_one', 103));
+check('ورودی نامعتبر در جریان ثبت پنل رد شد', str_contains($bot->allText(), 'برقرار نشد'), $bot->allText());
 
 // پنل تکراری نباید ساخته شود
 check('پنل تکراری نساخته شد', count($panels->listByUser((int) $selfUser['id'])) === 1);
@@ -343,10 +355,14 @@ echo "\n▶ مرحلهٔ ۸: شارژ یکی از پنل‌ها\n";
 
 // کاربر حالا دو پنل دارد: rep9 ندارد، ولی پنل تازهٔ خریداری‌شده را دارد.
 // برای آزمودن انتخاب پنل، یک پنل دوم هم می‌سازیم.
-$secondPanelId = $panels->create((int) $buyer['id'], 'second_panel', 'pass', [
+// کلید لازم است: شارژ با کلیدِ همین ردیف انجام می‌شود، و کلید هم به همین
+// ادمین وصل است (عین پنل واقعی) وگرنه سقفِ پنل اشتباهی تغییر می‌کند.
+$secondPanelId = $panels->create((int) $buyer['id'], 'second_panel', '', [
     'panel_status' => PanelRepository::STATUS_ACTIVE,
     'data_limit'   => 10 * 1073741824,
+    'api_key'      => 'pg_key_second_panel',
 ]);
+$panel->bindApiKey('pg_key_second_panel', 'second_panel');
 $panel->addAdmin('second_panel', ['data_limit' => 10 * 1073741824, 'used_traffic' => 0]);
 check('کاربر حالا ۲ پنل دارد', $panels->countByUser((int) $buyer['id']) === 2);
 

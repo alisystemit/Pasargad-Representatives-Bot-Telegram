@@ -107,10 +107,11 @@ final class AgencyService
      * بدون این اکانت، خرید «پنل نمایندگی» قابل اجرا نیست — ولی خرید
      * «شارژ پنل» کار می‌کند چون از اکانت خودِ نماینده استفاده می‌کند.
      *
-     * اگر خریدار پنلی وصل کرده باشد، همان مبناست (چه با رمز، چه با کلید
-     * API). وگرنه به owner سراسری برمی‌گردیم.
+     * اولویت با **کلید پنلی است که خریدار وصل کرده**؛ اگر نداشت، با کلید
+     * سراسریِ ربات (`panel.api_key`) ساخته می‌شود تا خریدارِ بدون پنل هم
+     * بتواند بخرد. رمز عبور دیگر هیچ‌جا در این مسیر پذیرفته نمی‌شود.
      *
-     * @return array{0:string, 1:string, 2:string}|null [authUsername, secret, mode]
+     * @return array{0:string, 1:string}|null [authUsername, apiKey]
      */
     private function ownerCredentials(): ?array
     {
@@ -121,23 +122,14 @@ final class AgencyService
                 return null;
             }
 
-            // در مسیر کلید API نام کاربری بی‌معناست؛ خودِ کلید نقش را دارد و
+            // در مسیر کلید، نام کاربری بی‌معنی است؛ خودِ کلید نقش را دارد و
             // `panelClient()` آن را به‌عنوان توکن ثابت ست می‌کند.
-            $authName = $credentials['mode'] === PanelAccess::MODE_API_KEY
-                ? 'api'
-                : $credentials['username'];
-
-            return [$authName, $credentials['credential'], $credentials['mode']];
+            return ['api', $credentials['credential']];
         }
 
-        $username = trim(Config::str('panel.owner_username', ''));
-        $password = Config::str('panel.owner_password', '');
+        $globalKey = trim((string) Config::str('panel.api_key', ''));
 
-        if ($username === '' || $password === '') {
-            return null;
-        }
-
-        return [$username, $password, PanelAccess::MODE_PASSWORD];
+        return $globalKey === '' ? null : ['api', $globalKey];
     }
 
     /**
@@ -163,11 +155,63 @@ final class AgencyService
 
         return [
             'ok'      => false,
-            'message' => 'اکانت سازندهٔ پنل در config.php تنظیم نشده است '
-                . '(panel.owner_username و panel.owner_password). '
-                . 'یا پنلی به حساب کاربر وصل کنید. '
-                . 'تا وقتی هیچ‌کدام نباشد، خرید پنل نمایندگی ممکن نیست.',
+            'message' => 'کلید سازندهٔ پنل تنظیم نشده است. یکی از این دو لازم است:'
+                . "\n• کاربر یک پنل را با کلید API به ربات وصل کند، یا"
+                . "\n• در <code>config.php</code> مقدار <code>panel.api_key</code> تنظیم شود.",
         ];
+    }
+
+    /**
+     * ساخت کلید API برای ادمینِ تازه‌ساخته.
+     *
+     * نام کلید محدود و قابل تشخیص است تا اگر مدیر پنل وارد پنل شد، بداند این
+     * کلید مال ربات است و بتواند باطلش کند.
+     *
+     * @return string کلید، یا رشتهٔ خالی اگر ساخته نشد
+     */
+    private function issueApiKeyFor(PasarGuardClient $client, int $adminId, string $username, string $parentKey): string
+    {
+        if ($adminId <= 0) {
+            Logger::warning('Cannot issue panel api key: panel gave no admin id', ['username' => $username]);
+
+            return '';
+        }
+
+        try {
+            $response = $client->createApiKey([
+                'name'                => 'pasargad-bot-' . $username,
+                'admin_id'            => $adminId,
+                'inherit_permissions' => true,
+            ], $parentKey);
+
+            $key = trim((string) ($response['api_key'] ?? ''));
+
+            if ($key === '') {
+                Logger::warning('Panel returned no api key for new admin', [
+                    'username' => $username,
+                    'admin_id' => $adminId,
+                ]);
+
+                return '';
+            }
+
+            Logger::info('Panel api key issued for new agency admin', [
+                'admin_id' => $adminId,
+                'username' => $username,
+            ]);
+
+            return $key;
+        } catch (\Throwable $e) {
+            // پنلی که مجوز ساخت کلید ندارد اینجا می‌افتد. خرید باید ناموفق
+            // گزارش شود، چون پنلی که کلید ندارد برای ربات قابل مدیریت نیست.
+            Logger::warning('Could not issue panel api key', [
+                'username' => $username,
+                'admin_id' => $adminId,
+                'error'    => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
     }
 
     /**
@@ -328,7 +372,7 @@ final class AgencyService
             return ['ok' => false, 'message' => $guard['message'], 'details' => ['fatal' => true]];
         }
 
-        [$ownerUser, $ownerPassword, $authMode] = $this->ownerCredentials();
+        [$ownerUser, $ownerPassword] = $this->ownerCredentials();
 
         $client   = $this->panelClient();
         $userId   = (int) $botUser['id'];
@@ -341,7 +385,7 @@ final class AgencyService
             'source'  => $this->creator !== null
                 ? 'user_panel#' . (int) ($this->creator['id'] ?? 0)
                 : 'global_owner',
-            'auth'    => $authMode,
+            'auth'    => 'apikey',
         ]);
 
         $payload = [
@@ -467,10 +511,27 @@ final class AgencyService
             // *پیش‌فرض سراسری* می‌روند و روی سرور اشتباه کار می‌کنند یا ۴۰۳
             // می‌دهند — یعنی کاربر پول داده و سرویسش کار نمی‌کند.
             'base_url'         => $createdOnBaseUrl,
-            // حساب تازه با رمز ساخته شده، پس روش احراز هویتش همیشه رمز است
-            // (حتی اگر ساخت با کلید API انجام شده باشد).
-            'auth_mode'        => PanelAccess::MODE_PASSWORD,
+            // حساب تازه با کلیدِ سازنده ساخته شده، پس روش احراز هویتش هم
+            // کلید است.
+            'auth_mode'        => PanelAccess::MODE_API_KEY,
         ]);
+
+        // ------------------------------------------------------------------
+        // کلیدِ همین حساب تازه را می‌سازیم.
+        //
+        // چرا حیاتی است: ربات دیگر رمز نمی‌پرسد، پس اگر این ادمین کلید
+        // نداشته باشد، پنلش بعداً نه شارژ می‌شود نه بروزرسانی، نه آمار — یعنی
+        // کاربر پول داده و سرویسش کار نمی‌کند.
+        //
+        // اگر ساخت کلید ناموفق بود، خرید **ناموفق** گزارش می‌شود (نه موفقِ
+        // ناقص): سفارش بعداً تلاش مجدد می‌شود و `AgencyService` با نام کاربریِ
+        // قطعی، حسابِ ازقبل‌ساخته را بازیابی می‌کند و کلید را دوباره می‌سازد.
+        // ------------------------------------------------------------------
+        $issuedKey = $this->issueApiKeyFor($client, (int) ($admin['id'] ?? 0), $username, $ownerPassword);
+
+        if ($issuedKey !== '') {
+            $panels->setApiKey($panelId, $issuedKey);
+        }
 
         Logger::info('Agency panel ready', [
             'user_id'   => $userId,

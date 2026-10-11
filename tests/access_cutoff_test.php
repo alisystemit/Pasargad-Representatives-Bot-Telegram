@@ -59,6 +59,7 @@ $user = $users->upsertByTelegram(4001, ['telegram_id' => 4001]);
 $uid  = (int) $user['id'];
 
 $panelId = $panels->create($uid, 'rep4001', 'pass', [
+    'api_key' => 'pg_key_rep4001',
     'panel_status'     => PanelRepository::STATUS_ACTIVE,
     'data_limit'       => 100 * 1073741824,
     'access_expire_at' => time() - 3600,   // منقضی‌شده
@@ -137,6 +138,7 @@ echo "\n▶ پنل بدون کاربر\n";
 // ------------------------------------------------------------------
 
 $emptyId = $panels->create($uid, 'rep4002', 'pass', [
+    'api_key' => 'pg_key_rep4002',
     'panel_status' => PanelRepository::STATUS_ACTIVE,
     'data_limit'   => 1073741824,
 ]);
@@ -153,6 +155,7 @@ echo "\n▶ پنلی که ورودش ممکن نیست → کار دستی\n";
 // ------------------------------------------------------------------
 
 $brokenId = $panels->create($uid, 'rep4003', 'pass', [
+    'api_key' => 'pg_key_rep4003',
     'panel_status' => PanelRepository::STATUS_REVOKED,
     'data_limit'   => 1073741824,
 ]);
@@ -177,6 +180,7 @@ echo "\n▶ پنل بدون رمز در ربات\n";
 // ------------------------------------------------------------------
 
 $noPassId = $panels->create($uid, 'rep4004', '', [
+    'api_key' => '',
     'panel_status' => PanelRepository::STATUS_ACTIVE,
     'data_limit'   => 1073741824,
 ]);

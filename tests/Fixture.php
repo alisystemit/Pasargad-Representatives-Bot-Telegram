@@ -45,12 +45,27 @@ function makeRep(
         'status'       => (string) ($options['panel_status'] ?? 'active'),
     ]);
 
+    // کلیدِ این پنل به همین ادمین وصل است — عین واقعیت. بدون این، `GET /api/admin`
+    // «اولین ادمین» را برمی‌گرداند و شارژِ پنل دوم روی پنل اول اعمال می‌شود.
+    $fixtureApiKey = array_key_exists('api_key', $options)
+        ? (string) $options['api_key']
+        : 'pg_key_' . $panelUser;
+
+    if ($fixtureApiKey !== '') {
+        $panel->bindApiKey($fixtureApiKey, $panelUser);
+    }
+
+    // ⚠️ `api_key` پیش‌فرض دارد چون ربات فقط با کلید کار می‌کند: پنلی که
+    // کلید ندارد «وصل نیست» شمرده می‌شود و آمار/قطع دسترسی/شارژ رویش
+    // کار نمی‌کند. برای تستِ «پنلِ وصل‌نشده» کافی است
+    // `'api_key' => null` بدهید.
     $panelId = $panels->create($uid, $panelUser, (string) ($options['password'] ?? 'pass'), [
         'panel_status'     => PanelRepository::STATUS_ACTIVE,
         'data_limit'       => $dataLimit,
         'used_traffic'     => $used,
         'access_expire_at' => $options['expire_at'] ?? null,
         'login_url'        => 'https://panel.test',
+        'api_key'          => $fixtureApiKey,
     ]);
 
     return [$users->findById($uid), $panels->find($panelId)];

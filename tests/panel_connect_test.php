@@ -3,23 +3,27 @@
 declare(strict_types=1);
 
 /**
- * تست جریان «اتصال پنل جدید» و «تست اتصال».
+ * تست جریان «اتصال پنل جدید» — فقط با کلید API.
+ *
+ * ربات دیگر نام کاربری و رمز نمی‌گیرد، پس جریان فقط دو مرحله دارد:
+ * آدرس ← کلید.
  *
  * سه چیز باید اثبات شود:
- *   ۱) دکمهٔ اتصال در صفحهٔ پنل‌ها (حتی وقتی هیچ پنلی نیست) وجود دارد.
- *   ۲) جریان «آدرس → نام کاربری → رمز» نشست را درست پیش می‌برد و آدرس نامعتبر
- *      را رد می‌کند بدون آنکه مرحله را جلو ببرد.
- *   ۳) رمز اشتباه هیچ چیزی ذخیره نمی‌کند؛ رمز درست پنل را می‌سازد و **رمزنگاری‌شده**
- *      ذخیره می‌شود (نه خام).
+ *   ۱) منو فقط راهِ کلید API را پیشنهاد می‌دهد و دسترسی‌های لازم را می‌گوید.
+ *   ۲) آدرس نامعتبر مرحله را جلو نمی‌برد؛ آدرس درست مستقیم می‌رود سراغ کلید.
+ *   ۳) کلید اشتباه چیزی ذخیره نمی‌کند و کلید درست **رمزنگاری‌شده** ذخیره
+ *      می‌شود (نه خام) و رمز عبور اصلاً ذخیره نمی‌شود.
  */
 
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/TestDb.php';
 require_once __DIR__ . '/FakeBotApi.php';
 require_once __DIR__ . '/Fixture.php';
+require_once __DIR__ . '/FakePanelClient.php';
 
 use Pasargad\Bot\PanelConnectionManager;
 use Pasargad\Bot\SessionStore;
+use Pasargad\Store\PanelAccess;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestDb;
@@ -31,14 +35,23 @@ use Pasargad\Telegram\FakeBotApi;
 $db = TestDb::boot();
 (new Migrator($db))->migrate();
 
-Config::set('panel.owner_username', 'root');
-Config::set('panel.owner_password', 'rootpass');
+Config::set('panel.api_key', 'pg_key_test_global');
 
 $users    = new UserRepository($db);
 $panels   = new PanelRepository($db);
 $sessions = new SessionStore($db);
 $bot      = new FakeBotApi();
-$manager  = new PanelConnectionManager($bot, $panels, $sessions);
+
+// کلاینت قلابی تا مسیر موفق بدون شبکه تست شود.
+$panelClient = new Pasargad\Panel\FakePanelClient();
+$panelClient->validApiKeys = ['pg_key_live_abcdef'];
+$panelClient->addAdmin('operator1', [
+    'id'         => 501,
+    'role'       => ['id' => 1, 'name' => 'owner', 'is_owner' => true],
+    'data_limit' => 10737418240,
+]);
+
+$manager = new PanelConnectionManager($bot, $panels, $sessions, $panelClient);
 
 $passed = 0;
 $failed = 0;
@@ -86,11 +99,12 @@ $bot->reset();
 $manager->showMenu(100);
 
 check('منوی اتصال باز شد', str_contains($bot->allText(), 'اتصال پنل'), $bot->allText());
-check('گزینهٔ رمز عبور هست', $bot->hasButton('رمز عبور'));
 check('گزینهٔ کلید API هست', $bot->hasButton('کلید API'));
+check('گزینهٔ رمز عبور دیگر نیست', !$bot->hasButton('رمز عبور'), $bot->allText());
+check('دسترسی‌های لازم ذکر شده', str_contains($bot->allText(), 'admins.update'), $bot->allText());
 
 // آدرس نامعتبر: نباید مرحله را جلو ببرد.
-$state = ['auth_mode' => 'password', 'step' => PanelConnectionManager::STEP_URL];
+$state = ['step' => PanelConnectionManager::STEP_URL];
 
 $bot->reset();
 $ok = $manager->handleBaseUrl(100, 100, 'ftp://bad-host', $state);
@@ -104,36 +118,17 @@ $manager->handleBaseUrl(100, 100, 'panel.example.com', $state);
 
 $state = $sessions->get(100) ?? [];
 check('scheme به URL اضافه شد', ($state['panel_base_url'] ?? '') === 'https://panel.example.com', json_encode($state, JSON_UNESCAPED_UNICODE));
-check('مرحله به «نام کاربری» رفت', ($state['step'] ?? '') === PanelConnectionManager::STEP_USERNAME);
-check('از کاربر نام کاربری خواسته شد', str_contains($bot->allText(), 'نام کاربری'), $bot->allText());
+check('مرحله به «کلید» رفت', ($state['step'] ?? '') === PanelConnectionManager::STEP_CREDENTIAL, json_encode($state, JSON_UNESCAPED_UNICODE));
+check('از کاربر کلید خواسته شد', str_contains($bot->allText(), 'کلید API'), $bot->allText());
+check('نام کاربری دیگر پرسیده نمی‌شود', !str_contains($bot->allText(), 'نام کاربری'), $bot->allText());
 
 // ------------------------------------------------------------------
-echo "\n▶ مرحلهٔ ۲: نام کاربری\n";
+echo "\n▶ مرحلهٔ ۲: کلید اشتباه نباید چیزی ذخیره کند\n";
 // ------------------------------------------------------------------
-
-$bot->reset();
-$manager->handleUsername(100, 100, 'نام نامعتبر!', $sessions->get(100) ?? []);
-
-check('نام کاربری نامعتبر رد شد', str_contains($bot->allText(), 'نام کاربری نامعتبر است'), $bot->allText());
-
-$bot->reset();
-$manager->handleUsername(100, 100, 'operator1', $sessions->get(100) ?? []);
-
-$state = $sessions->get(100) ?? [];
-check('نام کاربری ذخیره شد', ($state['panel_username'] ?? '') === 'operator1');
-check('مرحله به «رمز» رفت', ($state['step'] ?? '') === PanelConnectionManager::STEP_CREDENTIAL);
-check('از کاربر رمز خواسته شد', str_contains($bot->allText(), 'رمز عبور'), $bot->allText());
-
-// ------------------------------------------------------------------
-echo "\n▶ مرحلهٔ ۳: رمز اشتباه نباید چیزی ذخیره کند\n";
-// ------------------------------------------------------------------
-
-// پنل قلابی: خطای ورود را شبیه‌سازی می‌کنیم چون کلاینت واقعی شبکه می‌خواهد.
-Config::set('panel.base_url', 'http://127.0.0.1:1');   // پورت بسته ⇒ اتصال شکست می‌خورد
 
 $before = $panels->countAll();
 $bot->reset();
-$manager->handleCredential(100, 100, 'wrong-pass', $sessions->get(100) ?? [], $user);
+$manager->handleCredential(100, 100, 'wrong-key', $sessions->get(100) ?? [], $user);
 
 $after = $panels->countAll();
 
@@ -141,42 +136,48 @@ check('پنلی ذخیره نشد', $before === $after, "before={$before} after=
 check('خطای اتصال به کاربر گفته شد', str_contains($bot->allText(), 'اتصال برقرار نشد'), $bot->allText());
 
 // ------------------------------------------------------------------
-echo "\n▶ مرحلهٔ ۴: ذخیرهٔ موفق (آدرس اختصاصی + رمزنگاری)\n";
+echo "\n▶ مرحلهٔ ۳: ذخیرهٔ موفق (آدرس اختصاصی + کلید رمزنگاری‌شده)\n";
 // ------------------------------------------------------------------
 
-// مسیر موفق به شبکهٔ واقعی نیاز دارد، پس این‌جا ساختار رکورد را با همان مسیری
-// می‌سنجیم که `handleCredential()` صدا می‌زند: `upsertFromPanel`.
-$panelId = $panels->upsertFromPanel(
-    (int) $user['id'],
-    'operator1',
-    'secret-pass',
-    ['id' => 501, 'role' => ['name' => 'owner', 'is_owner' => true], 'data_limit' => 10737418240, 'used_traffic' => 1073741824],
-    PanelRepository::SOURCE_SELF,
-    ['base_url' => 'https://panel.example.com']
-);
+$sessions->set(100, ['step' => PanelConnectionManager::STEP_CREDENTIAL, 'panel_base_url' => 'https://panel.example.com']);
 
-$stored = $panels->find($panelId);
+$bot->reset();
+$ok = $manager->handleCredential(100, 100, 'pg_key_live_abcdef', $sessions->get(100) ?? [], $user);
+
+check('اتصال موفق گزارش شد', $ok === true, $bot->allText());
+
+$stored = $panels->listByUser((int) $user['id'])[0] ?? null;
+$access = new PanelAccess($panels);
 
 check('پنل ساخته شد', $stored !== null);
-check('نام کاربری درست ذخیره شد', ($stored['panel_username'] ?? '') === 'operator1');
-check('رمز خام ذخیره نشد', ($stored['panel_password'] ?? '') !== 'secret-pass', (string) ($stored['panel_password'] ?? ''));
-check('رمز رمزنگاری شد', str_starts_with((string) ($stored['panel_password'] ?? ''), 'v1:'), (string) ($stored['panel_password'] ?? ''));
+check(
+    'نام ادمین از خودِ پنل خوانده شد',
+    ($stored['panel_username'] ?? '') === 'operator1',
+    (string) ($stored['panel_username'] ?? 'NULL')
+);
 check('آدرس اختصاصی پنل ذخیره شد', ($stored['base_url'] ?? '') === 'https://panel.example.com', (string) ($stored['base_url'] ?? 'NULL'));
-check('نقش owner از API خوانده شد', ($stored['panel_role'] ?? '') === 'owner');
+check('کلید خام ذخیره نشد', ($stored['api_key'] ?? '') !== 'pg_key_live_abcdef', (string) ($stored['api_key'] ?? ''));
+check('کلید رمزنگاری شد', str_starts_with((string) ($stored['api_key'] ?? ''), 'v1:'), (string) ($stored['api_key'] ?? ''));
+check('کلید قابل بازیابی است', $access->apiKeyOf((array) $stored) === 'pg_key_live_abcdef');
+check('هیچ رمز عبوری ذخیره نشد', ($stored['panel_password'] ?? '') === '', (string) ($stored['panel_password'] ?? 'NULL'));
+check('نقش از API خوانده شد', ($stored['panel_role'] ?? '') === 'owner');
 check('حجم از API خوانده شد', (int) ($stored['data_limit'] ?? 0) === 10737418240);
-check('رمز قابل بازیابی است', $panels->plainPassword($stored) === 'secret-pass');
 
+// به‌روزرسانی همان ردیف، نه ساخت ردیف تکراری
 $again = $panels->upsertFromPanel(
     (int) $user['id'],
     'operator1',
-    'new-pass',
+    '',
     ['id' => 501, 'role' => ['name' => 'owner', 'is_owner' => true]],
     PanelRepository::SOURCE_BOT,
-    ['base_url' => 'https://panel.example.com']
+    ['base_url' => 'https://panel.example.com', 'api_key' => 'pg_key_rotated']
 );
 
-check('به‌روزرسانی ردیف تکراری نساخت', $again === $panelId && $panels->countAll() === 1);
-check('رمز جدید جایگزین شد', $panels->plainPassword($panels->find($panelId)) === 'new-pass');
+check('به‌روزرسانی ردیف تکراری نساخت', $again === (int) $stored['id'] && $panels->countAll() === 1);
+check(
+    'کلید جدید جایگزین شد',
+    $access->apiKeyOf((array) $panels->find($again)) === 'pg_key_rotated'
+);
 
 // ------------------------------------------------------------------
 echo "\n▶ مرحلهٔ ۵: پنل دوم روی دامنهٔ دیگر\n";
@@ -185,10 +186,10 @@ echo "\n▶ مرحلهٔ ۵: پنل دوم روی دامنهٔ دیگر\n";
 $secondId = $panels->upsertFromPanel(
     (int) $user['id'],
     'operator2',
-    'second-pass',
+    '',
     ['id' => 502, 'role' => ['name' => 'admin']],
     PanelRepository::SOURCE_SELF,
-    ['base_url' => 'https://panel2.example.com']
+    ['base_url' => 'https://panel2.example.com', 'api_key' => 'pg_key_two']
 );
 
 check('کاربر می‌تواند دو پنل داشته باشد', $panels->countByUser((int) $user['id']) === 2);
@@ -210,7 +211,7 @@ try {
     $badId = $panels->upsertFromPanel(
         (int) $user['id'],
         'typo_panel',
-        'p',
+        '',
         ['id' => 999],
         PanelRepository::SOURCE_SELF,
         ['definitely_not_a_column' => 'x']

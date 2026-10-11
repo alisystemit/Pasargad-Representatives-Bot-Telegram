@@ -35,13 +35,13 @@ final class PasarguardSettings
     public function mainMenu(int $chatId): void
     {
         $baseUrl = Config::str('panel.base_url', '');
-        $owner = Config::str('panel.owner_username', '');
+        $botKey = Config::str('panel.api_key', '');
         $autocard = Config::str('autocard.api_url', '');
         $card = Config::str('store.card_number', '');
 
         $status = [
             $baseUrl ? '✅' : '❌' => 'آدرس پنل',
-            $owner ? '✅' : '❌' => 'اکانت Owner',
+            $botKey ? '✅' : '❌' => 'کلید سازندهٔ پنل',
             $autocard ? '✅' : '❌' => 'کارت خودکار',
             $card ? '✅' : '❌' => 'کارت دستی',
         ];
@@ -61,7 +61,7 @@ final class PasarguardSettings
 
         $keyboard = Keyboard::rows([
             [['text' => '🌐 آدرس پنل', 'data' => BotApi::encodeData('admin.settings.panel.base_url')]],
-            [['text' => '👤 اکانت Owner', 'data' => BotApi::encodeData('admin.settings.panel.owner')]],
+            [['text' => '🔑 کلید سازندهٔ پنل', 'data' => BotApi::encodeData('admin.settings.panel.owner')]],
             [['text' => '🎭 نقش نماینده', 'data' => BotApi::encodeData('admin.settings.panel.role')]],
             [['text' => '💳 روش پرداخت', 'data' => BotApi::encodeData('admin.settings.payment')]],
             [['text' => '⚡️ کارت خودکار', 'data' => BotApi::encodeData('admin.settings.autocard')]],
@@ -104,53 +104,52 @@ final class PasarguardSettings
     }
 
     /**
-     * تنظیم اکانت Owner
+     * کلید سازندهٔ پنل.
+     *
+     * ⭐️ ربات دیگر **هیچ رمز عبوری نمی‌گیرد** — حتی از مدیر خودش. تنها راه
+     * ساخت «پنل نمایندگی» یک کلید API است که ساختِ آن داخل خودِ پنل انجام
+     * می‌شود و رمز مدیریتی هرگز از پنل بیرون نمی‌آید.
+     *
+     * کلید فقط برای خریداری لازم است که **پنلش را وصل نکرده**؛ اگر نماینده
+     * پنل خودش را با کلید خودش وصل کند، ساخت روی همان پنل انجام می‌شود و
+     * این مقدار اصلاً استفاده نمی‌شود.
      */
-    public function setOwnerAccount(int $chatId, ?string $step = null): void
+    public function setOwnerAccount(int $chatId): void
     {
-        $current = Config::str('panel.owner_username', '');
+        $current = Config::str('panel.api_key', '');
+        $masked  = $current === ''
+            ? ''
+            : '…' . substr($current, -4);
 
-        if ($step === 'username') {
-            $lines = [
-                '👤 <b>نام کاربری Owner</b>',
-                '',
-                '📌 فعلی:',
-                '<code>' . ($current ? Str::escape($current) : '---') . '</code>',
-                '',
-                'نام کاربری پنل Pasargad را بفرستید',
-                '(این اکانت برای ساخت پنل‌های نمایندگی استفاده می‌شود)',
-                '',
-                '/cancel برای لغو',
-            ];
-        } else {
-            $pass = Config::str('panel.owner_password', '');
-            $lines = [
-                '👤✨ <b>اکانت Owner برای ساخت پنل 🌐</b>',
-                '',
-                '📋 وضعیت فعلی:',
-                '• نام کاربری: ' . ($current ? '<code>' . Str::escape($current) . '</code>' : '❌ تنظیم نشده'),
-                '• رمز عبور: ' . ($pass ? '✅ ذخیره شده (رمزشده)' : '❌ تنظیم نشده'),
-                '',
-                '💡 این اکانت باید دسترسی owner/admin به پنل داشته باشد',
-                '',
-                '👇 انتخاب کنید:',
-            ];
-
-            $keyboard = Keyboard::rows([
-                [['text' => '✏️ نام کاربری', 'data' => BotApi::encodeData('admin.settings.panel.owner', ['step' => 'username'])]],
-                [['text' => '🔑 رمز عبور', 'data' => BotApi::encodeData('admin.settings.panel.owner', ['step' => 'password'])]],
-                [['text' => '🧪 تست اتصال', 'data' => BotApi::encodeData('admin.settings.panel.owner.test')]],
-                Keyboard::back(BotApi::encodeData('admin.settings.pasargad'), '🔙 بازگشت'),
-            ]);
-
-            $this->bot->sendMessage($chatId, implode("\n", $lines), [
-                'reply_markup' => $this->bot->buildMarkup($keyboard),
-            ]);
-            return;
-        }
+        $lines = [
+            '🔑✨ <b>کلید سازندهٔ پنل نمایندگی 🌐</b>',
+            '',
+            '📋 وضعیت فعلی: ' . ($current
+                ? '✅ تنظیم شده (<code>' . $masked . '</code>)'
+                : '❌ تنظیم نشده'),
+            '',
+            '💡 این کلید فقط برای ساخت پنل نمایندگی است. اگر نماینده پنل خودش',
+            'را با کلید خودش وصل کرده باشد، ساخت روی همان پنل انجام می‌شود.',
+            '',
+            '⚠️ ربات رمز عبور نمی‌گیرد. برای همین باید کلید را از داخل پنل',
+            'بسازید: <b>Settings → API Keys → ساخت کلید جدید</b>',
+            '',
+            'دسترسی‌های لازم:',
+            '• <code>admins.create</code> — ساخت پنل نمایندگی',
+            '• <code>admins.read</code> — دیدن پنل ساخته‌شده',
+            '• <code>api_keys.create</code> — ساخت کلید برای پنل نمایندگی',
+            '• <code>admin_roles.read</code> — پیدا کردن نقش اپراتور',
+            '',
+            'بررسی کافی‌بودن کلید (فقط‌خواندنی، چیزی نمی‌سازد):',
+            '<code>php tools/panel_key_check.php &lt;کلید&gt;</code>',
+            '',
+            '📝 برای ویرایش، مقدار را در <code>config.php</code> زیر',
+            '<code>panel.api_key</code> بگذارید و ربات را ری‌استارت کنید.',
+        ];
 
         $keyboard = Keyboard::rows([
-            Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
+            [['text' => '🧪 تست اتصال', 'data' => BotApi::encodeData('admin.settings.panel.owner.test')]],
+            Keyboard::back(BotApi::encodeData('admin.settings.pasargad'), '🔙 بازگشت'),
         ]);
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
@@ -199,28 +198,24 @@ final class PasarguardSettings
      * مسیری در `AdminController` آن را نمی‌گرفت، پس کلیک رویش به
      * «❓ این گزینه در پنل مدیریت تعریف نشده است» می‌رسید.
      *
-     * این متد همان تست را انجام می‌دهد: با اکانت ذخیره‌شده لاگین می‌کند و
-     * هویت ادمین را می‌خواند تا مدیر قبل از فروش پنل مطمئن شود کار می‌کند.
+     * این متد همان تست را انجام می‌دهد: با کلیدِ ذخیره‌شده هویت ادمین را
+     * می‌خواند تا مدیر قبل از فروش پنل مطمئن شود کار می‌کند.
      */
     public function testOwnerConnection(int $chatId): void
     {
         $this->bot->sendMessage($chatId, '⏳ در حال تست اتصال به پنل…');
 
-        $username = Config::str('panel.owner_username', '');
-        $password = Config::str('panel.owner_password', '');
+        $apiKey = Config::str('panel.api_key', '');
 
-        if ($username === '' || $password === '') {
+        if ($apiKey === '') {
             $this->bot->sendMessage($chatId, implode("\n", [
-                '❌ <b>تست ممکن نیست — اکانت کامل نیست</b>',
+                '❌ <b>تست ممکن نیست — کلید تنظیم نشده</b>',
                 '',
-                '• نام کاربری: ' . ($username !== '' ? '✅ تنظیم شده' : '❌ تنظیم نشده'),
-                '• رمز عبور: ' . ($password !== '' ? '✅ تنظیم شده' : '❌ تنظیم نشده'),
+                'مقدار <code>panel.api_key</code> در <code>config.php</code> خالی است.',
                 '',
-                'ابتدا هر دو را ذخیره کنید، بعد دوباره تست بگیرید.',
+                'کلید را از داخل پنل بسازید (Settings → API Keys) و آنجا بگذارید.',
             ]), [
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                    [['text' => '✏️ نام کاربری', 'data' => BotApi::encodeData('admin.settings.panel.owner', ['step' => 'username'])]],
-                    [['text' => '🔑 رمز عبور', 'data' => BotApi::encodeData('admin.settings.panel.owner', ['step' => 'password'])]],
                     Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
                 ])),
             ]);
@@ -230,21 +225,15 @@ final class PasarguardSettings
 
         try {
             $client = new PasarGuardClient();
-            $token  = $client->login($username, $password, false);
-            $client->forgetToken($username);
-
-            if ($token === '') {
-                throw new PanelException('پنل توکنی برنگرداند.');
-            }
-
-            $admin = $client->getAdmin($username, $username, $password);
+            $client->useStaticToken($apiKey);
+            $admin  = $client->getAdminWithApiKey($apiKey);
         } catch (PanelException $e) {
             $this->bot->sendMessage($chatId, implode("\n", [
                 '❌ <b>اتصال برقرار نشد</b>',
                 '',
                 Str::escape($e->getMessage()),
                 '',
-                '💡 اگر مطمئن هستید اطلاعات درست است، آدرس پنل و سرویس آن را بررسی کنید.',
+                '💡 اگر پیام «مجوز ندارید» دیدید، کلید باید دسترسی <code>admins.read</code> داشته باشد.',
             ]), [
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                     Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
@@ -254,7 +243,7 @@ final class PasarguardSettings
             return;
         }
 
-        $name = (string) ($admin['username'] ?? $username);
+        $name = (string) ($admin['username'] ?? '—');
         $role = is_array($admin['role'] ?? null)
             ? (string) ($admin['role']['name'] ?? '')
             : (string) ($admin['role'] ?? '');
@@ -262,11 +251,15 @@ final class PasarguardSettings
         $this->bot->sendMessage($chatId, implode("\n", [
             '✅ <b>اتصال برقرار شد</b>',
             '',
-            '• نام کاربری: <code>' . Str::escape($name) . '</code>',
+            '• ادمین کلید: <code>' . Str::escape($name) . '</code>',
             '• نقش: ' . ($role !== '' ? Str::escape($role) : '—'),
             '• آدرس پنل: <code>' . Str::escape(Config::str('panel.base_url', '—')) . '</code>',
             '',
-            '🎉 اکانت owner سالم است و می‌تواند پنل نمایندگی بسازد.',
+            '🎉 کلید معتبر است.',
+            '',
+            '⚠️ بررسی کامل کافی‌بودنِ دسترسی‌ها با این دکمه ممکن نیست؛ برای',
+            'دیدن فهرست دقیق مجوزهای کم‌شده این را اجرا کنید:',
+            '<code>php tools/panel_key_check.php</code>',
         ]), [
             'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                 Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),

@@ -114,7 +114,7 @@ if (is_array($data)) {
     check('کلید توکن مدیریتی خالی ماند', $data['admin_bot_token'] === '');
 
     check('store.card_number دست‌نخورده ماند', $data['store']['card_number'] === '');
-    check('panel.owner_username دست‌نخورده ماند', $data['panel']['owner_username'] === '');
+    check('panel.api_key دست‌نخورده ماند', $data['panel']['api_key'] === '');
     check('nowpayments.api_key دست‌نخورده ماند', $data['nowpayments']['api_key'] === '');
 
     $firstCryptoKey = (string) $data['crypto_key'];

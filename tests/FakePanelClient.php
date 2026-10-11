@@ -105,8 +105,22 @@ final class FakePanelClient extends PasarGuardClient
         ];
 
         // کلید با طرح ApiKey، بدون مجوز (حالت واقعیِ کلیدهای ناقص).
+        //
+        // نامِ مجوز عیناً همان چیزی است که پنل واقعی می‌گوید
+        // («Permission denied: admins.update») — و ربات باید **همان** را به کاربر
+        // نشان دهد. اگر فیک به‌جایش مسیر بدهد، تستِ «نام مجوز نشان داده شد»
+        // بی‌معنا می‌شد و یک باگ واقعی از چشم پنهان می‌ماند.
         if ($this->authScheme() === 'ApiKey' && $this->apiKeyForbidden) {
-            return $fail(403, 'Permission denied: ' . $path);
+            return $fail(403, 'Permission denied: ' . $this->apiKeyForbiddenScope);
+        }
+
+        // اگر فهرست کلیدهای معتبر پر شده باشد، کلید ناشناخته ۴۰۱ می‌گیرد —
+        // عیناً پنل واقعی. خالی بودن یعنی «هر کلیدی معتبر است».
+        if ($this->authScheme() === 'ApiKey'
+            && $this->validApiKeys !== []
+            && !in_array($token, $this->validApiKeys, true)
+        ) {
+            return $fail(401, 'Could not validate credentials');
         }
 
         if ($this->loginError !== '' && $this->authScheme() === 'Bearer' && str_starts_with($path, '/api/admin/token')) {
@@ -121,7 +135,7 @@ final class FakePanelClient extends PasarGuardClient
         }
 
         if ($path === '/api/admin' && $method === 'GET') {
-            return $this->currentAdminResponse($fail);
+            return $this->currentAdminResponse($fail, $token);
         }
 
         if (str_starts_with($path, '/api/admins')) {
@@ -141,7 +155,7 @@ final class FakePanelClient extends PasarGuardClient
      * @param  callable(array<string,mixed>): array<string,mixed> $fail
      * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
      */
-    private function currentAdminResponse(callable $fail): array
+    private function currentAdminResponse(callable $fail, string $token = ''): array
     {
         if ($this->loginError !== '') {
             return $fail(401, $this->loginError);
@@ -149,7 +163,7 @@ final class FakePanelClient extends PasarGuardClient
 
         if ($this->authScheme() === 'ApiKey') {
             return [
-                'status' => 200, 'data' => $this->apiKeyOwner(),
+                'status' => 200, 'data' => $this->apiKeyOwner($token),
                 'raw' => '', 'error' => '',
             ];
         }
@@ -194,8 +208,23 @@ final class FakePanelClient extends PasarGuardClient
      *
      * @return array<string, mixed>
      */
-    public function apiKeyOwner(): array
+    public function apiKeyOwner(string $token = ''): array
     {
+        // ⭐️ اول از روی **خودِ کلید** نگاه می‌کنیم، نه از ترتیب اضافه‌شدن ادمین‌ها.
+        //
+        // روی پنل واقعی هر کلید به یک حساب وصل است، پس `GET /api/admin` ادمینِ
+        // همان کلید را برمی‌گرداند. اگر اینجا «اولین ادمین» برگردانده شود،
+        // شارژ پنلِ کاربر دوم روی سقفِ پنلِ کاربر اول اعمال می‌شود — یعنی یک
+        // تست سبز و رفتار کاملاً غلط در محیط واقعی. (این دقیقاً همان تلهٔ
+        // «تست‌دوبل» است که دو بار امروز گرفتیم.)
+        if ($token !== '' && isset($this->apiKeyOwners[$token])) {
+            $bound = $this->apiKeyOwners[$token];
+
+            if (isset($this->admins[$bound])) {
+                return $this->admins[$bound];
+            }
+        }
+
         $username = $this->apiKeyUsername;
 
         if ($username === '') {
@@ -210,6 +239,30 @@ final class FakePanelClient extends PasarGuardClient
         $first = reset($this->admins);
 
         return is_array($first) ? $first : ['username' => 'api', 'status' => 'active'];
+    }
+
+    /**
+     * کلید → نام ادمینی که آن کلید متعلق به اوست.
+     *
+     * @var array<string, string>
+     */
+    public array $apiKeyOwners = [];
+
+    /** اتصال یک کلید به یک ادمین (همان کاری که خودِ پنل انجام می‌دهد). */
+    public function bindApiKey(string $apiKey, string $panelUsername): void
+    {
+        if ($apiKey === '' || $panelUsername === '') {
+            return;
+        }
+
+        $this->apiKeyOwners[$apiKey] = $panelUsername;
+
+        // کلیدِ وصل‌شده خودبه‌خود معتبر است. بدون این، هر تستی که
+        // `validApiKeys` را دستی پر کرده باید کلیدهای fixture را هم دستی
+        // اضافه کند و یکی فراموش شود ⇒ ۴۰۱ و شکستِ بی‌ربط.
+        if ($this->validApiKeys !== [] && !in_array($apiKey, $this->validApiKeys, true)) {
+            $this->validApiKeys[] = $apiKey;
+        }
     }
 
     /** نام ادمینی که کلید API به او تعلق دارد (خالی = اولین ادمین). */
@@ -227,6 +280,25 @@ final class FakePanelClient extends PasarGuardClient
      */
     public bool $apiKeyForbidden = false;
 
+    /**
+     * نام مجوزی که فیک برای ۴۰۳ برمی‌گرداند.
+     *
+     * پیش‌فرض `admins.update` چون همان چیزی است که روی پنل واقعی اندازه گرفته
+     * شد و شارژ/تمدید را از کار می‌اندازد.
+     */
+    public string $apiKeyForbiddenScope = 'admins.update';
+
+    /**
+     * کلیدهای معتبر. خالی = هر کلیدی معتبر است.
+     *
+     * لازم است تا تست بتواند «کلید اشتباه» را واقعاً شبیه‌سازی کند؛ بدون آن
+     * هر رشته‌ای کلید معتبر شمرده می‌شد و تستِ «کلید غلط چیزی ذخیره نکند»
+     * بی‌معنا می‌شد.
+     *
+     * @var array<int, string>
+     */
+    public array $validApiKeys = [];
+
     /** @var array<int, string> طرح هدری که هر درخواست با آن رفته */
     public array $authHeadersSeen = [];
 
@@ -238,6 +310,64 @@ final class FakePanelClient extends PasarGuardClient
      *
      * @return array<string, mixed>
      */
+    /**
+     * ساخت کلید API برای یک ادمین (POST /api/api_key).
+     *
+     * ⭐️ بازنویسی **لازم** است: کلاینت واقعی از `requestWithApiKey()` استفاده
+     * می‌کند که مستقیم به `sendWithBearer` می‌زند. پس اگر اینجا بازنویسی
+     * نشود، ساخت کلید به شبکهٔ واقعی می‌رود و همهٔ تست‌های خرید پنل می‌میرند.
+     *
+     * @param  array<string, mixed>|null $payload
+     * @return array<string, mixed>
+     */
+    public function requestWithApiKey(string $method, string $path, string $apiKey, ?array $payload = null): array
+    {
+        if ($path === '/api/api_key' && $method === 'POST') {
+            $this->loggedRequests[] = ['method' => 'createApiKey', 'path' => $path];
+
+            if ($this->apiKeyForbidden) {
+                throw new PanelException('Permission denied: api_keys.create', 403);
+            }
+
+            $adminId = (int) ($payload['admin_id'] ?? 0);
+
+            // کلید ساختگی ولی قطعی — دو بار ساخته شود فرق کند، پس تست‌ها
+            // می‌توانند بفهمند واقعاً کلید تازه صادر شده.
+            $issued = 'pg_key_issued_' . $adminId . '_' . (count($this->issuedKeys) + 1);
+
+            // روی پنل واقعی، کلید تازه به همان `admin_id` وصل می‌شود. بدون این
+            // اتصال، `GET /api/admin` با کلید تازه ادمینِ اشتباهی برمی‌گرداند
+            // و تست‌های بعدی (شارژ، آمار، قطع دسترسی) روی پنل غلط اجرا می‌شوند.
+            $owner = '';
+
+            foreach ($this->admins as $name => $row) {
+                if ((int) ($row['id'] ?? 0) === $adminId) {
+                    $owner = (string) $name;
+                    break;
+                }
+            }
+
+            if ($owner !== '') {
+                $this->bindApiKey($issued, $owner);
+            }
+
+            $this->issuedKeys[] = ['admin_id' => $adminId, 'api_key' => $issued, 'name' => $payload['name'] ?? 'bot'];
+
+            return [
+                'id'         => count($this->issuedKeys) + 900,
+                'admin_id'   => $adminId,
+                'name'       => (string) ($payload['name'] ?? 'bot'),
+                'api_key'    => $issued,
+                'status'     => 'active',
+            ];
+        }
+
+        return parent::requestWithApiKey($method, $path, $apiKey, $payload);
+    }
+
+    /** @var array<int, array<string, mixed>> کلیدهای صادرشده */
+    public array $issuedKeys = [];
+
     public function getCurrentAdmin(string $username, string $password): array
     {
         $this->loggedRequests[] = ['method' => 'getCurrentAdmin', 'path' => '/api/admin'];

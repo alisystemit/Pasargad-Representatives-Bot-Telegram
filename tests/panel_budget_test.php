@@ -387,9 +387,12 @@ for ($i = 1; $i <= 40; $i++) {
         'used_traffic' => $i,
     ];
 
-    $repo->create($syncUid, 'rep' . $i, 'pass', [
+    // ⚠️ `api_key` لازم است: ربات فقط با کلید کار می‌کند، پس پنلی بدون کلید
+    // «وصل‌نشده» شمرده می‌شود و همگام‌سازی‌اش از پله اول رد می‌شود.
+    $repo->create($syncUid, 'rep' . $i, '', [
         'panel_status' => 'active',
         'data_limit'   => 1073741824,
+        'api_key'      => 'pg_key_rep' . $i,
     ]);
 }
 

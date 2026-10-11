@@ -252,7 +252,13 @@ final class PanelCenter
             '🔑✨ <b>اطلاعات ورود 📝</b>',
             '🌐 آدرس پنل: ' . ($loginUrl === '' ? '<i>➖ ثبت نشده</i>' : Str::escape($loginUrl)),
             '👤 نام کاربری: <code>' . Str::escape($username) . '</code>',
-            '🔒 رمز عبور: <code>' . ($password === '' ? '<i>➖ ثبت نشده</i>' : Str::escape($password)) . '</code>',
+            // ⭐️ فقط برای پنل‌هایی که **ربات خودش** ساخته رمز نشان داده می‌شود،
+            // و آن رمز را هم خود ربات تولید کرده — کاربر هیچ‌وقت رمزی به ما
+            // نداده. برای پنل‌هایی که کاربر وصل کرده، رمز اصلاً وجود ندارد و
+            // نمایشش فقط کاربر را گمراه می‌کند.
+            $password === ''
+                ? '🔑 اتصال: با کلید API انجام شد (رمز عبور ذخیره نمی‌شود)'
+                : '🔒 رمز عبور: <code>' . Str::escape($password) . '</code>',
             '',
             '💿 سقف دیسک: ' . ($panel['disk_quota'] > 0 ? Str::formatBytes((int) $panel['disk_quota']) : 'نامحدود'),
             $panel['is_dead'] ? '⚠️ وضعیت: پنل مرده' : '',
@@ -952,121 +958,4 @@ final class PanelCenter
         return false;
     }
 
-    // ------------------------------------------------------------------
-    // ثبت پنل موجود («من پنل دارم»)
-    // ------------------------------------------------------------------
-
-    /**
-     * شروع جریان ثبت پنل موجود.
-     *
-     * این جریان برای ادمینی است که پنل دارد ولی در ربات نماینده
-     * نیست: اطلاعاتش را می‌دهد، ربات صحتش را می‌سنجد و او را به ربات اضافه
-     * می‌کند.
-     */
-    public function startSelfRegister(int $chatId, int $telegramId): void
-    {
-        $this->bot->sendMessage($chatId, implode("\n", [
-            '🔗✨ <b>من پنل دارم 🔌</b>',
-            '',
-            'اگر در پنل حساب ادمین (اپراتور) 👑 دارید و می‌خواهید آن را به ربات وصل کنید، کافی است نام کاربری‌تان را بفرستید.',
-            '',
-            '👤 <b>نام کاربری پنل را بفرستید</b>',
-            'مثال: <code>admin</code>',
-            '',
-            'ℹ️🔒 این اطلاعات فقط برای مدیریت پنل شما در ربات استفاده می‌شود. 🛡️',
-            'پس از ثبت، می‌توانید پنل را شارژ کنید و تست کانفیگ بگیرید. 🔋🧪🎉',
-            '',
-            'برای لغو /cancel را بزنید. ❌',
-        ]), [
-            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                Keyboard::back('menu', '❌ انصراف'),
-            ])),
-        ]);
-
-        $this->sessions->set($telegramId, ['step' => 'panel:username']);
-    }
-
-    /**
-     * مرحلهٔ نام کاربری در جریان «من پنل دارم».
-     */
-    public function askPassword(int $chatId, int $telegramId, string $username): void
-    {
-        $this->bot->sendMessage($chatId, implode("\n", [
-            '🔑✨ <b>رمز عبور پنل 🔒</b>',
-            '',
-            'برای حساب <code>' . Str::escape($username) . '</code> رمز عبور را بفرستید. 📝👇',
-            '',
-            '🔒🛡️ رمز شما رمزنگاری و فقط برای مدیریت همین پنل استفاده می‌شود. ✅',
-            'بعد از ارسال، این پیام را از حافظهٔ چت خود پاک کنید. 🗑️',
-        ]), [
-            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                Keyboard::back('menu', '❌ انصراف'),
-            ])),
-        ]);
-
-        $this->sessions->set($telegramId, [
-            'step'     => 'panel:password',
-            'username' => $username,
-        ]);
-    }
-
-    /**
-     * اعتبارسنجی و ثبت پنل.
-     *
-     * @param array<string, mixed> $user
-     * @return array{ok:bool, message:string}
-     */
-    public function finishSelfRegister(int $chatId, array $user, string $username, string $password): array
-    {
-        $existing = $this->panels->findByPanelUsername($username);
-
-        if ($existing !== null && (int) $existing['user_id'] !== (int) $user['id']) {
-            return [
-                'ok'      => false,
-                'message' => '⚠️🔒 این پنل قبلاً به حساب دیگری در ربات وصل شده است! 😔 '
-                    . 'اگر فکر می‌کنید اشتباه است، با پشتیبانی تماس بگیرید. 📞🙏',
-            ];
-        }
-
-        try {
-            $admin = $this->panelClient()->getAdmin($username, $username, $password);
-        } catch (\Pasargad\Panel\PanelException $e) {
-            return ['ok' => false, 'message' => Text::loginFailed($e->getMessage())];
-        } catch (\Throwable $e) {
-            return [
-                'ok'      => false,
-                'message' => Text::loginFailed('خطای غیرمنتظره هنگام بررسی پنل.'),
-            ];
-        }
-
-        $wasKnown = $existing !== null;
-
-        $panelId = $this->panels->upsertFromPanel(
-            (int) $user['id'],
-            $username,
-            $password,
-            $admin,
-            $wasKnown ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
-            // این مسیر فقط با نام کاربری و رمز کار می‌کند، ولی روش احراز هویت
-            // باید صریح ثبت شود تا اگر بعداً این ردیف به «کلید API» عوض شد،
-            // «بروزرسانی از پنل» به‌جای تلاش ناموفق با رمز، با کلید حرف بزند.
-            ['auth_mode' => PanelAccess::MODE_PASSWORD]
-        );
-
-        $panel = $this->panels->find($panelId);
-
-        if ($panel === null) {
-            return ['ok' => false, 'message' => '⚠️😔 ثبت پنل ناموفق بود! دوباره تلاش کنید. 🔄'];
-        }
-
-        $message = $wasKnown
-            ? '✅ اطلاعات پنل شما به‌روزرسانی شد! 🎉'
-            : '✅🎉 پنل شما با موفقیت به ربات اضافه شد! 🚀';
-
-        $this->bot->sendMessage($chatId, $message . "\n\n" . $this->detailsText($panel), [
-            'reply_markup' => $this->bot->buildMarkup($this->detailsKeyboard($panel)),
-        ]);
-
-        return ['ok' => true, 'message' => $message];
-    }
 }

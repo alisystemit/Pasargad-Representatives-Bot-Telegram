@@ -30,8 +30,7 @@ $db = TestDb::boot();
 (new Migrator($db))->migrate();
 
 // اکانت سازندهٔ پنل را فعال می‌کنیم تا بتوان پنل نمایندگی ساخت.
-Config::set('panel.owner_username', 'root');
-Config::set('panel.owner_password', 'rootpass');
+Config::set('panel.api_key', 'pg_key_test_global');
 
 $panel       = new FakePanelClient();
 $orders      = new OrderRepository($db);

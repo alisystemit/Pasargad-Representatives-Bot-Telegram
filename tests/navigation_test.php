@@ -203,10 +203,17 @@ foreach ($entries as $where => [$entry, $button]) {
 
     if ($button === null) {
         check(
-            '«من پنل دارم» نام کاربری می‌پرسد',
-            str_contains($bot->allText(), 'نام کاربری'),
+            '«من پنل دارم» آدرس پنل را می‌پرسد (جریان کلید)',
+            str_contains($bot->allText(), 'آدرس پنل'),
             $bot->allText()
         );
+
+        check(
+            '«من پنل دارم» نام کاربری نمی‌پرسد',
+            !str_contains($bot->allText(), 'نام کاربری'),
+            $bot->allText()
+        );
+
         continue;
     }
 
@@ -232,23 +239,22 @@ foreach ($entries as $where => [$entry, $button]) {
     );
 
     check(
-        "«{$where}» → کلید و رمز هر دو پیشنهاد شده‌اند",
-        str_contains($shown, 'کلید API') && str_contains($shown, 'رمز'),
+        "«{$where}» → دسترسی‌های لازم توضیح داده شده‌اند",
+        str_contains($shown, 'admins.create') && str_contains($shown, 'admins.update'),
         $shown
     );
 }
 
 // ------------------------------------------------------------------
-echo "\n▶ ۴) جریان کامل اتصال با آدرس + نام کاربری + رمز\n";
+echo "\n▶ ۴) جریان کامل اتصال با آدرس + کلید API\n";
 // ------------------------------------------------------------------
 
 seedOwner($panel, 'op1');
 
 $bot->reset();
-$kernel->handle(cb(ADM, ['n' => 'panel.connect.password']));
+$kernel->handle(cb(ADM, ['n' => 'panel.connect.apikey']));
 $kernel->handle(txt(ADM, 'https://my-panel.example.com'));
-$kernel->handle(txt(ADM, 'op1'));
-$kernel->handle(txt(ADM, 'secret-pass'));
+$kernel->handle(txt(ADM, 'pg_key_from_user'));
 
 $adminId = (int) (new UserRepository())->findByTelegramId(ADM)['id'];
 $mine    = (new PanelRepository())->listByUser($adminId);
@@ -259,8 +265,21 @@ check(
     ($mine[0]['base_url'] ?? '') === 'https://my-panel.example.com',
     (string) ($mine[0]['base_url'] ?? 'NULL')
 );
-check('نام کاربری ذخیره شد', ($mine[0]['panel_username'] ?? '') === 'op1', (string) ($mine[0]['panel_username'] ?? 'NULL'));
-check('رمز خام ذخیره نشد', ($mine[0]['panel_password'] ?? '') !== 'secret-pass');
+
+// نام واقعی از خودِ پنل می‌آید، نه از هش کلید.
+check('نام کاربری از پنل خوانده شد', ($mine[0]['panel_username'] ?? '') === 'op1', (string) ($mine[0]['panel_username'] ?? 'NULL'));
+
+$access = new \Pasargad\Store\PanelAccess(new PanelRepository());
+
+check(
+    'کلید رمزنگاری‌شده ذخیره شد، نه خام',
+    ($mine[0]['api_key'] ?? '') !== '' && ($mine[0]['api_key'] ?? '') !== 'pg_key_from_user'
+);
+check(
+    'کلید قابل بازیابی است',
+    $access->apiKeyOf((array) $mine[0]) === 'pg_key_from_user'
+);
+check('هیچ رمز عبوری ذخیره نشد', ($mine[0]['panel_password'] ?? '') === '');
 
 // ------------------------------------------------------------------
 echo "\n▶ ۵) دکمه‌هایی که قبلاً «مرده» بودند\n";
@@ -312,8 +331,7 @@ check(
 echo "\n▶ ۶) تست اتصال اکانت owner در پنل مدیریت\n";
 // ------------------------------------------------------------------
 
-Config::set('panel.owner_username', 'op1');
-Config::set('panel.owner_password', 'secret-pass');
+Config::set('panel.api_key', 'pg_key_test_global');
 
 $bot->reset();
 $kernel->handle(cb(ADM, ['n' => 'admin.settings.panel.owner']));

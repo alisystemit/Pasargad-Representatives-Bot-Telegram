@@ -107,21 +107,6 @@ class PasarGuardClient
      */
     private string $authScheme = 'Bearer';
 
-    /**
-     * اطلاعات پشتیبان برای وقتی کلید API اجازهٔ عملیات را ندارد.
-     *
-     * @var array{0:string, 1:string}|null [username, password]
-     */
-    private ?array $fallbackCredential = null;
-
-    /**
-     * آیا کلید اصلی قبلاً یک‌بار ۴۰۳ داده و به پشتیبان رفته‌ایم؟
-     *
-     * برای این است که در یک درخواستِ وبهوک، ده‌ها عملیات هر کدام دوباره ۴۰۳
-     * نگیرند: یک‌بار امتحان، بعد مستقیم می‌رویم سراغ چیزی که جواب می‌دهد.
-     */
-    private bool $downgraded = false;
-
     public function __construct(?string $baseUrl = null)
     {
         $this->baseUrl   = rtrim($baseUrl ?? Config::str('panel.base_url', 'https://us.api-system.top'), '/');
@@ -352,49 +337,6 @@ class PasarGuardClient
     public function authScheme(): string
     {
         return $this->authScheme;
-    }
-
-    /**
-     * تعیینِ اطلاعات پشتیبان برای عملیات‌هایی که کلید API اجازه‌شان را ندارد.
-     *
-     * ## چرا این لازم است
-     *
-     * کلیدهای API معمولاً مجوزهای ناقص دارند. اندازه‌گیری روی کلید واقعی:
-     *
-     *     admins.read / admins.create / users.read   → مجاز
-     *     admin_roles.read / admins.update           → ۴۰۳
-     *
-     * یعنی با کلید می‌شود پنل نمایندگی ساخت، ولی **شارژ و تمدید** (که
-     * `PUT /api/admin/{username}` است) ۴۰۳ می‌دهد. اگر رمز را کلاً حذف
-     * کنیم، کاربر پول می‌دهد و حجمش اضافه نمی‌شود.
-     *
-     * پس: اول با کلید امتحان می‌شود؛ اگر پنل گفت «دسترسی نداری»، **فقط
-     * همان یک عملیات** با رمز تکرار می‌شود. بقیهٔ درخواست از آن به بعد
-     * مستقیم با رمز می‌روند تا دوباره ۴۰۳ نگیریم.
-     *
-     * این «بازگشت» فقط روی **۴۰۳** انجام می‌شود، نه روی هر خطایی: ۴۰۱ یعنی
-     * راز اشتباه است و با راز دیگر هم درست نمی‌شود، و ۴۰۰/۴۲۲ هم ربطی به
-     * احراز هویت ندارند.
-     *
-     * @param string $username نام کاربری (برای مسیر رمز)
-     * @param string $password رمز عبور
-     */
-    public function withFallbackCredential(string $username, string $password): void
-    {
-        $username = trim($username);
-        $password = trim($password);
-
-        if ($username !== '' && $password !== '') {
-            $this->fallbackCredential = [$username, $password];
-        }
-    }
-
-    /**
-     * آیا کلید اصلی ناتوان شد و به پشتیبان رفته‌ایم؟
-     */
-    public function isDowngraded(): bool
-    {
-        return $this->downgraded;
     }
 
     /**
@@ -940,15 +882,6 @@ class PasarGuardClient
             $response = $this->send($method, $path, $username, $password, $payload);
         }
 
-        // ۴۰۳ یعنی «کلید معتبر است ولی این کار را نمی‌تواند» — نه راز اشتباه.
-        // اگر رمز پشتیبان داریم، فقط همین یک عملیات را با آن تکرار می‌کنیم.
-        if ($response['status'] === 403
-            && !$this->downgraded
-            && $this->fallbackCredential !== null
-        ) {
-            $response = $this->retryWithFallback($method, $path, $payload, $response);
-        }
-
         if ($response['error'] !== '' || $response['status'] === 0) {
             Logger::error('Panel request failed', [
                 'method'   => $method,
@@ -966,6 +899,24 @@ class PasarGuardClient
                 'path'   => $path,
                 'status' => $response['status'],
             ]);
+
+            // ۴۰۳ با کلید API یعنی «کلید معتبر است ولی این مجوز را ندارد».
+            // علامت‌زدن پنل «باطل‌شده» اینجا اشتباه و مخرب است — کاربر باید
+            // کلیدی با دسترسی بیشتر بسازد، نه اینکه دوباره وصل کند. و به‌جای
+            // پیام مبهم، **نام همان مجوز** را می‌گوییم.
+            //
+            // این شاخه روی همهٔ متدهای موجود اثر دارد (`modifyAdmin`،
+            // `resetAdminUsage`، `disableUser`…) چون با کلید، `login()` توکنِ
+            // ثابت را برمی‌گرداند و همه از همین `request()` رد می‌شوند.
+            if ($response['status'] === 403 && $this->authScheme === self::SCHEME_API_KEY) {
+                throw new PanelException(
+                    $this->permissionDeniedMessage($response),
+                    403,
+                    $response['data'],
+                    null,
+                    false   // ⇒ isAuthError() false
+                );
+            }
 
             throw $this->toException($response, $this->httpErrorMessage($response));
         }
@@ -1020,24 +971,9 @@ class PasarGuardClient
         // وگرنه فراخوانی مستقیم `requestWithApiKey()` روی کلاینتی که با
         // `new PasarGuardClient(...)` ساخته شده، کلید را با طرح `Bearer`
         // می‌فرستاد و همیشه ۴۰۱ می‌گرفت — یعنی همین باگ، دوباره.
-        $savedScheme  = $this->authScheme;
         $this->authScheme = self::SCHEME_API_KEY;
 
         $response = $this->sendWithBearer($method, $path, $apiKey, $payload);
-
-        // ۴۰۳ یعنی کلید معتبر است ولی این کار را نمی‌تواند. اگر رمز پشتیبان
-        // داریم، همین یک عملیات را با رمز تکرار می‌کنیم — وگرنه کاربری که
-        // فقط کلید وصل کرده و کلیدش مجوز ندارد، هیچ راهی برای شارژ ندارد.
-        if ($response['status'] === 403
-            && !$this->downgraded
-            && $this->fallbackCredential !== null
-        ) {
-            $this->authScheme = self::SCHEME_BEARER;
-
-            $response = $this->retryWithFallback($method, $path, $payload, $response);
-        }
-
-        $this->authScheme = $this->downgraded ? self::SCHEME_BEARER : $savedScheme;
 
         if ($response['error'] !== '' || $response['status'] === 0) {
             Logger::error('Panel API-key request failed', [
@@ -1060,20 +996,30 @@ class PasarGuardClient
             // ⚠️ تمایز ۴۰۱ از ۴۰۳ مهم است و هر دو یکی نیستند:
             //
             //   ۴۰۱ ⇒ کلید غلط یا منقضی است. `PanelSyncer` با دیدن این، پنل را
-            //        «باطل‌شده» علامت می‌زند و از کاربر رمز تازه می‌خواهد —
-            //        که دقیقاً رفتار درست برای کلید اشتباه است.
+            //        «باطل‌شده» علامت می‌زند و از کاربر کلید تازه می‌خواهد.
             //
-            //   ۴۰۳ ⇒ کلید معتبر است ولی این عملیات را ندارد. این خطای کاربر
-            //        نیست و علامت‌زدن پنل باطل‌شده اشتباه و مخرب می‌شود
-            //        (کاربر مجبور می‌شود بی‌دلیل دوباره وصل کند). پس
-            //        `onTokenEndpoint` عمداً false می‌ماند.
+            //   ۴۰۳ ⇒ کلید معتبر است ولی این مجوز را ندارد. علامت‌زدن پنل
+            //        «باطل‌شده» اینجا اشتباه و مخرب است: کاربر باید کلید را
+            //        با مجوز بیشتر بسازد، نه اینکه دوباره وصل کند. پس
+            //        `onTokenEndpoint` عمداً false می‌ماند و پیام مجوز را
+            //        نشان می‌دهیم تا بداند دقیقاً چه می‌سازد.
             if ($response['status'] === 401) {
                 throw new PanelException(
-                    'کلید API معتبر نیست یا منقضی شده است.',
+                    'کلید API معتبر نیست یا منقضی شده است. یک کلید تازه بسازید و دوباره وصل کنید.',
                     401,
                     $response['data'],
                     null,
                     true    // ⇒ isAuthError() true
+                );
+            }
+
+            if ($response['status'] === 403) {
+                throw new PanelException(
+                    $this->permissionDeniedMessage($response),
+                    403,
+                    $response['data'],
+                    null,
+                    false   // کلید سالم است ⇒ «باطل‌شده» علامت نزن
                 );
             }
 
@@ -1113,6 +1059,24 @@ class PasarGuardClient
     }
 
     /**
+     * ساخت کلید API برای یک ادمین (POST /api/api_key).
+     *
+     * چرا لازم است: وقتی ربات یک پنل نمایندگی می‌سازد، آن ادمین هم رمز دارد و
+     * هم می‌تواند کلید داشته باشد. ولی ربات دیگر رمز را **نمی‌پرسد** — پس
+     * اگر برای ادمین تازه کلید نسازیم، آن پنل بعداً مدیریت‌شدنی نیست.
+     *
+     * کلید فقط یک‌بار در پاسخ برمی‌گردد (`api_key`) و بعد قابل بازیابی نیست،
+     * پس باید همان لحظه رمزنگاری و ذخیره شود.
+     *
+     * @param  array<string, mixed> $payload فیلدهای APIKeyCreate
+     * @return array<string, mixed>
+     */
+    public function createApiKey(array $payload, string $parentKey): array
+    {
+        return $this->requestWithApiKey('POST', '/api/api_key', $parentKey, $payload);
+    }
+
+    /**
      * فهرست نقش‌ها با کلید API (GET /api/admin-roles).
      *
      * @return array<string, mixed>
@@ -1122,51 +1086,6 @@ class PasarGuardClient
         $query = $params === [] ? '' : '?' . http_build_query($params);
 
         return $this->requestWithApiKey('GET', '/api/admin-roles' . $query, $apiKey);
-    }
-
-    /**
-     * تکرار یک عملیات با اطلاعات پشتیبان، پس از ۴۰۳ کلید اصلی.
-     *
-     * اگر رمز پشتیبان هم جواب نداد، وضعیت قبلی **برگردانده** می‌شود تا خطای
-     * اصلی (permission denied) گم نشود — چون خطای پشتیبان ممکن است ۴۰۱ باشد و
-     * گزارش «کلید نامعتبر است» برای عیب‌یابی بدتر است.
-     *
-     * اگر پشتیبان **موفق** شد، کلاینت برای ادامهٔ همین درخواست روی پشتیبان
-     * می‌ماند: نباید برای هر عملیات بعدی دوباره ۴۰۳ بخوریم.
-     *
-     * @param  array<string, mixed>|null $payload
-     * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
-     */
-    private function retryWithFallback(string $method, string $path, ?array $payload, array $primary): array
-    {
-        [$fallbackUser, $fallbackPass] = (array) $this->fallbackCredential;
-
-        Logger::info('API key lacks permission, retrying with stored credentials', [
-            'method' => $method,
-            'path'   => $path,
-        ]);
-
-        $savedScheme  = $this->authScheme;
-        $savedToken   = $this->staticToken;
-
-        $this->authScheme = self::SCHEME_BEARER;
-        $this->staticToken = '';
-
-        try {
-            $response = $this->send($method, $path, $fallbackUser, $fallbackPass, $payload);
-        } finally {
-            // پشتیبان جواب نداد ⇒ برمی‌گردیم به کلید تا خطای اصلی حفظ شود.
-            if (($response['status'] ?? 0) >= 400 || ($response['error'] ?? '') !== '') {
-                $this->authScheme = $savedScheme;
-                $this->staticToken = $savedToken;
-
-                return $primary;
-            }
-
-            $this->downgraded = true;
-        }
-
-        return $response;
     }
 
     /**
@@ -1406,6 +1325,38 @@ class PasarGuardClient
             429 => 'درخواست‌های زیادی به پنل ارسال شده است؛ کمی بعد دوباره تلاش کنید.',
             default => 'خطای پنل (کد ' . $response['status'] . '). لطفاً کمی بعد دوباره تلاش کنید.',
         };
+    }
+
+    /**
+     * پیامِ ۴۰۳ با نامِ همان مجوزی که کم است.
+     *
+     * چرا مهم است: «عملیات انجام نشد» کاربر را نمی‌گوید چه‌کند کند. ولی پنل
+     * دقیقاً می‌گوید کدام مجوز کم است (مثلاً `admins.update`)، و همان یعنی
+     * «یک کلید تازه با این مجوز بساز». بدون این، کاربر کلید را عوض می‌کند و
+     * باز هم همان مشکل را می‌بیند.
+     *
+     * اگر پنل نام مجوز را نداد، فهرست کامل قابلیت‌ها داده می‌شود تا کاربر
+     * بتواند کلید درست بسازد — این راهنما با `tools/panel_key_check.php`
+     * هم‌خوان است.
+     */
+    private function permissionDeniedMessage(array $response): string
+    {
+        $detail = (string) ($this->detailOf($response) ?? '');
+        $scope  = '';
+
+        if (preg_match('/permission denied:\s*([a-z_.]+)/i', $detail, $m) === 1) {
+            $scope = $m[1];
+        }
+
+        $base = $scope !== ''
+            ? 'کلید API شما مجوز «' . $scope . '» را ندارد.'
+            : 'کلید API شما این عملیات را مجاز ندارد.';
+
+        return $base
+            . "\n\nاز داخل پنل یک کلید تازه با دسترسی لازم بسازید و آن را به "
+            . "ربات وصل کنید."
+            . "\nبرای دیدن فهرست دقیق مجوزهای موردنیاز:"
+            . "\n<code>php tools/panel_key_check.php &lt;کلید&gt;</code>";
     }
 
     private function tokenCacheKey(string $username): string

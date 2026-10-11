@@ -13,31 +13,34 @@ use Pasargad\Support\Logger;
 /**
  * احراز هویت با پنلی که **کاربر** وصل کرده است.
  *
- * ## ترتیب اولویت
+ * ## فقط کلید API
  *
- * **کلید API اول، رمز عبور فقط پشتیبان.** این تصادفی نیست:
+ * ربات دیگر هیچ‌جا رمز عبور نمی‌گیرد و ذخیره نمی‌کند. هر نماینده از داخل
+ * پنل خودش یک کلید می‌سازد و همین را به ربات می‌دهد.
  *
- * - کلید، کاربر را مجبور نمی‌کند رمز مدیریتی‌اش را به ربات بدهد. (با
- *   `panel.self` قبلاً مجبور بود.)
- * - ولی کلیدها معمولاً مجوز ناقص دارند. اندازه‌گیری روی یک کلید واقعی:
- *   `admins.create` و `users.read` مجاز بود، اما `admins.update` و
- *   `admin_roles.read` نبود — یعنی **شارژ و تمدید پنل** با کلید ۴۰۳ می‌دهد.
+ * دلیلش فقط راحتی کاربر نیست، یک مزیت امنیتی واقعی دارد: با کلید می‌شود
+ * مجوزها را دقیقاً محدود کرد و کلید را هر وقت خواست باطل کرد، بدون اینکه
+ * مجبور شویم رمز اصلی پنل را جایی نگه داریم.
  *
- * پس حذف کامل رمز به قیمت از کار افتادن شارژ تمام می‌شود، و حذف کامل کلید
- * یعنی کاربر باید رمز مدیریتی‌اش را لو بدهد. راه‌حل: اول با کلید امتحان
- * کن، و **فقط اگر پنل گفت «دسترسی نداری»** همان یک عملیات را با رمز تکرار
- * کن. این منطق در `PasarGuardClient::retryWithFallback()` است، پس همهٔ
- * مسیرها (ساخت، شارژ، آمار، قطع دسترسی) یک‌باره درست می‌شوند.
+ * ## هزینه‌ای که آگاهانه پذیرفته شد
  *
- * ## چرا `api_key` ستون جدا دارد
+ * کلیدهای API معمولاً مجوز ناقص دارند. اندازه‌گیری روی یک کلید واقعی:
+ * `admins.create` و `users.read` مجاز بود، اما `admins.update` و
+ * `admin_roles.read` نبود — یعنی **شارژ/تمدید پنل** با آن کلید ۴۰۳ می‌دهد.
  *
- * اگر کلید و رمز در یک ستون بودند، رمزگشایی‌شان قابل تفکیک نبود. حالا هر
- * دو جدا رمزنگاری می‌شوند و یک ردیف می‌تواند هر دو را داشته باشد.
+ * این خطا **پنهان نمی‌شود**: `permissionDeniedMessage()` نام همان مجوزِ
+ * کم را به کاربر می‌گوید تا کلیدی با دسترسی درست بسازد. بدیلِ ساختن پیام
+ * مبهم این بود که کاربر پول بدهد و بی‌صدا سرویسش اجرا نشود.
+ *
+ * ## ردیف‌های قدیمی
+ *
+ * ستون `panel_password` برای ردیف‌های قبلی سر جایش می‌ماند تا داده‌ای پاک
+ * نشود، ولی **دیگر خوانده نمی‌شود**. پنلی که فقط رمز داشته، «وصل نیست» شمرده
+ * می‌شود و کاربر باید کلید بسازد — که همان چیزی است که خواسته شد.
  */
 final class PanelAccess
 {
-    public const MODE_PASSWORD = 'password';
-    public const MODE_API_KEY  = 'apikey';
+    public const MODE_API_KEY = 'apikey';
 
     private PanelRepository $panels;
 
@@ -70,27 +73,18 @@ final class PanelAccess
     }
 
     /**
-     * این پنل با کدام روش **اول** حرف می‌زند؟
+     * آیا این ردیف کلید دارد و قابل استفاده است؟
      *
-     * اولویت با کلید API است — ولی اگر ردیف قدیمی باشد که فقط رمز دارد،
-     * همان رمز است.
+     * ⚠️ عمداً `auth_mode` را نادیده می‌گیرد: در نسخهٔ قبلی، رمزِ ذخیره‌شده
+     * با `auth_mode = apikey` کافی شمرده می‌شد. حالا که رمز حذف شده، فقط
+     * وجودِ کلید مهم است — وگرنه پنلی که فقط رمز دارد به‌اشتباه «وصل»
+     * شمرده می‌شد و بعداً همه‌چیز ۴۰۳ می‌داد.
      *
      * @param array<string, mixed> $panel
      */
-    public static function modeOf(array $panel): string
-    {
-        if (trim((string) ($panel['api_key'] ?? '')) !== '') {
-            return self::MODE_API_KEY;
-        }
-
-        $mode = strtolower(trim((string) ($panel['auth_mode'] ?? '')));
-
-        return $mode === self::MODE_API_KEY ? self::MODE_API_KEY : self::MODE_PASSWORD;
-    }
-
     public static function isApiKey(array $panel): bool
     {
-        return self::modeOf($panel) === self::MODE_API_KEY;
+        return trim((string) ($panel['api_key'] ?? '')) !== '';
     }
 
     /**
@@ -115,11 +109,8 @@ final class PanelAccess
     public function credentialsOf(array $panel): ?array
     {
         $apiKey = $this->apiKeyOf($panel);
-        $mode   = self::modeOf($panel);
 
-        $credential = $mode === self::MODE_API_KEY ? $apiKey : $this->panels->plainPassword($panel);
-
-        if ($credential === '') {
+        if ($apiKey === '') {
             return null;
         }
 
@@ -133,33 +124,13 @@ final class PanelAccess
             'base_url'   => $baseUrl,
             // در مسیر کلید API نام کاربری معنی ندارد؛ خودِ کلید نقش را دارد.
             'username'   => trim((string) ($panel['panel_username'] ?? '')),
-            'credential' => $credential,
-            'mode'       => $mode,
+            'credential' => $apiKey,
+            'mode'       => self::MODE_API_KEY,
         ];
     }
 
     /**
-     * اطلاعات پشتیبان (رمز عبور) — فقط اگر ردیف **هم کلید دارد و هم رمز**.
-     *
-     * برای ردیفی که فقط رمز دارد، `null` است چون اصلاً پشتیبانی در کار نیست.
-     *
-     * @param  array<string, mixed> $panel
-     * @return array{0:string, 1:string}|null [username, password]
-     */
-    public function fallbackOf(array $panel): ?array
-    {
-        if (!self::isApiKey($panel)) {
-            return null;
-        }
-
-        $password = $this->panels->plainPassword($panel);
-        $username = trim((string) ($panel['panel_username'] ?? ''));
-
-        return ($username !== '' && $password !== '') ? [$username, $password] : null;
-    }
-
-    /**
-     * کلاینت آماده برای این پنل، با هدر احراز هویت مناسب روش همان ردیف.
+     * کلاینت آماده برای این پنل.
      *
      * ⚠️ کلید API داخل کلاینت به‌عنوان «توکن» نگه داشته می‌شود ولی
      * **هیچ‌وقت لاگ نمی‌شود** — نه اینجا، نه در `PasarGuardClient`.
@@ -189,16 +160,7 @@ final class PanelAccess
         array $panel,
         array $credentials
     ): PasarGuardClient {
-        if ($credentials['mode'] === self::MODE_API_KEY) {
-            $client->useStaticToken($credentials['credential']);
-        }
-
-        // رمز پشتیبان فقط وقتی لازم است که کلید ناتوان شود (۴۰۳).
-        $fallback = $this->fallbackOf($panel);
-
-        if ($fallback !== null) {
-            $client->withFallbackCredential($fallback[0], $fallback[1]);
-        }
+        $client->useStaticToken($credentials['credential']);
 
         return $client;
     }
@@ -229,15 +191,7 @@ final class PanelAccess
         $client = $injected ?? new PasarGuardClient($credentials['base_url']);
         $client = $this->applyCredentials($client, $panel, $credentials);
 
-        if ($credentials['mode'] === self::MODE_API_KEY) {
-            return $client->getAdminWithApiKey($credentials['credential']);
-        }
-
-        return $client->getAdmin(
-            $credentials['username'],
-            $credentials['username'],
-            $credentials['credential']
-        );
+        return $client->getAdminWithApiKey($credentials['credential']);
     }
 
     /**
@@ -310,17 +264,21 @@ final class PanelAccess
     }
 
     /**
-     * ثبت اینکه این ردیف با کدام روش وصل شده است.
+     * این ردیف با کلید وصل شده است.
+     *
+     * ⚠️ پارامتر `$mode` عمداً نادیده گرفته می‌شود: از وقتی ربات فقط کلید
+     * می‌پذیرد، «روش دیگری» وجود ندارد. ستون `auth_mode` هم برای ردیف‌های
+     * قدیمی نگه داشته می‌شود ولی دیگر تصمیمی بر اساسش گرفته نمی‌شود.
+     *
+     * @param string $mode نادیده گرفته می‌شود (سازگاری با فراخوانی‌های قدیمی)
      */
-    public function rememberMode(int $panelId, string $mode): void
+    public function rememberMode(int $panelId, string $mode = self::MODE_API_KEY): void
     {
-        $this->panels->update($panelId, [
-            'auth_mode' => $mode === self::MODE_API_KEY ? self::MODE_API_KEY : self::MODE_PASSWORD,
-        ]);
+        $this->panels->update($panelId, ['auth_mode' => self::MODE_API_KEY]);
 
         Logger::info('Panel auth mode recorded', [
             'panel_id' => $panelId,
-            'mode'     => $mode,
+            'mode'     => self::MODE_API_KEY,
         ]);
     }
 }

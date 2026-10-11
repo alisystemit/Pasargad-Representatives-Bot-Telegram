@@ -276,11 +276,29 @@ foreach ($invalidUsernames as $name) {
 check('نام کاربری معتبر پذیرفته شد', \Pasargad\Support\Str::isValidPanelUsername('admin_123'));
 check('نام کاربری با نقطه پذیرفته شد', \Pasargad\Support\Str::isValidPanelUsername('admin.name'));
 
-// ورود نام کاربری نامعتبر در جریان «من پنل دارم»
+// ورودی نامعتبر در جریان «من پنل دارم».
+//
+// ⚠️ این جریان دیگر نام کاربری نمی‌گیرد — فقط آدرس و کلید. اعتبارسنجیِ نام
+// کاربری بالا سر جایش هست، ولی چیزی که **کاربر واقعی** می‌فرستد و ممکن است
+// بد باشد، آدرس است.
 $bot->reset();
 $kernel->handle(cb(3333, ['n' => 'panel.self']));
-$kernel->handle(msg(3333, 'bad name!'));
-check('ورودی نامعتبر در جریان ثبت پنل رد شد', str_contains($bot->allText(), 'نامعتبر'), $bot->allText());
+$kernel->handle(msg(3333, 'ftp://bad-scheme'));
+check('آدرس نامعتبر رد شد', str_contains($bot->allText(), 'معتبر نیست'), $bot->allText());
+
+// نشست نباید جلو رفته باشد؛ همان آدرس باید دوباره پذیرفته شود.
+$bot->reset();
+$kernel->handle(msg(3333, 'https://good.example.com'));
+check('آدرس معتبر جلو برد', str_contains($bot->allText(), 'کلید API'), $bot->allText());
+
+// فاصلهٔ خالی در هر مرحله‌ای باید رد شود و **مرحله جلو نرود**.
+$bot->reset();
+$kernel->handle(msg(3333, '   '));
+check(
+    'ورودی خالی رد شد',
+    str_contains($bot->allText(), 'نفرستادید') || str_contains($bot->allText(), 'خالی'),
+    $bot->allText()
+);
 
 // ------------------------------------------------------------------
 echo "\n▶ محدودیت نرخ و عدم تکرار اجرا\n";

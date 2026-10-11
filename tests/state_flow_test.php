@@ -190,40 +190,45 @@ $buyerId = 800001;
     'telegram_id' => $buyerId,
 ]);
 
-// کاربر وارد جریان «من پنل دارم» می‌شود
+// کاربر وارد جریان «من پنل دارم» می‌شود.
+// ⚠️ این جریان از رمز عبور به **کلید API** تغییر کرده، پس فقط دو مرحله دارد:
+// آدرس ← کلید.
 $kernel->handle(new Update(callbackUpdate($buyerId,
     json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 20)));
 
 $state = $sessions->get($buyerId);
-check('مرحلهٔ نام کاربری شروع شد', ($state['step'] ?? '') === 'panel:username',
+check('مرحلهٔ آدرس شروع شد', ($state['step'] ?? '') === 'panel_connect_url',
     'step=' . ($state['step'] ?? 'null'));
 
-// ---- نام کاربری نامعتبر → نشست نباید بماند، ولی نباید هم به مرحلهٔ بعد برود ----
-$kernel->handle(new Update(textUpdate($buyerId, 'bad name!', 21)));
-check('نام کاربری نامعتبر رد شد', str_contains($bot->lastTextFor($buyerId), 'نامعتبر'), $bot->lastTextFor($buyerId));
+// ---- آدرس نامعتبر → مرحله نباید جلو برود ----
+//
+// نکته: وقتی یک مرحله `false` برمی‌گرداند، Kernel متن معمولی را ادامه می‌دهد
+// و منوی اصلی را هم می‌فرستد. پس پیام خطا را در **کل** خروجی می‌سنجیم نه فقط
+// آخرین پیام.
+$kernel->handle(new Update(textUpdate($buyerId, 'ftp://bad', 21)));
+check('آدرس نامعتبر رد شد', str_contains($bot->allText(), 'معتبر نیست'), $bot->allText());
 
 $state = $sessions->get($buyerId);
-check('نشست در مرحلهٔ نام کاربری ماند', ($state['step'] ?? '') === 'panel:username',
+check('نشست در مرحلهٔ آدرس ماند', ($state['step'] ?? '') === 'panel_connect_url',
     'step=' . ($state['step'] ?? 'null'));
 
-// ---- نام کاربری معتبر → مرحلهٔ رمز ----
-$kernel->handle(new Update(textUpdate($buyerId, 'buyer_admin', 22)));
+// ---- آدرس درست → مرحلهٔ کلید ----
+$kernel->handle(new Update(textUpdate($buyerId, 'https://buyer.example.com', 22)));
 
 $state = $sessions->get($buyerId);
-check('به مرحلهٔ رمز رفت', ($state['step'] ?? '') === 'panel:password',
+check('به مرحلهٔ کلید رفت', ($state['step'] ?? '') === 'panel_connect_credential',
     'step=' . ($state['step'] ?? 'null'));
-check('نام کاربری در نشست ماند', (string) ($state['username'] ?? '') === 'buyer_admin',
-    'username=' . ($state['username'] ?? 'null'));
+check('آدرس در نشست ماند', (string) ($state['panel_base_url'] ?? '') === 'https://buyer.example.com',
+    'base_url=' . ($state['panel_base_url'] ?? 'null'));
 
-// ---- رمز اشتباه → کاربر باید پیام خطا بگیرد و بتواند دوباره تلاش کند ----
-$panel->loginError = 'نام کاربری یا رمز اشتباه';
+// ---- کلید اشتباه → کاربر باید پیام خطا بگیرد و بتواند دوباره تلاش کند ----
+$panel->loginError = 'کلید نامعتبر';
 $bot->reset();
-$kernel->handle(new Update(textUpdate($buyerId, 'wrong-pass', 23)));
+$kernel->handle(new Update(textUpdate($buyerId, 'pg_key_wrong', 23)));
 $panel->loginError = '';
 
-check('به کاربر پیام خطا داده شد', str_contains($bot->lastTextFor($buyerId), 'درست نیست'),
-    $bot->lastTextFor($buyerId));
-check('دکمهٔ تلاش مجدد هست', $bot->hasButton('تلاش مجدد'));
+check('به کاربر پیام خطا داده شد', str_contains($bot->allText(), 'برقرار نشد'),
+    $bot->allText());
 
 check('نشست بعد از خطا پاک شد', $sessions->get($buyerId) === null,
     'step=' . ($sessions->get($buyerId)['step'] ?? 'null'));
@@ -231,17 +236,22 @@ check('نشست بعد از خطا پاک شد', $sessions->get($buyerId) === nu
 $kernel->handle(new Update(callbackUpdate($buyerId,
     json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 24)));
 check('تلاش مجدد جریان را از نو شروع کرد',
-    ($sessions->get($buyerId)['step'] ?? '') === 'panel:username');
+    ($sessions->get($buyerId)['step'] ?? '') === 'panel_connect_url');
 
-// ---- رمز درست → پنل ثبت می‌شود ----
+// ---- کلید درست → پنل ثبت می‌شود ----
 // نام متفاوت از جریان قبلی استفاده می‌شود چون FloodGuard پیام‌های *کاملاً
-// یکسان* را در پنجرهٔ کوتاه رد می‌کند و جریان «تلاش مجدد» دقیقاً همان
-// نام کاربری را دوباره می‌فرستد. فقط روی پنل جعلی ساخته می‌شود (نه در
-// دیتابیس) تا جریان «من پنل دارم» واقعاً ثبت تازه انجام دهد.
+// یکسان* را در پنجرهٔ کوتاه رد می‌کند و جریان «تلاش مجدد» دقیقاً همان آدرس را
+// دوباره می‌فرستد. فقط روی پنل جعلی ساخته می‌شود (نه در دیتابیس) تا جریان
+// واقعاً ثبت تازه انجام دهد.
 $panel->addAdmin('retry_admin');
 
-$kernel->handle(new Update(textUpdate($buyerId, 'retry_admin', 25)));
-$kernel->handle(new Update(textUpdate($buyerId, 'retry-pass', 26)));
+// ⚠️ کلید باید صریحاً به یک ادمین نسبت داده شود، وگرنه فیک اولین ادمین را
+// برمی‌گرداند و جریان به‌اشتباه روی پنلِ کاربرِ دیگری ثبت می‌شود — همان
+// چیزی که روی پنل واقعی با هر کلیدِ متفاوت اتفاق می‌افتد.
+$panel->apiKeyUsername = 'retry_admin';
+
+$kernel->handle(new Update(textUpdate($buyerId, 'https://retry.example.com', 25)));
+$kernel->handle(new Update(textUpdate($buyerId, 'pg_key_retry_ok', 26)));
 
 check('پنل ثبت‌شده برای کاربر موجود است',
     $panels->findByPanelUsername('retry_admin') !== null);
@@ -255,7 +265,7 @@ echo "\n▶ سناریو ۳: لغو جریان با دکمهٔ انصراف\n";
 
 $kernel->handle(new Update(callbackUpdate($buyerId,
     json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 30)));
-check('جریان تازه شروع شد', ($sessions->get($buyerId)['step'] ?? '') === 'panel:username');
+check('جریان تازه شروع شد', ($sessions->get($buyerId)['step'] ?? '') === 'panel_connect_url');
 
 $kernel->handle(new Update(textUpdate($buyerId, '/cancel', 31)));
 check('با /cancel لغو شد', $sessions->get($buyerId) === null,
@@ -272,9 +282,9 @@ $otherId = 800002;
 
 $kernel->handle(new Update(callbackUpdate($buyerId,
     json_encode(['n' => 'panel.self'], JSON_UNESCAPED_UNICODE), 40)));
-$kernel->handle(new Update(textUpdate($buyerId, 'other_admin', 41)));
+$kernel->handle(new Update(textUpdate($buyerId, 'https://other.example.com', 41)));
 
-check('نشست خریدار مراحل را طی کرد', ($sessions->get($buyerId)['step'] ?? '') === 'panel:password',
+check('نشست خریدار مراحل را طی کرد', ($sessions->get($buyerId)['step'] ?? '') === 'panel_connect_credential',
     'step=' . ($sessions->get($buyerId)['step'] ?? 'null'));
 
 $otherState = $sessions->get($otherId);

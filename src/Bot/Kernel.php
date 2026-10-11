@@ -890,8 +890,9 @@ final class Kernel
 
             case 'login':
                 // نگه‌داشته شده برای سازگاری با دکمه‌های قدیمی؛ اکنون همان
-                // جریان «من پنل دارم» است.
-                $this->panelCenter()->startSelfRegister($chatId, $telegramId);
+                // جریان کلید API است (ربات دیگر رمز نمی‌گیرد).
+                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions, $this->injectedPanel))
+                    ->startApiKeyConnection($chatId, $telegramId);
                 break;
 
             case 'logout':
@@ -1141,43 +1142,28 @@ final class Kernel
                 $this->bot->sendMessage($chatId, '✅ آدرس پنل به‌روزرسانی شد (نیاز به restart ربات دارد).');
                 return true;
 
+            // ⚠️ مراحل `admin_owner_username` و `admin_owner_password` حذف شدند.
+            //
+            // ربات دیگر رمز عبور نمی‌گیرد — حتی از مدیر خودش. به‌جایش فقط
+            // **کلید API** پذیرفته می‌شود. این پیام عمداً راهنمایی می‌کند تا
+            // رمزی که کاربر فرستاده بی‌صدا دور ریخته نشود.
             case 'admin_owner_username':
-                if ($update->command() === 'cancel' || $update->command() === 'start') {
-                    $this->sessions->clear($telegramId);
-                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
-                    return true;
-                }
-
-                $username = trim($text);
-                if (strlen($username) < 3) {
-                    $this->bot->sendMessage($chatId, '⚠️ نام کاربری باید حداقل ۳ کاراکتر باشد.');
-                    return true;
-                }
-
-                $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $settings->set('panel_owner_username', $username);
-                $this->bot->sendMessage($chatId, '✅ نام کاربری Owner ذخیره شد.');
-                return true;
-
             case 'admin_owner_password':
-                if ($update->command() === 'cancel' || $update->command() === 'start') {
-                    $this->sessions->clear($telegramId);
-                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
-                    return true;
-                }
-
-                $password = trim($text);
-                if (strlen($password) < 6) {
-                    $this->bot->sendMessage($chatId, '⚠️ رمز عبور باید حداقل ۶ کاراکتر باشد.');
-                    return true;
-                }
-
                 $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $encrypted = \Pasargad\Support\Crypto::encrypt($password);
-                $settings->set('panel_owner_password', $encrypted);
-                $this->bot->sendMessage($chatId, '✅ رمز عبور Owner ذخیره و رمزشده شد.');
+
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    'ℹ️ ربات دیگر نام کاربری و رمز عبور نمی‌گیرد.',
+                    '',
+                    'برای ساخت «پنل نمایندگی» فقط **کلید API** لازم است.',
+                    'آن را از داخل پنل بسازید (Settings → API Keys) و در',
+                    '<code>config.php</code> مقدار <code>panel.api_key</code> را تنظیم کنید.',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        [['text' => '⚙️ تنظیمات پنل', 'data' => BotApi::encodeData('admin.settings.panel')]],
+                        Keyboard::back('menu', '🔙 بازگشت'),
+                    ])),
+                ]);
+
                 return true;
 
             // ---------------- ورودی‌های متنی پروفایل ----------------
@@ -1281,83 +1267,43 @@ final class Kernel
                 $this->bot->sendMessage($chatId, '✅ نام بانک ذخیره شد.');
                 return true;
 
+            // ⚠️ مراحل `panel:username` و `panel:password` عمداً حذف شدند.
+            //
+            // جریان «من پنل دارم» قبلاً نام کاربری و رمز می‌گرفت؛ حالا همان دکمه
+            // به جریان کلید API می‌رود. اگر کسی وسطِ آن پیامی فرستاده باشد، با
+            // پیام روشن راهنمایی می‌شود که کلید را از کجا بفرستد — نه اینکه رمزش
+            // بی‌صدا دور ریخته شود.
             case 'panel:username':
-                if ($update->command() === 'cancel' || $update->command() === 'start') {
-                    $this->sessions->clear($telegramId);
-                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
-                    return true;
-                }
-
-                $username = Str::toEnglishDigits(trim($text));
-
-                if (!Str::isValidPanelUsername($username)) {
-                    $this->bot->sendMessage($chatId, '⚠️ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد و _ مجاز است.');
-                    return true;
-                }
-
-                $this->panelCenter()->askPassword($chatId, $telegramId, $username);
-                return true;
-
             case 'panel:password':
-                $password = $text;
-                $username = (string) ($state['username'] ?? '');
-
                 $this->sessions->clear($telegramId);
 
-                // 🛡️ ضد brute-force: قبل از ارسال به پنل، قفل را چک کن
-                $security = $this->security();
-                if ($security->isLocked($telegramId, 'panel_login')) {
-                    $lockMin = max(1, $this->settings->int(Settings::LOGIN_LOCK_MINUTES, 15));
-                    $this->bot->sendMessage($chatId, "⛔️ تعداد تلاش‌هایتان زیاد شد؛ {$lockMin} دقیقه بعد دوباره تلاش کنید.");
-                    return true;
-                }
-
-                if ($password === '' || $username === '') {
-                    $this->bot->sendMessage($chatId, '❌ ثبت پنل ناموفق بود. دوباره تلاش کنید.');
-                    return true;
-                }
-
-                $maxAttempts = max(3, $this->settings->int(Settings::LOGIN_MAX_ATTEMPTS, 5));
-                $lockMin = max(1, $this->settings->int(Settings::LOGIN_LOCK_MINUTES, 15));
-
-                $result = $this->panelCenter()->finishSelfRegister($chatId, $user, $username, $password);
-
-                if (!($result['ok'] ?? false)) {
-                    $fail = $security->recordFailure($telegramId, 'panel_login', $maxAttempts, $lockMin * 60);
-
-                    if ($fail['locked']) {
-                        $this->bot->sendMessage($chatId, "⛔️ تلاش‌های ناموفق زیاد؛ {$lockMin} دقیقه قفل شدید.");
-                        return true;
-                    }
-
-                    // نتیجه ممکن است HTML آماده (مثل Text::loginFailed) یا متن
-                    // ساده باشد؛ BotApi خودش در صورت خطای parse به متن ساده
-                    // برمی‌گردد، پس اینجا escape نمی‌کنیم تا تگ‌ها خراب نشوند.
-                    $this->bot->sendMessage($chatId, (string) $result['message'], [
-                        'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                            [['text' => '🔁 تلاش مجدد', 'data' => BotApi::encodeData('panel.self')]],
-                            Keyboard::back('menu'),
-                        ])),
-                    ]);
-
-                    return true;
-                }
-
-                // تلاش موفق ⇒ قفل/شمارنده پاک شود
-                $security->clear($telegramId, 'panel_login');
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    'ℹ️ ربات دیگر نام کاربری و رمز نمی‌گیرد.',
+                    '',
+                    'برای وصل کردن پنل، **کلید API** لازم است:',
+                    'داخل پنل → تنظیمات / API Keys → ساخت کلید جدید.',
+                    '',
+                    'بعد دکمهٔ «🔗 من پنل دارم» را بزنید.',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        [['text' => '🔗 من پنل دارم', 'data' => BotApi::encodeData('panel.self')]],
+                        Keyboard::back('menu'),
+                    ])),
+                ]);
 
                 return true;
 
-            // ======== جریان اتصال پنل جدید (آدرس → نام کاربری → رمز/کلید) ========
+
+            // ======== جریان اتصال پنل جدید (آدرس → کلید API) ========
+            //
+            // فقط دو مرحله دارد چون ربات دیگر نام کاربری و رمز نمی‌گیرد.
             //
             // این جریان بر پایهٔ `step` داخل نشست پیش می‌رود. هر مرحله نام
             // ثابت خودش را دارد (`PanelConnectionManager::STEP_*`) و با ورودی
             // نامعتبر عوض نمی‌شود تا کاربر بتواند بدون شروع از دوباره، همان
             // مرحله را تکرار کند.
             case PanelConnectionManager::STEP_URL:
-            case PanelConnectionManager::STEP_USERNAME:
             case PanelConnectionManager::STEP_CREDENTIAL:
-            case PanelConnectionManager::STEP_PASSWORD:
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
                     $this->bot->sendMessage($chatId, '❌ لغو شد.');
@@ -1376,18 +1322,8 @@ final class Kernel
                     return $manager->handleBaseUrl($chatId, $telegramId, $text, $state);
                 }
 
-                if ($panelStep === PanelConnectionManager::STEP_USERNAME) {
-                    return $manager->handleUsername($chatId, $telegramId, $text, $state);
-                }
-
-                // مرحلهٔ رمزِ پشتیبان در مسیر «کلید + رمز»: خودش نشست را پاک
-                // نمی‌کند چون ممکن است مرحله را تکرار کند (رمز خالی).
-                if ($panelStep === PanelConnectionManager::STEP_PASSWORD) {
-                    return $manager->handleFallbackPassword($chatId, $telegramId, $text, $state, $user);
-                }
-
                 // ورودی مصرف‌شده ⇒ نشست پاک می‌شود (چه موفق چه ناموفق) تا پیام
-                // بعدی دوباره به‌عنوان رمز تفسیر نشود.
+                // بعدی دوباره به‌عنوان کلید تفسیر نشود.
                 $this->sessions->clear($telegramId);
 
                 return $manager->handleCredential($chatId, $telegramId, $text, $state, $user);
@@ -1580,7 +1516,13 @@ final class Kernel
 
         if ($ns === 'panel.self') {
             $this->bot->answerCallback($callbackId);
-            $this->panelCenter()->startSelfRegister($chatId, (int) $update->userId());
+
+            // ⚠️ این دکمه قبلاً جریان «نام کاربری + رمز» را شروع می‌کرد. حالا
+            // همان جریانِ **کلید API** را می‌رود، چون ربات دیگر رمز نمی‌گیرد.
+            // دکمه‌های قدیمی روی گوشی کاربران دست‌نخورده می‌مانند و کار می‌کنند.
+            (new PanelConnectionManager($this->bot, $this->panels, $this->sessions, $this->injectedPanel))
+                ->startApiKeyConnection($chatId, (int) $update->userId());
+
             return;
         }
 
@@ -1603,16 +1545,13 @@ final class Kernel
                     $manager->showMenu($chatId);
                     break;
 
+                // ⚠️ نام‌های قدیمیِ جریان (که روی گوشی کاربران از قبل هست) عمداً
+                // به مسیر کلید می‌روند، نه به خطا. پاسخ «در دسترس نیست» فقط
+                // سردرگمشان می‌کرد؛ این‌طوری همه یک راه دارند.
                 case 'panel.connect.password':
-                    $manager->startPasswordConnection($chatId, $telegramId);
-                    break;
-
+                case 'panel.connect.keyandpass':
                 case 'panel.connect.apikey':
                     $manager->startApiKeyConnection($chatId, $telegramId);
-                    break;
-
-                case 'panel.connect.keyandpass':
-                    $manager->startKeyAndPasswordConnection($chatId, $telegramId);
                     break;
 
                 default:

@@ -93,29 +93,30 @@ final class PanelConnectionManager
     // ------------------------------------------------------------------
 
     /**
-     * منوی شروع: کاربر انتخاب می‌کند با رمز عبور وصل شود یا با کلید API.
+     * منوی شروع: فقط با کلید API.
      */
     public function showMenu(int $chatId): void
     {
         $this->bot->sendMessage(
             $chatId,
             "🔌 <b>اتصال پنل پاسارگاد</b>\n\n"
-            . "ربات باید بتواند پنل شما را مدیریت کند (ساخت نماینده، شارژ حجم، "
-            . "کانفیگ و…). روش پیشنهادی **کلید API** است:\n\n"
-            . "🔑 <b>کلید API</b> — پیشنهادی. لازم نیست رمز مدیریتی‌تان را به "
-            . "ربات بدهید و هیچ‌وقت از آن پرسیده نمی‌شود.\n"
-            . "🔐🔑 <b>کلید API + رمز</b> — اگر کلیدتان اجازهٔ شارژ و تمدید ندارد، "
-            . "رمز به‌عنوان پشتیبان هم ذخیره می‌شود. ربات اول با کلید کار می‌کند و "
-            . "فقط اگر کلید نتواند، سراغ رمز می‌رود.\n"
-            . "🔐 <b>نام کاربری و رمز</b> — فقط اگر پنلتان کلید API ندارد.\n\n"
-            . "🔒 اطلاعات شما **رمزنگاری‌شده** ذخیره می‌شود و هیچ‌وقت به‌صورت خام "
-            . "نمایش داده نمی‌شود.\n\n"
-            . "👇 کدام را دارید؟",
+            . "برای اینکه ربات بتواند پنل شما را مدیریت کند (ساخت نماینده، شارژ "
+            . "حجم، کانفیگ و…) فقط به **کلید API** نیاز دارد.\n\n"
+            . "🔑 <b>کلید API</b>\n\n"
+            . "ساختنش: داخل پنل → بخش تنظیمات / API Keys → ساخت کلید جدید.\n"
+            . "دسترسی‌های لازم:\n"
+            . "• <code>admins.create</code> — ساخت پنل نمایندگی\n"
+            . "• <code>admins.read</code> — دیدن پنل و وضعیت آن\n"
+            . "• <code>admins.update</code> — شارژ و تمدید حجم\n"
+            . "• <code>users.read</code> — آمار کاربران\n\n"
+            . "💡 اگر مطمئن نیستید کلیدتان کافی است، بعد از اتصال این را بزنید:\n"
+            . "<code>php tools/panel_key_check.php &lt;کلید&gt;</code>\n\n"
+            . "🔒 کلید شما **رمزنگاری‌شده** ذخیره می‌شود و هیچ‌وقت به‌صورت خام "
+            . "نمایش داده نمی‌شود. هر وقت خواستید می‌توانید آن را از داخل پنل باطل کنید.\n\n"
+            . "👇 ادامه",
             [
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                    [['text' => '🔑 کلید API (پیشنهادی)', 'data' => BotApi::encodeData('panel.connect.apikey')]],
-                    [['text' => '🔐🔑 کلید API + رمز پشتیبان', 'data' => BotApi::encodeData('panel.connect.keyandpass')]],
-                    [['text' => '🔐 فقط نام کاربری و رمز', 'data' => BotApi::encodeData('panel.connect.password')]],
+                    [['text' => '🔑 اتصال با کلید API', 'data' => BotApi::encodeData('panel.connect.apikey')]],
                     [['text' => '🖥️ پنل‌های من', 'data' => BotApi::encodeData('panel.mine')]],
                     Keyboard::back(BotApi::encodeData('panel.list'), '🔙 بازگشت'),
                 ])),
@@ -185,39 +186,14 @@ final class PanelConnectionManager
     // شروع جریان (از دکمه‌ها)
     // ------------------------------------------------------------------
 
-    public function startPasswordConnection(int $chatId, int $telegramId): void
-    {
-        $this->beginFlow($chatId, $telegramId, 'password');
-    }
-
     public function startApiKeyConnection(int $chatId, int $telegramId): void
-    {
-        $this->beginFlow($chatId, $telegramId, 'apikey');
-    }
-
-    /**
-     * جریان «کلید + رمز پشتیبان».
-     *
-     * ترتیب: آدرس ← نام کاربری ← کلید ← رمز. کلید اول پرسیده می‌شود چون روش
-     * اصلی است و اگر کاربر کلید نداشته باشد همان‌جا متوقف می‌شود، نه بعد از
-     * اینکه رمزش را هم بفرستد.
-     */
-    public function startKeyAndPasswordConnection(int $chatId, int $telegramId): void
-    {
-        $this->beginFlow($chatId, $telegramId, 'keyandpass');
-    }
-
-    private function beginFlow(int $chatId, int $telegramId, string $authMode): void
     {
         // ⚠️ کل نشست پاک می‌شود، نه فقط کلیدهای این جریان. اگر نشستِ نیمه‌کارهٔ
         // دیگری (مثلاً «ویرایش بسته») باقی بماند، پیام بعدیِ کاربر به‌جای این
         // جریان، آن یکی را ادامه می‌دهد و چیز اشتباهی ذخیره می‌شود.
         $this->sessions->clear($telegramId);
 
-        $this->sessions->set($telegramId, [
-            'step'      => self::STEP_URL,
-            'auth_mode' => $authMode,
-        ]);
+        $this->sessions->set($telegramId, ['step' => self::STEP_URL]);
 
         $this->askBaseUrl($chatId);
     }
@@ -238,28 +214,15 @@ final class PanelConnectionManager
         );
     }
 
-    private function askUsername(int $chatId): void
+    private function askCredential(int $chatId): void
     {
         $this->bot->sendMessage(
             $chatId,
-            "👤 <b>نام کاربری مدیریتی را بفرستید</b>\n\n"
-            . "همان نام کاربری‌ای که با آن وارد پنل می‌شوید.\n"
-            . "پنل باید به این حساب اجازهٔ مدیریت نماینده‌ها را بدهد.\n\n"
-            . "❌ برای لغو: /cancel"
-        );
-    }
-
-    private function askCredential(int $chatId, bool $isApiKey): void
-    {
-        $label = $isApiKey ? 'کلید API' : 'رمز عبور';
-
-        $this->bot->sendMessage(
-            $chatId,
-            "🔐 <b>$label را بفرستید</b>\n\n"
-            . ($isApiKey
-                ? "کلیدی که پنل در بخش تنظیمات/API در اختیارتان گذاشته است.\n"
-                : "رمز عبور حساب مدیریتی در پنل.\n")
-            . "\n🔒 این مقدار رمزنگاری می‌شود و هیچ‌وقت به‌صورت خام ذخیره یا نمایش داده نمی‌شود.\n"
+            "🔑 <b>کلید API را بفرستید</b>\n\n"
+            . "کلیدی که پنل در بخش تنظیمات / API Keys به شما داده است.\n\n"
+            . "⚠️ بعد از فرستادن، این پیام را از حافظهٔ چت خود پاک کنید،\n"
+            . "چون کلید در گفتگو دیده می‌شود.\n\n"
+            . "🔒 این مقدار رمزنگاری می‌شود و هیچ‌وقت به‌صورت خام ذخیره یا نمایش داده نمی‌شود.\n"
             . "❌ برای لغو: /cancel"
         );
     }
@@ -290,71 +253,15 @@ final class PanelConnectionManager
         }
 
         $state['panel_base_url'] = $url;
-        $state['step']           = ($state['auth_mode'] ?? 'password') === 'apikey'
-            ? self::STEP_CREDENTIAL
-            : self::STEP_USERNAME;
+        // بعد از آدرس، مستقیم کلید پرسیده می‌شود. نام کاربری دیگر لازم نیست
+        // چون با کلید، پنل خودش ادمینِ متناظر را برمی‌گرداند.
+        $state['step'] = self::STEP_CREDENTIAL;
 
         $this->sessions->set($telegramId, $state);
 
-        if ($state['step'] === self::STEP_USERNAME) {
-            $this->askUsername($chatId);
-        } else {
-            $this->askCredential($chatId, true);
-        }
+        $this->askCredential($chatId);
 
         return true;
-    }
-
-    /**
-     * مرحلهٔ ۲ → ۳.
-     *
-     * @param array<string, mixed> $state
-     */
-    public function handleUsername(int $chatId, int $telegramId, string $text, array $state): bool
-    {
-        $username = Str::toEnglishDigits(trim($text));
-
-        if (!Str::isValidPanelUsername($username)) {
-            $this->bot->sendMessage(
-                $chatId,
-                "⚠️ <b>نام کاربری نامعتبر است.</b>\n\n"
-                . "فقط حروف انگلیسی، عدد و زیرخط (_) مجاز است."
-            );
-
-            return false;
-        }
-
-        $state['panel_username'] = $username;
-        $state['step']           = self::STEP_CREDENTIAL;
-
-        $this->sessions->set($telegramId, $state);
-
-        $this->askCredential($chatId, ($state['auth_mode'] ?? 'password') !== 'password');
-
-        return true;
-    }
-
-    /**
-     * مرحلهٔ رمزِ پشتیبان، در مسیر «کلید + رمز».
-     *
-     * تست با **کلید** انجام می‌شود (روش اصلی) و رمز فقط ذخیره می‌شود تا اگر
-     * کلید جایی ناتوان بود، به‌عنوان پشتیبان در دسترس باشد.
-     *
-     * @param array<string, mixed> $state
-     */
-    public function handleFallbackPassword(int $chatId, int $telegramId, string $text, array $state, array $user): bool
-    {
-        $password = trim($text);
-
-        if ($password === '') {
-            $this->bot->sendMessage($chatId, '⚠️ رمز خالی است. دوباره بفرستید یا /cancel بزنید.');
-
-            return false;
-        }
-
-        $state['panel_password'] = $password;
-
-        return $this->handleCredential($chatId, $telegramId, (string) ($state['api_key'] ?? ''), $state, $user);
     }
 
     /**
@@ -373,36 +280,8 @@ final class PanelConnectionManager
             return false;
         }
 
-        $baseUrl    = (string) ($state['panel_base_url'] ?? '');
-        $authMode   = (string) ($state['auth_mode'] ?? 'password');
-        $isKey      = $authMode !== 'password';
-        $userId     = (int) ($user['id'] ?? 0);
-
-        // ---- مسیر «کلید + رمز»: کلید را نگه می‌داریم و رمز پشتیبان می‌خواهیم ----
-        //
-        // اینجا عمداً هنوز چیزی تست یا ذخیره نمی‌شود: اگر کاربر رمز را ول کند
-        // نباید نیمه‌کاره رها شویم. تست نهایی بعد از گرفتن هر دو انجام می‌شود.
-        if ($authMode === 'keyandpass' && !isset($state['api_key'])) {
-            $state['api_key'] = $credential;
-            $state['step']    = self::STEP_PASSWORD;
-
-            $this->sessions->set($telegramId, $state);
-
-            $this->bot->sendMessage($chatId, implode("\n", [
-                '🔐 <b>حالا رمز عبور پشتیبان</b>',
-                '',
-                'ربات کارهای روزمره را با کلید API انجام می‌دهد. بعضی کارها — مثل',
-                '«شارژ و تمدید پنل» — به مجوزی نیاز دارند که ممکن است کلید شما نداشته',
-                'باشد، پس رمز هم ذخیره می‌شود و **فقط در آن حالت** استفاده خواهد شد.',
-                '',
-                'اگر رمز را نمی‌خواهید بدهید، همین حالا /cancel بزنید — کلید به‌تنهایی',
-                'هم کافی است و فقط شارژ ممکن است ناتوان بماند.',
-                '',
-                '🔒 رمز رمزنگاری می‌شود و هیچ‌وقت به‌صورت خام ذخیره یا نمایش داده نمی‌شود.',
-            ]));
-
-            return false;
-        }
+        $baseUrl = (string) ($state['panel_base_url'] ?? '');
+        $userId  = (int) ($user['id'] ?? 0);
 
         if ($baseUrl === '' || $userId <= 0) {
             $this->sessions->clear($telegramId);
@@ -418,8 +297,8 @@ final class PanelConnectionManager
         $pending = $this->bot->sendMessage($chatId, '⏳ در حال تست اتصال به پنل…');
 
         try {
-            $client  = $this->injectedClient ?? new PasarGuardClient($baseUrl);
-            $probe   = $this->probePanel($client, $state, $credential, $isKey);
+            $client = $this->injectedClient ?? new PasarGuardClient($baseUrl);
+            $probe  = $this->probePanel($client, $state, $credential);
 
             if (!$probe['ok']) {
                 $this->clearPending($chatId, $pending);
@@ -427,16 +306,17 @@ final class PanelConnectionManager
                 $this->bot->sendMessage(
                     $chatId,
                     "❌ <b>اتصال برقرار نشد</b>\n\n" . $probe['message'] . "\n\n"
-                    . "💡 آدرس، نام کاربری و رمز را بررسی کنید. اگر پنل گواهی SSL معتبر ندارد، "
+                    . "💡 آدرس پنل و کلید را بررسی کنید. اگر پنل گواهی SSL معتبر ندارد، "
                     . "موقتاً <code>panel.verify_ssl</code> را در تنظیمات خاموش کنید."
                 );
 
                 return false;
             }
 
-            // در مسیر کلید API نام کاربریِ پنل را نداریم؛ یک شناسهٔ پایدار از
-            // خود کلید می‌سازیم تا ردیف‌های مختلف به هم قاطی نشوند.
-            $username = trim((string) ($state['panel_username'] ?? ''));
+            // نام واقعی ادمین را خودِ پنل می‌گوید (`GET /api/admin`) — خیلی بهتر
+            // از یک شناسهٔ ساختگی مثل «apikey-a1b2…» است، چون در فهرست پنل‌ها
+            // به کاربر قابل‌شناسایی نشان داده می‌شود.
+            $username = trim((string) ($probe['admin']['username'] ?? ''));
 
             if ($username === '') {
                 $username = 'apikey-' . substr(hash('sha256', $credential), 0, 12);
@@ -457,30 +337,22 @@ final class PanelConnectionManager
                 return false;
             }
 
-            // `upsertFromPanel` خودش رمز را با `Crypto::encrypt` ذخیره می‌کند.
-            //
             // ⚠️ آدرس اختصاصی این اتصال در `base_url` ذخیره می‌شود (NULL یعنی
-            // «از `panel.base_url` سراسری استفاده کن»). ستون در مهاجرت
-            // `013` اضافه می‌شود؛ اگر روی یک دیتابیس قدیمی هنوز نبود،
-            // `Migrator::repairMissingColumns()` آن را خودش می‌سازد.
-            // کلید و رمز در **ستون‌های جدا** ذخیره می‌شوند و هر دو رمزنگاری
-            // می‌شوند (کار را `PanelRepository` انجام می‌دهد، نه اینجا — وگرنه
-            // یک روز یکی از این دو خام در دیتابیس می‌نشست).
+            // «از `panel.base_url` سراسری استفاده کن»).
             //
-            // مسیر «کلید + رمز» هر دو را نگه می‌دارد: کلید روش اصلی است و رمز
-            // فقط جایی به کار می‌رود که کلید ۴۰۳ بدهد (مثل شارژ).
-            $apiKey   = $isKey ? $credential : '';
-            $password = $isKey ? (string) ($state['panel_password'] ?? '') : $credential;
-
+            // کلید **خام** از اینجا رد می‌شود و رمزنگاری‌اش را
+            // `PanelRepository` انجام می‌دهد — وگرنه یک روز کلید خام در
+            // دیتابیس می‌نشست. رمز عبور هم دیگر گرفته نمی‌شود، پس خالی
+            // ثبت می‌شود.
             $panelId = $this->panels->upsertFromPanel(
                 $userId,
                 $username,
-                $password,
+                '',
                 $probe['admin'],
                 $existing !== null ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
                 [
                     'base_url' => $baseUrl,
-                    'api_key'  => $apiKey,
+                    'api_key'  => $credential,
                 ]
             );
 
@@ -547,50 +419,9 @@ final class PanelConnectionManager
     private function probePanel(
         PasarGuardClient $client,
         array $state,
-        string $credential,
-        bool $isApiKey
+        string $credential
     ): array {
-        $username = (string) ($state['panel_username'] ?? '');
-
-        if ($isApiKey) {
-            return $this->probeWithApiKey($client, $credential);
-        }
-
-        return $this->probeWithPassword($client, $username, $credential);
-    }
-
-    /**
-     * @return array{ok:bool, message:string, admin:array<string, mixed>}
-     */
-    private function probeWithPassword(PasarGuardClient $client, string $username, string $credential): array
-    {
-        if ($username === '') {
-            return ['ok' => false, 'message' => 'نام کاربری خالی است.', 'admin' => []];
-        }
-
-        try {
-            // بدون کش: این یک تست یک‌باره است و نباید توکن را نگه دارد.
-            $token = $client->login($username, $credential, false);
-            $client->forgetToken($username);
-
-            if ($token === '') {
-                return ['ok' => false, 'message' => 'پنل توکنی برنگرداند.', 'admin' => []];
-            }
-
-            return [
-                'ok'      => true,
-                'message' => 'اتصال برقرار شد.',
-                'admin'   => $client->getAdmin($username, $username, $credential),
-            ];
-        } catch (PanelException $e) {
-            return [
-                'ok'      => false,
-                'message' => $e->isAuthError()
-                    ? 'نام کاربری یا رمز عبور درست نیست.'
-                    : Str::escape($e->getMessage()),
-                'admin'   => [],
-            ];
-        }
+        return $this->probeWithApiKey($client, $credential);
     }
 
     /**
@@ -699,7 +530,7 @@ final class PanelConnectionManager
             '───────────────',
             '👤 نام کاربری: <code>' . Str::escape((string) $panel['panel_username']) . '</code>',
             '📊 وضعیت: ' . PanelRepository::statusLabel($panel),
-            '🔐 رمز: ذخیره‌شده به‌صورت رمزنگاری‌شده 🔒',
+            '🔑 کلید API: ذخیره‌شده به‌صورت رمزنگاری‌شده 🔒',
         ];
 
         // آدرس اختصاصی این اتصال؛ NULL یعنی از پیش‌فرض سراسری می‌خواند.

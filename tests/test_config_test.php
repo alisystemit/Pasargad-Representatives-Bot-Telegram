@@ -80,6 +80,7 @@ $user = $users->upsertByTelegram(3001, ['telegram_id' => 3001]);
 $uid  = (int) $user['id'];
 
 $panelId = $panels->create($uid, 'rep3001', 'panelpass', [
+    'api_key'          => 'pg_key_rep3001',
     'panel_status'     => PanelRepository::STATUS_ACTIVE,
     'data_limit'       => 100 * $GB,
     'access_expire_at' => time() + 30 * 86400,
@@ -160,6 +161,7 @@ echo "\n▶ پنل منقضی/غیرفعال تست نمی‌دهد\n";
 // ------------------------------------------------------------------
 
 $expiredPanelId = $panels->create($uid, 'rep3001b', 'pass', [
+    'api_key'          => 'pg_key_rep3001b',
     'panel_status'     => PanelRepository::STATUS_ACTIVE,
     'data_limit'       => 10 * $GB,
     'access_expire_at' => time() - 100,
@@ -170,6 +172,7 @@ check('پنل منقضی رد می‌شود', $g['ok'] === false, $g['message'])
 check('پیام به تمدید اشاره دارد', str_contains($g['message'], 'تمدید'), $g['message']);
 
 $disabledPanelId = $panels->create($uid, 'rep3001c', 'pass', [
+    'api_key'          => 'pg_key_rep3001c',
     'panel_status'     => PanelRepository::STATUS_DISABLED,
     'data_limit'       => 10 * $GB,
     'access_expire_at' => time() + 30 * 86400,

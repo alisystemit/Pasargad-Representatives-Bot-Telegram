@@ -146,11 +146,14 @@ final class TestConfigService
             ];
         }
 
-        $password = $this->panels->plainPassword($panel);
-        if ($password === '') {
+        // ⭐️ رمز عبور دیگر پذیرفته نمی‌شود؛ معیار «پنل قابل استفاده» وجودِ کلید است.
+        $access = new PanelAccess($this->panels);
+
+        if ($access->credentialsOf($panel) === null) {
             return [
                 'ok'      => false,
-                'message' => '🔑🔒 اطلاعات ورود این پنل در ربات موجود نیست! لطفاً پنل را دوباره ثبت کنید. 📝',
+                'message' => '🔑 کلید API این پنل در ربات ثبت نشده! '
+                    . 'لطفاً با دکمهٔ «🔗 من پنل دارم» پنل را دوباره وصل کنید. 📝',
             ];
         }
 
@@ -202,20 +205,29 @@ final class TestConfigService
         $panelId      = (int) $panel['id'];
         $requesterId  = $requesterUserId ?? (int) $panel['user_id'];
         $owner        = trim((string) $panel['panel_username']);
-        $password     = $this->panels->plainPassword($panel);
         $bytes        = $this->defaultBytes();
         $days         = $this->defaultDays();
         $expireAt     = time() + $days * 86400;
         $testUsername = $this->generateTestUsername($owner);
 
+        // کلاینتِ همین پنل با کلیدِ خودش — نه کلاینتِ پیش‌فرض و نه رمز.
+        $access = new PanelAccess($this->panels);
+        $client = $access->clientForPanel($panel, $this->panelClient());
+
+        if ($client === null) {
+            return ['ok' => false, 'message' => '🔑 کلید API این پنل در دسترس نیست.'];
+        }
+
+        $apiKey = $access->apiKeyOf($panel);
+
         try {
-            $response = $this->panelClient()->createUser([
+            $response = $client->createUser([
                 'username'   => $testUsername,
                 'data_limit' => $bytes,
                 'expire'     => $expireAt,
                 'status'     => 'active',
                 'note'       => 'تست ربات — پنل ' . $owner,
-            ], $owner, $password);
+            ], 'api', $apiKey);
         } catch (PanelException $e) {
             Logger::warning('Test config creation failed', [
                 'panel_id'  => $panelId,
@@ -288,12 +300,14 @@ final class TestConfigService
             return ['ok' => false, 'message' => 'پنل این کانفیگ دیگر در ربات ثبت نشده است.'];
         }
 
-        $owner    = trim((string) $panel['panel_username']);
-        $password = $this->panels->plainPassword($panel);
+        $owner = trim((string) $panel['panel_username']);
 
-        if ($password !== '') {
+        $access = new PanelAccess($this->panels);
+        $client = $access->clientForPanel($panel, $this->panelClient());
+
+        if ($client !== null) {
             try {
-                $this->panelClient()->disableUser((string) $config['panel_username'], $owner, $password);
+                $client->disableUser((string) $config['panel_username'], 'api', $access->apiKeyOf($panel));
             } catch (PanelException $e) {
                 Logger::warning('Could not disable test config on panel', [
                     'config' => (string) $config['panel_username'],
