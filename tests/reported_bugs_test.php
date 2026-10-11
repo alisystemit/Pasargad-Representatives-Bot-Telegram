@@ -176,7 +176,7 @@ $makeInit = static function (int $userId, array $fields = [], ?int $authDate = n
     }
     $check = rtrim($check, "\n");
 
-    $secret = hash_hmac('sha256', 'WebAppData', $botToken, true);
+    $secret = hash_hmac('sha256', $botToken, 'WebAppData', true);
     $hash   = hash_hmac('sha256', $check, $secret);
 
     $parts = [];
@@ -206,7 +206,7 @@ check('دستکاری کاربر رد می‌شود', ($bad['ok'] ?? false) === 
 check('پیام خطای امضا داده می‌شود', str_contains((string) ($bad['message'] ?? ''), 'امضای داده'), (string) ($bad['message'] ?? ''));
 
 // امضا با توکن دیگر.
-$wrongToken = hash_hmac('sha256', 'WebAppData', '999:OTHER', true);
+$wrongToken = hash_hmac('sha256', '999:OTHER', 'WebAppData', true);
 $pairs = [
     'auth_date' => (string) time(),
     'query_id'  => 'AAE-test',

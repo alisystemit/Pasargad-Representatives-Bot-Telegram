@@ -115,7 +115,7 @@ $build = static function (string $token): string {
         $check[] = $k . '=' . $v;
     }
 
-    $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), hash_hmac('sha256', 'WebAppData', $token, true));
+    $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), hash_hmac('sha256', $token, 'WebAppData', true));
 
     $out = [];
     foreach ($pairs as $k => $v) {

@@ -146,7 +146,7 @@ $initFor = static function (int $userId, ?string $token = null): string {
     foreach ($pairs as $k => $v) {
         $check[] = $k . '=' . $v;
     }
-    $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), hash_hmac('sha256', 'WebAppData', $token, true));
+    $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), hash_hmac('sha256', $token, 'WebAppData', true));
     $out = [];
     foreach ($pairs as $k => $v) {
         $out[] = urlencode($k) . '=' . urlencode((string) $v);
@@ -211,7 +211,7 @@ $sigRaw = static function (int $userId, string $token = TOKEN): string {
     // `signature` دقیقاً همان چیزی است که تلگرام برای اعتبارسنجی شخص‌ثالث
     // می‌فرستد (base64url). اینجا مقدار ساختگی است؛ فقط «وجود داشتنش» مهم است.
     $pairs['signature'] = rtrim(strtr(base64_encode(hash('sha256', $checkString, true)), '+/', '-_'), '=');
-    $pairs['hash']      = hash_hmac('sha256', $checkString, hash_hmac('sha256', 'WebAppData', $token, true));
+    $pairs['hash']      = hash_hmac('sha256', $checkString, hash_hmac('sha256', $token, 'WebAppData', true));
 
     $out = [];
     foreach ($pairs as $k => $v) {
@@ -228,6 +228,67 @@ check('کاربر درست استخراج شد', (int) ($newClient['user']['id']
 
 // کلاینت قدیمی (بدون signature) همچنان باید کار کند.
 $oldClient = InitData::parse($initFor(7003));
+// ------------------------------------------------------------------
+echo "\n▶ ۵) گارد فرمول HMAC (ضد تکرار همان باگ)\n";
+// ------------------------------------------------------------------
+//
+// باگ ریشه‌ای: در `InitData::parse()` آرگومان‌های `hash_hmac` جابه‌جا بودند
+// (data و key). و چون **همهٔ** helperهای تست هم همان فرمول غلط را برای ساخت
+// initData به کار می‌بردند، تست‌ها سبز بودند در حالی که کد با تلگرام واقعی هرگز
+// نمی‌خواند — یعنی تست‌ها «خودسازگار ولی غلط» بودند.
+//
+// این گارد فرمول را به یک مرجع **مستقل** سنجاق می‌کند: پروژهٔ botsaz-faxima که
+// با همین الگوریتم در عمل کار می‌کند، و همچنین python-telegram-bot
+// (`hmac.new(b"WebAppData", bot_token)`) و grammY
+// (`createHmac("sha256", "WebAppData").update(botToken)`).
+
+$refToken = '123456:REFERENCE-TOKEN-VALUE';
+$refPairs = ['auth_date' => '1700000000', 'query_id' => 'AAHQ_ref', 'user' => '{"id":42,"first_name":"Ref"}'];
+ksort($refPairs);
+
+$refCheck = [];
+foreach ($refPairs as $k => $v) {
+    $refCheck[] = $k . '=' . $v;
+}
+$refCheckString = implode("\n", $refCheck);
+
+// مرجع: کلید = "WebAppData"، داده = توکن
+$refSecret = hash_hmac('sha256', $refToken, 'WebAppData', true);
+$refHash   = hash_hmac('sha256', $refCheckString, $refSecret);
+
+$refInit = [];
+foreach ($refPairs as $k => $v) {
+    $refInit[] = urlencode($k) . '=' . urlencode($v);
+}
+$refInit[] = 'hash=' . $refHash;
+
+// `auth_date` این بردار عمداً قدیمی و ثابت است تا تست **قطعی‌نما** باشد؛
+// پس بررسی تازگی را با `maxAge = 0` خاموش می‌کنیم و فقط امضا را می‌سنجیم.
+$refParsed = InitData::parse(implode('&', $refInit), 0, $refToken);
+
+check(
+    'امضای مرجعِ مستقل پذیرفته می‌شود (فرمول HMAC درست است)',
+    ($refParsed['ok'] ?? false) === true,
+    $refParsed['message'] ?? ''
+);
+
+// فرمول جابه‌جا **نباید** پذیرفته شود — این دقیقاً همان باگ است.
+$wrongHash = hash_hmac('sha256', $refCheckString, hash_hmac('sha256', 'WebAppData', $refToken, true));
+
+$wrongInit = [];
+foreach ($refPairs as $k => $v) {
+    $wrongInit[] = urlencode($k) . '=' . urlencode($v);
+}
+$wrongInit[] = 'hash=' . $wrongHash;
+
+$wrongParsed = InitData::parse(implode('&', $wrongInit), 0, $refToken);
+
+check(
+    'امضای ساخته‌شده با فرمول جابه‌جا رد می‌شود (ضد رگرسیون)',
+    ($wrongParsed['ok'] ?? true) === false,
+    'یعنی کد هنوز فرمول اشتباه را می‌پذیرد.'
+);
+
 // ==================================================================
 echo "\n▶ ۳) اتصال پنل جدید از پنل مدیریت\n";
 // ==================================================================

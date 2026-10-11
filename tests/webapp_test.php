@@ -102,7 +102,7 @@ function makeInitData(
         $check[] = $k . '=' . $v;
     }
 
-    $secret = hash_hmac('sha256', 'WebAppData', $token, true);
+    $secret = hash_hmac('sha256', $token, 'WebAppData', true);
     $hash   = hash_hmac('sha256', implode("\n", $check), $secret);
 
     $pairs['hash'] = $hash;

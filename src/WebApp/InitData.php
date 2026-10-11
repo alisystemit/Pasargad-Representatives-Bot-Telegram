@@ -162,7 +162,26 @@ final class InitData
 
         $checkString = implode("\n", $checkParts);
 
-        $secret = hash_hmac('sha256', 'WebAppData', $token, true);
+        // کلید مخفی از توکن ساخته می‌شود.
+        //
+        // ⚠️ **ترتیب آرگومان‌ها اینجا حیاتی است.**
+        //
+        // امضای PHP برابر است با: hash_hmac(algo, DATA, KEY)
+        //
+        // یعنی آرگومان دوم «داده» است و آرگومان سوم «کلید». پس برای
+        // ساخت کلید مخفی باید داده = توکن و کلید = 'WebAppData' باشد:
+        //
+        //     secret = HMAC-SHA256( key: "WebAppData", message: bot_token )
+        //
+        // این دقیقاً همان چیزی است که تلگرام و همهٔ کتابخانه‌های مرجع
+        // (python-telegram-bot، grammY، aiogram) استفاده می‌کنند، و در
+        // مستندات تلگرام هم با نگارشِ «داده اول، کلید دوم» نوشته شده:
+        // `HMAC_SHA256(<bot_token>, "WebAppData")`.
+        //
+        // این دو آرگومان قبلاً **جابه‌جا** بودند (`hash_hmac('sha256',
+        // 'WebAppData', $token, true)`) و نتیجه این بود که کلید مخفی همیشه
+        // اشتباه درست می‌شد ⇒ امضا هرگز نمی‌خواند، حتی با توکن کاملاً صحیح.
+        $secret = hash_hmac('sha256', $token, 'WebAppData', true);
         $expect = hash_hmac('sha256', $checkString, $secret);
 
         if (!hash_equals($expect, strtolower($hash))) {

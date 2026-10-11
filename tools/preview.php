@@ -47,7 +47,7 @@ function preview_sign_init_data(int $userId, string $firstName, string $token): 
         $check[] = $k . '=' . $v;
     }
 
-    $secret = hash_hmac('sha256', 'WebAppData', $token, true);
+    $secret = hash_hmac('sha256', $token, 'WebAppData', true);
     $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), $secret);
 
     $query = [];
