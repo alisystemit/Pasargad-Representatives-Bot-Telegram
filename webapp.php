@@ -196,10 +196,25 @@ if ($asset !== '') {
     }
 
     header('Content-Type: ' . $mime);
-    // فونت و استایل تغییر نمی‌کنند ⇒ کش طولانی. نسخه در نام فایل نیست، پس
-    // به‌جای آن ETag می‌فرستیم تا یک بار دانلود شود و بعد ۳۰۴ بخورد.
-    header('Cache-Control: public, max-age=604800, must-revalidate');
+
+    // ⚠️ کش طولانی برای `app.js` یعنی هر باگی که در فرانت fix شود تا ۷ روز
+    // روی گوشی کاربر نمی‌آید — و دقیقاً همین باعث می‌شود آدم فکر کند «حل نشد».
+    //
+    // راه درست: `no-cache` + ETag یعنی «قبل از استفاده بپرس، اگر عوض شده
+    // بده». مرورگر ۳۰۴ می‌گیرد (تقریباً بی‌هزینه) ولی بعد از هر آپلود، نسخهٔ
+    // تازه بلافاصله می‌آید.
+    header('Cache-Control: no-cache, must-revalidate');
+    header('ETag: "' . md5((string) filemtime($path) . '|' . filesize($path)) . '"');
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', (int) filemtime($path)) . ' GMT');
     header('X-Content-Type-Options: nosniff');
+
+    // پاسخ به درخواستِ revalidate بدون فرستادن دوبارهٔ بدنه.
+    $etag = '"' . md5((string) filemtime($path) . '|' . filesize($path)) . '"';
+
+    if (trim((string) ($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')) === $etag) {
+        http_response_code(304);
+        exit;
+    }
 
     readfile($path);
     exit;

@@ -163,6 +163,14 @@ try {
             out(json_encode($adminBot->call('getWebhookInfo'), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), 'info');
             break;
 
+        case 'webapp-doctor':
+            // تشخیص دقیق خطای «امضای دادهٔ ورودی نامعتبر است».
+            //
+            // چرا این ابزار؟ آن خطا چند علت کاملاً متفاوت دارد که از خودِ پیام
+            // پاسخ قابل تفکیک نیست، و هرکدام راه‌حل متفاوتی دارند.
+            require __DIR__ . '/webapp_doctor.php';
+            break;
+
         case 'health':
             $db = Db::instance();
             out('دیتابیس: ' . $db->pdo()->query('PRAGMA journal_mode')->fetchColumn(), 'ok');
@@ -211,6 +219,7 @@ try {
                 . "  webhook-info\n"
                 . "  webhook-info-admin\n"
                 . "  health\n"
+                . "  webapp-doctor           تشخیص خطای «امضای دادهٔ ورودی نامعتبر است»\n"
                 . "  selftest\n"
                 . "  backup [--keep=N] [--prune]");
             break;
