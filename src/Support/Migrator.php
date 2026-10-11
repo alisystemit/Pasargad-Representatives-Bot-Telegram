@@ -707,8 +707,8 @@ final class Migrator
             return $this->migrate();
         }
 
-        $newest = (string) end($known);
-        $latest = (string) end($applied);
+        $newest = self::newestName($known);
+        $latest = self::newestName($applied);
 
         if ($latest !== $newest) {
             Logger::info('Database schema outdated, migrating on hot path', [
@@ -899,6 +899,38 @@ final class Migrator
 
         // باید مطمئن شویم واقعاً ثبت شده، وگرنه هر بار تکرار می‌شود.
         return in_array($name, $this->appliedMigrations(), true);
+    }
+
+    /**
+     * تازه‌ترین نام از روی **شمارهٔ** مهاجریشن، نه ترتیب آرایه.
+     *
+     * چرا لازم است؟ چون کل این مقایسه فقط یک کار می‌کند: «آیا دیتابیس از
+     * نظرِ اسکیمای کد فعلی عقب افتاده؟». اگر به ترتیبِ قرار گرفتن کلیدها در آرایه
+     * تکیه کنیم، هر بار که کسی یک مهاجریشن را وسط آرایه جا بدهد یا پاک کند،
+     * این مقایسه اشتباه می‌شود و یا مهاجریشن‌های اجرانشده بی‌صدا می‌مانند، یا
+     * بی‌جهت روی هر درخواست «در حال مهاجرت» می‌نویسد.
+     *
+     * نام‌ها شمارهٔ سه‌رقمی دارند (`007_flood_fingerprint`)، پس بزرگ‌ترین عدد
+     * یعنی تازه‌ترین مهاجریشن — مستقل از اینکه در آرایه کجا نشسته باشد.
+     *
+     * @param array<int, string> $names
+     */
+    private static function newestName(array $names): string
+    {
+        $newest = '';
+
+        foreach ($names as $name) {
+            $name  = (string) $name;
+            $num   = (int) strtok($name, '_');
+
+            $best  = (int) strtok($newest === '' ? '0_' : $newest, '_');
+
+            if ($num >= $best) {
+                $newest = $name;
+            }
+        }
+
+        return $newest;
     }
 
     /**

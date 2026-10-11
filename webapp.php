@@ -228,9 +228,17 @@ if ($method === 'POST') {
             'action' => $action,
             'error'  => $e->getMessage(),
             'file'   => $e->getFile() . ':' . $e->getLine(),
+            // 🔑 مُهر نسخه: اگر فایل‌های روی سرور از یک نسخهٔ یکسان نباشند،
+            // خطاهای گمراه‌کننده‌ای مثل «Undefined constant» می‌بینیم. با
+            // فرستادن مُهر، همان لحظه معلوم می‌شود کدام نسخه واقعاً اجرا شده.
+            'stamp'  => \Pasargad\Support\Version::STAMP,
         ]);
 
-        $json(500, ['ok' => false, 'message' => 'خطای داخلی رخ داد. لطفاً دوباره تلاش کنید.']);
+        $json(500, [
+            'ok'      => false,
+            'message' => 'خطای داخلی رخ داد. لطفاً دوباره تلاش کنید.',
+            'stamp'   => \Pasargad\Support\Version::STAMP,
+        ]);
     }
 }
 
