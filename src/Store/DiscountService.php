@@ -231,6 +231,17 @@ final class DiscountService
             }
         }
 
+        $commission = $this->referrals->commissionStatsFor($userId);
+
+        // کمیسیونِ هر دعوت به خودِ ردیفِ آن نشانده می‌شود تا صفحهٔ فهرست بتواند
+        // بگوید «این دوست تا اینجا X تومان کمیسیون داده» — بدون این، کاربر فقط
+        // یک عدد کلی می‌بیند و نمی‌داند کدام دوست ارزشِ پیگیری دارد.
+        foreach ($rows as $i => $row) {
+            $per = $commission['per_referral'][(int) $row['id']] ?? null;
+            $rows[$i]['commission_toman']  = $per['total'] ?? 0;
+            $rows[$i]['commission_orders'] = $per['orders'] ?? 0;
+        }
+
         return [
             'code'       => ReferralRepository::codeFor($userId),
             'invited'    => count($rows),
@@ -240,7 +251,11 @@ final class DiscountService
             'bonus_each' => max(0, (int) $this->settings->int(Settings::REFERRAL_BONUS, 50000)),
             // مجموع پاداشِ پرداخت‌شده؛ باید با موجودی کیف پول بخواند.
             'earned'     => $earned,
-            'list'       => $rows,
+            // مدل دوم: درآمدِ درصدیِ خریدهای بعدی، جدا از پاداشِ اولیه.
+            'commission'     => $commission['total'],
+            'commission_cnt' => $commission['count'],
+            'policy'         => $this->commissionPolicy(),
+            'list'           => $rows,
         ];
     }
 
@@ -264,13 +279,18 @@ final class DiscountService
         $invited  = (int) ($row['invited'] ?? 0);
         $rewarded = (int) ($row['rewarded'] ?? 0);
 
+        $commission = $this->referrals->commissionStatsFor($userId);
+
         return [
-            'code'       => ReferralRepository::codeFor($userId),
-            'invited'    => $invited,
-            'paid'       => (int) ($row['paid'] ?? 0),
-            'rewarded'   => $rewarded,
-            'bonus_each' => max(0, (int) $this->settings->int(Settings::REFERRAL_BONUS, 50000)),
-            'earned'     => (int) ($row['earned'] ?? 0),
+            'code'           => ReferralRepository::codeFor($userId),
+            'invited'        => $invited,
+            'paid'           => (int) ($row['paid'] ?? 0),
+            'rewarded'       => $rewarded,
+            'bonus_each'     => max(0, (int) $this->settings->int(Settings::REFERRAL_BONUS, 50000)),
+            'earned'         => (int) ($row['earned'] ?? 0),
+            'commission'     => $commission['total'],
+            'commission_cnt' => $commission['count'],
+            'policy'         => $this->commissionPolicy(),
         ];
     }
 
@@ -378,6 +398,217 @@ final class DiscountService
         }
 
         return $result;
+    }
+
+    // ------------------------------------------------------------------
+    // مدل دوم: کمیسیونِ درصدیِ خریدهای بعدی
+    // ------------------------------------------------------------------
+
+    /**
+     * درصد کمیسیون، اگر واقعاً فعال باشد.
+     *
+     * ⚠️ «فعال» یعنی هم درصد بزرگ‌تر از صفر **و** سقف بزرگ‌تر از صفر.
+     *
+     * بازگرداندنِ درصد حتی وقتی سقف صفر است، خطرناک است: صفحهٔ کاربر و داشبورد
+     * ادمین «کمیسیون فعال» نشان می‌دهند ولی هیچ‌وقت پرداخت نمی‌شود — همان
+     * نمایشِ دروغین که کاربر را گمراه می‌کند.
+     *
+     * @return array{percent:int, max_orders:int, enabled:bool}
+     */
+    public function commissionPolicy(): array
+    {
+        $percent = max(0, min(100, $this->settings->int(Settings::REFERRAL_COMMISSION_PERCENT, 0)));
+        $max     = max(0, $this->settings->int(Settings::REFERRAL_COMMISSION_MAX_ORDERS, 0));
+
+        return [
+            'percent'    => $percent,
+            'max_orders' => $max,
+            'enabled'    => $percent > 0 && $max > 0,
+        ];
+    }
+
+    /**
+     * پرداختِ کمیسیونِ خریدهای بعدی.
+     *
+     * ## ترتیبِ حیاتی: اول دفتر، بعد پول
+     *
+     * `recordCommission()` **اول** صدا زده می‌شود و اگر `false` داد (یعنی قیدِ
+     * یکتا خورد و سفارش قبلاً پرداخت شده) اصلاً پول ریخته نمی‌شود.
+     *
+     * ترتیبِ برعکس فاجعه بود: پول به کیف پول می‌رفت، ثبت در دفتر شکست می‌خورد،
+     * و کرونِ بعدی همان پول را **دوباره** می‌ریخت. کاربر پولِ اضافه می‌گرفت و
+     * هیچ ردی هم برایش نبود.
+     *
+     * تنها ریسکِ باقی‌مانده این است که پول ریخته شود و همان لحظه خطا بخورد
+     * (قطع دیتابیس وسط کار). آن‌وقت دفتر می‌گوید «پرداخت شد» ولی پول نرسیده —
+     * و کرونِ بعدی دوباره نمی‌ریزد. این حالت در `adjustWallet` خودش تراکنشی
+     * است، پس بازگرداندنِ خودکار ندارد؛ به‌جایش لاگ و گزارشِ ادمین دارد تا
+     * قابل بررسی باشد. انتخابِ «کم‌پرداخت کردن» امن‌تر از «دوباره پرداخت کردن» است.
+     *
+     * @param object|null $notifier duck-typed با متد notifyAdmins()
+     * @return array{orders:int, toman:int, referrers:int, skipped:int}
+     */
+    public function payCommissions(?object $notifier = null): array
+    {
+        $result = ['orders' => 0, 'toman' => 0, 'referrers' => 0, 'skipped' => 0];
+
+        if (!$this->flagsAreUsable()) {
+            return $result;
+        }
+
+        $policy = $this->commissionPolicy();
+
+        // ⭐️ کمیسیون خاموش است ⇒ هیچ کوئریِ سنگینی اجرا نمی‌شود. کرون هر چند
+        // دقیقه یک‌بار اجرا می‌شود و نباید بی‌دلیل جدولِ سفارش‌ها را بکوبد.
+        if (!$policy['enabled']) {
+            return $result;
+        }
+
+        $users  = new UserRepository($this->db);
+        $seen   = [];
+
+        // ⭐️ لحظهٔ شروع، **اینجا** و فقط اینجا ثبت می‌شود.
+        //
+        // نه در `commissionPolicy()` و نه در صفحه‌های نمایش: آن‌ها ممکن است
+        // صدها بار در روز صدا زده شوند و نباید دیتابیس را بنویسند. این متد
+        // تنها جایی است که پول واقعاً جابه‌جا می‌شود، پس همان‌جا هم مهرِ شروع
+        // را می‌زند.
+        $since = $this->ensureCommissionWindow();
+
+        foreach ($this->referrals->allWithPaidReferee(100) as $ref) {
+            $referralId  = (int) $ref['id'];
+            $referrerId  = (int) $ref['referrer_user_id'];
+            $refereeId   = (int) $ref['referee_user_id'];
+            $name        = trim((string) ($ref['first_name'] ?? '')) ?: 'کاربر';
+
+            foreach ($this->referrals->eligibleCommissionOrders($refereeId, $policy['max_orders'], $since, 50) as $order) {
+                // ⚠️ مبنای کمیسیون `price_toman` است، نه `original_price_toman`.
+                //
+                // قیمتِ پرداخت‌شده همان چیزی است که فروشگاه واقعاً گرفته. اگر
+                // مبنا را قیمتِ قبل از تخفیف بگیریم، وقتی دوستم معرف تخفیف هم
+                // گرفته، کمیسیونِ معرف از درآمدی بیشتر می‌شود که فروشگاه
+                // ندیده — یعنی پولِ ساختگی.
+                $base = (int) $order['price_toman'];
+
+                if ($base < 1) {
+                    $result['skipped']++;
+                    continue;
+                }
+
+                $amount = (int) floor(($base * $policy['percent']) / 100);
+
+                if ($amount < 1) {
+                    $result['skipped']++;
+                    continue;
+                }
+
+                // ۱) دفتر — اگر ثبت نشد، پولی هم ریخته نمی‌شود.
+                if (!$this->referrals->recordCommission(
+                    $referralId,
+                    $referrerId,
+                    $refereeId,
+                    (int) $order['id'],
+                    $policy['percent'],
+                    $base,
+                    $amount
+                )) {
+                    $result['skipped']++;
+                    continue;
+                }
+
+                // ۲) پول
+                try {
+                    $users->adjustWallet(
+                        $referrerId,
+                        $amount,
+                        'کمیسیون معرفی: ' . $name . ' • ' . (string) $order['code'],
+                        0,
+                        'referral_commission'
+                    );
+                } catch (\Throwable $e) {
+                    Logger::error('Referral commission payout failed', [
+                        'referral_id' => $referralId,
+                        'order_id'    => (int) $order['id'],
+                        'amount'      => $amount,
+                        'error'       => $e->getMessage(),
+                    ]);
+
+                    // ⚠️ ردیف دفتر هست ولی پول نیست. عمداً پاک نمی‌کنیم: پاک کردن
+                    // یعنی کرونِ بعدی دوباره می‌ریزد و کاربر پولِ مضاعف می‌گیرد.
+                    // بهتر است این مورد در گزارشِ ادمین دیده شود تا دستی حل شود.
+                    $result['skipped']++;
+                    continue;
+                }
+
+                $result['orders']++;
+                $result['toman'] += $amount;
+                $seen[$referrerId] = true;
+            }
+        }
+
+        $result['referrers'] = count($seen);
+
+        if ($result['orders'] > 0 && $notifier !== null) {
+            $notifier->notifyAdmins(
+                '💸 <b>کمیسیون معرفی پرداخت شد</b>' . "\n\n"
+                . '🧾 سفارش‌های کمیسیونی: <b>'
+                . \Pasargad\Support\Str::faNumber($result['orders']) . '</b>' . "\n"
+                . '👥 معرف‌های درگیر: <b>'
+                . \Pasargad\Support\Str::faNumber($result['referrers']) . '</b>' . "\n"
+                . '💰 مجموع کمیسیون: <b>'
+                . \Pasargad\Support\Str::formatToman($result['toman']) . '</b>'
+            );
+        }
+
+        return $result;
+    }
+
+    /** آیا خودِ سیستم معرفی روشن است؟ */
+    private function flagsAreUsable(): bool
+    {
+        return $this->settings->bool(Settings::REFERRAL_ENABLED, true);
+    }
+
+    /**
+     * لحظهٔ شروعِ کمیسیون؛ بارِ اول که ثبت می‌شود.
+     *
+     * عمداً **هرگز خودکار پاک نمی‌شود**. اگر ادمین کمیسیون را خاموش و بعد
+     * دوباره روشن کند، بازه از همان بارِ اول حساب می‌شود — نه از بارِ دوم.
+     * پاک کردنش یعنی «دفعهٔ بعد که روشن کردی، کلِ تاریخچهٔ بازهٔ خاموش را هم
+     * پرداخت کن»، که همان هیزِ غافلگیری است که این مکانیزم برای جلوگیری از آن
+     * ساخته شده. اگر ادمین واقعاً می‌خواهد از تاریخِ خاصی اعمال شود، باید خودش
+     * کلید را در تنظیمات بنویسد.
+     *
+     * @return int
+     */
+    private function ensureCommissionWindow(): int
+    {
+        $since = $this->settings->int(Settings::REFERRAL_COMMISSION_SINCE, 0);
+
+        if ($since > 0) {
+            return $since;
+        }
+
+        $since = time();
+
+        $this->settings->set(Settings::REFERRAL_COMMISSION_SINCE, (string) $since);
+
+        Logger::info('Referral commission window opened', ['since' => $since]);
+
+        return $since;
+    }
+
+    /**
+     * لحظهٔ شروعِ ثبت‌شدهٔ کمیسیون (۰ یعنی هنوز روشن نشده).
+     *
+     * برای نمایش به ادمین — باید بداند کمیسیون از چه زمانی حساب می‌شود،
+     * وگرنه وقتی عددش نمی‌خواند حدس می‌زند که همه‌چیز خراب است.
+     *
+     * @return int
+     */
+    public function commissionStartedAt(): int
+    {
+        return max(0, $this->settings->int(Settings::REFERRAL_COMMISSION_SINCE, 0));
     }
 
     /**

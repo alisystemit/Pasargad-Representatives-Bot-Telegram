@@ -2098,6 +2098,12 @@ final class Api
                 'rewarded_text' => !empty($row['reward_given'])
                     ? Str::date((int) $row['rewarded_at'])
                     : ($isPaid ? 'در انتظار کرون بعدی' : 'در انتظار خرید'),
+                // ⭐️ کمیسیونِ مدل دوم، جدا از پاداش اولیه. کلاینت این دو را
+                // قاطی نمی‌کند چون کاربر باید بداند کدام عدد با تغییرِ «سقف»
+                // عوض می‌شود و کدام با تغییرِ «پاداش اولیه».
+                'commission_toman'  => (int) ($row['commission_toman'] ?? 0),
+                'commission_text'   => Str::formatToman((int) ($row['commission_toman'] ?? 0)),
+                'commission_orders' => (int) ($row['commission_orders'] ?? 0),
                 'at'      => (int) $row['created_at'],
             ];
         }
@@ -2116,6 +2122,16 @@ final class Api
             'rewarded'      => (int) $summary['rewarded'],
             'earned'        => (int) ($summary['earned'] ?? 0),
             'earned_text'   => Str::formatToman((int) ($summary['earned'] ?? 0)),
+            // مدل دوم — کمیسیونِ درصدیِ خریدهای بعدی.
+            'commission'        => (int) ($summary['commission'] ?? 0),
+            'commission_text'   => Str::formatToman((int) ($summary['commission'] ?? 0)),
+            'commission_count'  => (int) ($summary['commission_cnt'] ?? 0),
+            // `enabled` تعیین می‌کند کلاینت اصلاً از کمیسیون حرف بزند یا نه.
+            // نمایشِ «۵٪ کمیسیون» در حالی که تنظیم خاموش است یعنی وعدهٔ
+            // پولی که هرگز پرداخت نمی‌شود.
+            'commission_percent' => (int) ($summary['policy']['percent'] ?? 0),
+            'commission_max'     => (int) ($summary['policy']['max_orders'] ?? 0),
+            'commission_enabled' => !empty($summary['policy']['enabled']),
             'wallet'        => $this->users->walletBalance($this->userId()),
             'wallet_text'   => Str::formatToman($this->users->walletBalance($this->userId())),
             'bonus_each'    => (int) $summary['bonus_each'],
@@ -3431,6 +3447,13 @@ final class Api
         Settings::REFERRAL_DISCOUNT,
         Settings::REFERRAL_BONUS,
         Settings::REFERRAL_BONUS_LEVEL2,
+        // مدل دوم — کمیسیونِ درصدیِ خریدهای بعدی.
+        //
+        // ⭐️ عمداً جدا از REFERRAL_BONUS: پاداش اولیه «یک بار برای اولین خرید»
+        // است، کمیسیون «درصدی از خریدهای بعدی تا سقف». اگر یکی می‌شدند، تغییرِ
+        // درصد تاریخچهٔ مالیِ کسانی را که قبلاً پاداش گرفته‌اند هم بازنویسی می‌کرد.
+        Settings::REFERRAL_COMMISSION_PERCENT,
+        Settings::REFERRAL_COMMISSION_MAX_ORDERS,
         Settings::LOYALTY_DISCOUNT,
         Settings::LOYALTY_REDEEM,
         Settings::LOGIN_MAX_ATTEMPTS,
@@ -3463,6 +3486,8 @@ final class Api
             Settings::REFERRAL_DISCOUNT     => 'درصد تخفیف معرفی',
             Settings::REFERRAL_BONUS        => 'پاداش معرفی (تومان)',
             Settings::REFERRAL_BONUS_LEVEL2 => 'پاداش سطح دوم (تومان)',
+            Settings::REFERRAL_COMMISSION_PERCENT => 'درصد کمیسیون خریدهای بعدی',
+            Settings::REFERRAL_COMMISSION_MAX_ORDERS => 'سقف کمیسیون (تعداد خرید)',
             Settings::LOYALTY_DISCOUNT      => 'درصد تخفیف وفاداری',
             Settings::LOYALTY_REDEEM        => 'امتیاز لازم برای تخفیف وفاداری',
             Settings::LOGIN_MAX_ATTEMPTS    => 'حداکثر تلاش ورود',
@@ -3484,6 +3509,8 @@ final class Api
             Settings::REFERRAL_DISCOUNT     => [0, 100],
             Settings::REFERRAL_BONUS        => [0, 100000000],
             Settings::REFERRAL_BONUS_LEVEL2 => [0, 100000000],
+            Settings::REFERRAL_COMMISSION_PERCENT => [0, 100],
+            Settings::REFERRAL_COMMISSION_MAX_ORDERS => [0, 1000],
             Settings::LOYALTY_DISCOUNT      => [0, 100],
             Settings::LOYALTY_REDEEM        => [1, 100000],
             Settings::LOGIN_MAX_ATTEMPTS    => [1, 50],
@@ -3547,6 +3574,8 @@ final class Api
             Settings::REFERRAL_DISCOUNT     => 100,
             Settings::REFERRAL_BONUS        => 100000000,
             Settings::REFERRAL_BONUS_LEVEL2 => 100000000,
+            Settings::REFERRAL_COMMISSION_PERCENT => 100,
+            Settings::REFERRAL_COMMISSION_MAX_ORDERS => 1000,
             Settings::LOYALTY_DISCOUNT      => 100,
             Settings::LOYALTY_REDEEM        => 100000,
             Settings::LOGIN_MAX_ATTEMPTS    => 50,

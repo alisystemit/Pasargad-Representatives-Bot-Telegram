@@ -15,6 +15,7 @@ use Pasargad\Store\PackageRepository;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Store\PanelSyncer;
 use Pasargad\Store\Provisioner;
+use Pasargad\Store\ReferralRepository;
 use Pasargad\Store\Settings;
 use Pasargad\Store\TestConfigRepository;
 use Pasargad\Store\TicketRepository;
@@ -2771,6 +2772,19 @@ final class AdminController
     }
 
     /**
+     * سرویس تخفیف/معرفی، روی همان دیتابیس.
+     *
+     * ⚠️ دیتابیس را **صریح** پاس می‌دهیم. `DiscountService` پیش‌فرض خودش
+     * `Db::instance()` را می‌گیرد؛ در تست‌ها که `TestDb` اتصال را عوض می‌کند
+     * این یعنی دو اتصال متفاوت به دو دیتابیس — و «کمیسیون از تاریخ فلان»
+     * از یکی خوانده می‌شد و از دیگری نوشته.
+     */
+    private function discounts(): DiscountService
+    {
+        return new DiscountService(settings: $this->settings, db: $this->orders->db());
+    }
+
+    /**
      * فهرست کدهای تخفیف.
      */
     private function showCoupons(int $chatId): void
@@ -3194,11 +3208,33 @@ final class AdminController
                 'hint'  => 'تخفیفی که کاربرِ معرفی‌شده در اولین خریدش می‌گیرد.',
             ],
             'ref_bonus' => [
-                'label' => '💰 پاداش معرف (تومان)',
+                'label' => '💰 پاداش اولیهٔ معرف (تومان)',
                 'key'   => Settings::REFERRAL_BONUS,
                 'min'   => 0,
                 'max'   => 100000000,
-                'hint'  => 'مبلغی که به کیف پول معرف اضافه می‌شود.',
+                'hint'  => 'مبلغِ ثابتی که **یک بار** و فقط برای **اولین** خریدِ معرفی‌شده به کیف پولِ معرف اضافه می‌شود.',
+            ],
+            // ----------------------------------------------------------------
+            // مدل دوم: کمیسیونِ درصدیِ خریدهای بعدی
+            //
+            // این دو باید **با هم** تنظیم شوند. یکی بدون دیگری بی‌معنی است:
+            // درصد بدون سقف ⇒ معرف می‌تواند بی‌نهایت سفارش بزند و پولِ
+            // فروشگاه را از خودِ فروشگاه بگیرد؛ سقف بدون درصد ⇒ هیچ اتفاقی
+            // نمی‌افتد ولی صفحه طوری نوشته می‌شود که انگار کمیسیون فعال است.
+            // ----------------------------------------------------------------
+            'ref_commission_percent' => [
+                'label' => '💸 درصد کمیسیون خریدهای بعدی',
+                'key'   => Settings::REFERRAL_COMMISSION_PERCENT,
+                'min'   => 0,
+                'max'   => 100,
+                'hint'  => 'از **دومین** خریدِ معرفی‌شده به بعد، این درصد از مبلغِ پرداخت‌شده به کیف پولِ معرف می‌رود. ۰ = خاموش.',
+            ],
+            'ref_commission_max' => [
+                'label' => '🔢 سقف کمیسیون (تعداد خرید)',
+                'key'   => Settings::REFERRAL_COMMISSION_MAX_ORDERS,
+                'min'   => 0,
+                'max'   => 1000,
+                'hint'  => 'از هر معرفی‌شده حداکثر چند خرید کمیسیون بگیرد. ۰ = کمیسیون کاملاً خاموش. تنها سدِ ضدّ خودخریدی است.',
             ],
             'stats_ttl' => [
                 'label' => '🕒 عمر حافظهٔ آمار کاربران (دقیقه)',
@@ -3217,6 +3253,11 @@ final class AdminController
     {
         $graceDays = max(0, $this->settings->int(Settings::EXPIRE_GRACE_DAYS, 3));
 
+        $bonus   = max(0, $this->settings->int(Settings::REFERRAL_BONUS, 50000));
+        $percent = max(0, min(100, $this->settings->int(Settings::REFERRAL_COMMISSION_PERCENT, 0)));
+        $capMax  = max(0, $this->settings->int(Settings::REFERRAL_COMMISSION_MAX_ORDERS, 0));
+        $commOn  = $percent > 0 && $capMax > 0;
+
         $lines = [
             '🚀✨ <b>رشد و نگهداشت</b>',
             '',
@@ -3226,15 +3267,56 @@ final class AdminController
                     . ' روز فرصت تمدید هست و بعد درخواست قطع دسترسی می‌رود.</i>'
                 : '   <i>⚠️ بدون مهلت — به‌محض انقضا درخواست قطع دسترسی می‌رود.</i>',
             '',
-            '🎁 تخفیف معرفی: <b>' . Str::faNumber(max(0, $this->settings->int(Settings::REFERRAL_DISCOUNT, 10)))
-                . '٪</b>',
-            '💰 پاداش معرف: <b>' . Str::formatToman(max(0, $this->settings->int(Settings::REFERRAL_BONUS, 50000)))
-                . '</b>',
-            '🕒 عمر حافظهٔ آمار پنل: <b>'
-                . Str::faNumber(max(1, $this->settings->int(Settings::PANEL_STATS_TTL, 30))) . ' دقیقه</b>',
+            '🤝✨ <b>مدل معرفی</b>',
             '',
-            '🎟️ کدهای تخفیف: <b>' . Str::faNumber($this->coupons()->countActive()) . '</b> فعال',
+            '🎁 <b>پاداش اولیه</b> (یک بار، اولین خرید): <b>'
+                . Str::formatToman($bonus) . '</b>',
+            '🎟️ تخفیفِ دوستِ معرفی‌شده: <b>'
+                . Str::faNumber(max(0, $this->settings->int(Settings::REFERRAL_DISCOUNT, 10))) . '٪</b>',
         ];
+
+        if ($commOn) {
+            $lines[] = '💸 <b>کمیسیون خریدهای بعدی</b>: <b>' . Str::faNumber($percent) . '٪</b>'
+                . ' تا سقفِ <b>' . Str::faNumber($capMax) . ' خرید</b> از هر دوست';
+            $lines[] = '   <i>از دومین خریدِ او به بعد، ' . Str::faNumber($percent)
+                . '٪ از مبلغِ پرداخت‌شده به کیف پولِ شما می‌رود.</i>';
+
+            // ⭐️ تاریخِ شروع را صریح می‌گوییم. کمیسیون فقط برای سفارش‌هایِ
+            // پرداخت‌شده **بعد از** این لحظه است؛ گذشته عمداً پرداخت نمی‌شود.
+            // اگر این را نگوییم، ادمین بعداً می‌بیند سفارشی کمیسیون نگرفته و
+            // فکر می‌کند باگ است.
+            $startedAt = $this->discounts()->commissionStartedAt();
+            $lines[] = $startedAt > 0
+                ? '   <i>از ' . Str::date($startedAt) . ' به بعد حساب می‌شود (سفارش‌های قبل از آن، عمداً).</i>'
+                : '   <i>از اولین اجرای کرون بعد از روشن‌کردن.</i>';
+        } elseif ($percent > 0 && $capMax === 0) {
+            // ⭐️ این حالت «نیمه‌تنظیم» است و خیلی راحت از قلم می‌افتد: ادمین
+            // درصد را گذاشته ولی سقف را نه، و چون کد خاموش برمی‌گردد، هیچ
+            // کمیسیونی پرداخت نمی‌شود — بی‌اینکه هیچ‌جا گفته شود چرا.
+            $lines[] = '💸 کمیسیون: <b>نیمه‌تنظیم</b> ⚠️';
+            $lines[] = '   <i>درصد ' . Str::faNumber($percent)
+                . '٪ ثبت شده ولی «سقف کمیسیون» صفر است، پس کمیسیونی پرداخت نمی‌شود.</i>';
+        } elseif ($capMax > 0 && $percent === 0) {
+            $lines[] = '💸 کمیسیون: <b>نیمه‌تنظیم</b> ⚠️';
+            $lines[] = '   <i>سقفِ ' . Str::faNumber($capMax)
+                . ' خرید ثبت شده ولی درصد صفر است، پس کمیسیونی پرداخت نمی‌شود.</i>';
+        } else {
+            $lines[] = '💸 کمیسیون خریدهای بعدی: <b>خاموش 🔴</b>';
+            $lines[] = '   <i>فقط پاداشِ اولیه پرداخت می‌شود.</i>';
+        }
+
+        $commTotals = (new ReferralRepository())->commissionTotals();
+
+        $lines[] = '';
+        $lines[] = '🗂 کمیسیونِ پرداخت‌شده تا الان: <b>'
+            . Str::formatToman($commTotals['total']) . '</b>'
+            . ' از <b>' . Str::faNumber($commTotals['count']) . '</b> سفارش';
+
+        $lines[] = '';
+        $lines[] = '🕒 عمر حافظهٔ آمار پنل: <b>'
+            . Str::faNumber(max(1, $this->settings->int(Settings::PANEL_STATS_TTL, 30))) . ' دقیقه</b>';
+        $lines[] = '';
+        $lines[] = '🎟️ کدهای تخفیف: <b>' . Str::faNumber($this->coupons()->countActive()) . '</b> فعال';
 
         $keyboard = [];
 
@@ -3387,10 +3469,26 @@ final class AdminController
     {
         $db = Db::instance();
         $count = $db->count('SELECT COUNT(*) FROM referrals');
+
+        $comm = (new ReferralRepository())->commissionTotals();
+
+        $percent = max(0, min(100, $this->settings->int(Settings::REFERRAL_COMMISSION_PERCENT, 0)));
+        $capMax  = max(0, $this->settings->int(Settings::REFERRAL_COMMISSION_MAX_ORDERS, 0));
+
         $lines = [
             '👥✨ <b>معرفی کاربران 🎁</b>',
             '',
             '🔢 تعداد کل معرفی‌ها: ' . Str::faNumber($count),
+            '💰 پاداش اولیه: <b>' . Str::formatToman(max(0, $this->settings->int(Settings::REFERRAL_BONUS, 50000))) . '</b>',
+            '💸 کمیسیون خریدهای بعدی: <b>'
+                . ($percent > 0 && $capMax > 0
+                    ? Str::faNumber($percent) . '٪ تا سقف ' . Str::faNumber($capMax) . ' خرید'
+                    : 'خاموش 🔴')
+                . '</b>',
+            '',
+            '🗂 کمیسیونِ پرداخت‌شده: <b>' . Str::formatToman($comm['total']) . '</b>',
+            '🧾 از <b>' . Str::faNumber($comm['count']) . '</b> سفارشِ '
+                . Str::faNumber($comm['referrers']) . ' معرف',
         ];
 
         $rows = $db->all('SELECT r.*, u.telegram_id AS referrer_tg, u2.telegram_id AS referee_tg FROM referrals r LEFT JOIN users u ON u.id = r.referrer_user_id LEFT JOIN users u2 ON u2.id = r.referee_user_id ORDER BY r.id DESC LIMIT 10');

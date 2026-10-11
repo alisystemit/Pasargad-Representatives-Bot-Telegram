@@ -1221,7 +1221,7 @@ views.referral = async (root) => {
     root.innerHTML = `
         <section class="hero">
             <div class="hero-name">🤝 همکاری در فروش</div>
-            <div class="hero-sub">دوستان شما ${fa(d.discount_percent)}٪ تخفیف می‌گیرند، شما ${esc(d.bonus_each_text)} به کیف پولتان می‌گیرید.</div>
+            <div class="hero-sub">دوستان شما ${fa(d.discount_percent)}٪ تخفیف می‌گیرند، شما ${esc(d.bonus_each_text)} پاداش اولیه می‌گیرید.</div>
             <div class="hero-stats">
                 <div class="hero-stat"><b>${fa(d.invited)}</b><span>دعوت‌شده</span></div>
                 <div class="hero-stat"><b>${fa(d.paid || 0)}</b><span>خرید کرده</span></div>
@@ -1229,18 +1229,24 @@ views.referral = async (root) => {
             </div>
         </section>
 
-        ${d.earned > 0 ? `
-            <section class="card">
-                <div class="card-title mb-8">💰 درآمد شما از دعوت‌ها</div>
-                <div class="kv">
-                    ${kv('درآمد کل', '<b>' + esc(d.earned_text) + '</b>')}
-                    ${kv('موجودی کیف پول', '<b>' + esc(d.wallet_text) + '</b>')}
-                </div>
-                <div class="hint">موجودی کیف پول را می‌توانید در صفحهٔ پرداختِ سفارش، به‌عنوان روش پرداخت استفاده کنید.</div>
-                <div class="btn-row mt-12">
-                    <button class="btn btn-ghost" data-go="wallet" type="button">👛 کیف پول من</button>
-                </div>
-            </section>` : ''}
+        <section class="card">
+            <div class="card-title mb-8">💰 درآمد شما</div>
+            <div class="kv">
+                ${kv('🎁 پاداش اولیه', '<b>' + esc(d.earned_text || '۰') + '</b>')}
+                ${d.commission_enabled ? kv('💸 کمیسیون فروش', '<b>' + esc(d.commission_text || '۰') + '</b>') : ''}
+                ${kv('👛 موجودی کیف پول', '<b>' + esc(d.wallet_text || '۰') + '</b>')}
+            </div>
+            ${d.commission_enabled ? `
+                <div class="hint">
+                    از <b>دومین</b> خریدِ هر دوست به بعد، <b>${fa(d.commission_percent)}٪</b> از مبلغ خرید
+                    تا سقفِ <b>${fa(d.commission_max)}</b> خرید برای شما کمیسیون می‌گذارد.
+                    تا الان از <b>${fa(d.commission_count || 0)}</b> خرید کمیسیون گرفته‌اید.
+                </div>` : ''}
+            <div class="hint">موجودی کیف پول را می‌توانید در صفحهٔ پرداختِ سفارش، به‌عنوان روش پرداخت استفاده کنید.</div>
+            <div class="btn-row mt-12">
+                <button class="btn btn-ghost" data-go="wallet" type="button">👛 کیف پول من</button>
+            </div>
+        </section>
 
         <section class="card">
             <div class="card-title mb-8">🔗 لینک اختصاصی شما</div>
@@ -1261,10 +1267,27 @@ views.referral = async (root) => {
                     // سه حالتِ متمایز، نه دو: «ثبت‌نام کرده ولی نخریده» با
                     // «خرید کرده ولی پاداشش هنوز نرسیده» برای کاربر یکی نیست.
                     const ico = i.rewarded ? '✅' : (i.is_paid ? '🛒' : '⏳');
-                    const sub = i.is_paid
-                        ? (i.orders_count > 0 ? fa(i.orders_count) + ' خرید • ' : '') + esc(i.orders_total_text || '')
-                          + (i.rewarded ? ' • 🎁 ' + esc(i.bonus_text) : ' • ' + esc(i.rewarded_text))
-                        : 'هنوز خرید نکرده';
+                    const parts = [];
+
+                    if (i.is_paid) {
+                        parts.push((i.orders_count > 0 ? fa(i.orders_count) + ' خرید • ' : '')
+                            + esc(i.orders_total_text || ''));
+
+                        if (i.rewarded) {
+                            parts.push('🎁 ' + esc(i.bonus_text));
+                        } else {
+                            parts.push(esc(i.rewarded_text));
+                        }
+                    } else {
+                        parts.push('هنوز خرید نکرده');
+                    }
+
+                    // کمیسیون جدا از پاداشِ اولیه در همان ردیف — چون اصلِ «چقدر
+                    // ارزشِ معرفی داشته» همین است.
+                    if (i.commission_toman > 0) {
+                        parts.push('💸 ' + esc(i.commission_text));
+                    }
+
                     const tone = i.rewarded ? 'ok' : (i.is_paid ? 'info' : 'warn');
                     const label = i.rewarded ? 'پاداش داده شد' : (i.is_paid ? 'در انتظار پاداش' : 'ثبت‌نام شد');
 
@@ -1272,7 +1295,7 @@ views.referral = async (root) => {
                         <div class="item-ico">${ico}</div>
                         <div class="item-main">
                             <div class="item-title">${esc(i.name)}</div>
-                            <div class="item-sub">${sub}</div>
+                            <div class="item-sub">${parts.join(' • ')}</div>
                         </div>
                         ${pill(tone, label)}
                     </div>`;

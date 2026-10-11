@@ -713,6 +713,49 @@ final class Migrator
             )',
             'CREATE INDEX IF NOT EXISTS idx_dead_letters_attempts ON webhook_dead_letters (attempts)',
         ],
+
+        // ------------------------------------------------------------------
+        // ۱۸) کمیسیون معرفی — مدل دوم
+        //
+        // تا اینجا هر معرف فقط یک «پاداش اولیه»ٔ ثابت می‌گرفت و بعد از آن هیچ
+        // انگیزه‌ای برای ادامهٔ معرفی نداشت. این جدول دفترِ کمیسیون است:
+        // هر سفارشِ واجدشرایطِ یک معرفی‌شده، دقیقاً **یک ردیف** کمیسیون
+        // می‌سازد.
+        //
+        // ⭐️ قیدِ یکتای `order_id` تمامِ تضمینِ اتمیک بودن است:
+        //
+        //   • بدون آن، دو اجرای همزمانِ کرون هر دو می‌دیدند که سفارش کمیسیون
+        //     نگرفته و هر دو پول را به کیف پول معرف می‌ریختند.
+        //   • بدون آن، یک سفارشِ پرداخت‌شده که کاربر «بررسی وضعیت» را چندبار
+        //     زده بود، چندبار کمیسیون می‌گرفت.
+        //
+        // حتی اگر منطقِ کرون هم اشتباه کند، دیتابیس اجازهٔ پرداختِ دوبارهٔ
+        // یک سفارش را نمی‌دهد — یعنی شمارهٔ ثبت‌شده در دفتر، حقیقتِ مالی است
+        // و نه «آنچه کد فکر می‌کند پرداخت کرده».
+        // ------------------------------------------------------------------
+        '018_referral_commission' => [
+            'CREATE TABLE IF NOT EXISTS referral_commissions (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                referral_id      INTEGER NOT NULL,
+                referrer_user_id INTEGER NOT NULL,
+                referee_user_id  INTEGER NOT NULL,
+                order_id         INTEGER NOT NULL,
+                percent          INTEGER NOT NULL DEFAULT 0,
+                base_toman       INTEGER NOT NULL DEFAULT 0,
+                amount_toman     INTEGER NOT NULL DEFAULT 0,
+                created_at       INTEGER NOT NULL,
+                FOREIGN KEY (referral_id) REFERENCES referrals(id) ON DELETE CASCADE,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+            )',
+            // تضمینِ «هر سفارش حداکثر یک کمیسیون».
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_ref_comm_order ON referral_commissions (order_id)',
+            'CREATE INDEX IF NOT EXISTS idx_ref_comm_referrer ON referral_commissions (referrer_user_id, created_at)',
+            'CREATE INDEX IF NOT EXISTS idx_ref_comm_referee ON referral_commissions (referee_user_id)',
+
+            // شمارندهٔ «چند خرید تا اینجا کمیسیون گرفته»، تا سقفِ قابل تنظیم
+            // اجرا شود. یکتا بودنِ per-referral است، نه global.
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_ref_comm_pair ON referral_commissions (referral_id, order_id)',
+        ],
         ];
     }
 

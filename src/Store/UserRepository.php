@@ -351,7 +351,19 @@ final class UserRepository
             $this->db->insert('wallet_txns', [
                 'user_id'    => $userId,
                 'amount'     => $amount,
-                'kind'       => in_array($kind, ['manual', 'referral', 'wallet_pay'], true) ? $kind : 'manual',
+                // ⭐️ این allowlist فقط برای **خواناییِ تاریخچه** است، نه برای امنیت.
+//
+// پیش از این، `referral_level2` در آن نبود و `in_array()` آن را رد می‌کرد و
+// ردیف را `manual` ثبت می‌کرد — یعنی پرداختِ خودکارِ سطح دوم در تاریخچهٔ
+// کاربر دقیقاً شبیه «شارژ دستیِ مدیر» دیده می‌شد. اگر کاربری شکایت می‌کرد که
+// موجودی‌اش زیاد شده، هیچ راهی برای دیدنِ اینکه از کجا آمده نبود.
+'kind' => in_array($kind, [
+                    'manual',
+                    'referral',
+                    'referral_level2',
+                    'referral_commission',
+                    'wallet_pay',
+                ], true) ? $kind : 'manual',
                 'note'       => Str::truncate($note !== '' ? $note : ($amount > 0 ? 'شارژ توسط مدیریت' : 'کسر توسط مدیریت'), 300),
                 'admin_id'   => $adminId > 0 ? $adminId : null,
                 'created_at' => time(),

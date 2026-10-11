@@ -2685,6 +2685,10 @@ final class Kernel
         $botName = ltrim(Config::str('bot_username', ''), '@');
         $balance = $this->users->walletBalance((int) $user['id']);
 
+        // مدل دوم — کمیسیونِ درصدیِ خریدهای بعدی.
+        $policy = is_array($summary['policy'] ?? null) ? $summary['policy'] : [];
+        $commOn = !empty($policy['enabled']);
+
         $inviteLink = $botName !== ''
             ? 'https://t.me/' . $botName . '?start=' . $summary['code']
             : '';
@@ -2710,13 +2714,32 @@ final class Kernel
         }
 
         $lines[] = '🎁 پاداش گرفته‌اید: <b>' . Str::faNumber((int) $summary['rewarded']) . '</b>';
-        $lines[] = '💰 مجموع درآمد شما: <b>' . Str::formatToman((int) $summary['earned']) . '</b>';
+        $lines[] = '💰 پاداش اولیه: <b>' . Str::formatToman((int) $summary['earned']) . '</b>';
+
+        // ⭐️ درآمدِ کمیسیون **جدا** از پاداش اولیه نشان داده می‌شود. قاطی کردنشان
+        // باعث می‌شود کاربر فکر کند پاداشِ اولیه‌اش بزرگ‌تر شده، در حالی که فقط
+        // یک منبعِ درآمدِ جدید اضافه شده — و نتواند بفهمد کدام تنظیم روی آن اثر
+        // دارد.
+        if ($commOn) {
+            $lines[] = '💸 کمیسیون فروش: <b>' . Str::formatToman((int) ($summary['commission'] ?? 0)) . '</b>'
+                . ' <i>(' . Str::faNumber((int) ($summary['commission_cnt'] ?? 0)) . ' خرید)</i>';
+        }
+
         $lines[] = '👛 موجودی کیف پول: <b>' . Str::formatToman($balance) . '</b>';
 
         $lines[] = '';
         $lines[] = '🎉 دوست شما با این کد <b>' . Str::faNumber($percent) . '٪</b> تخفیف می‌گیرد.';
-        $lines[] = '💰 به ازای هر خریدِ موفقِ او <b>' . Str::formatToman((int) $summary['bonus_each'])
+        $lines[] = '💰 به ازای <b>اولین</b> خریدِ موفقِ او <b>' . Str::formatToman((int) $summary['bonus_each'])
             . '</b> به کیف پول شما اضافه می‌شود.';
+
+        if ($commOn) {
+            // ⭐️ سقف عمداً «تا N خرید» نوشته می‌شود نه «نامحدود». اگر ادمان
+            // سقف را بعداً کم کند، عددِ نمایش‌داده‌شده همان لحظه درست می‌شود؛
+            // کاربر غافلگیر نمی‌شود که چرا کمیسیون قطع شد.
+            $lines[] = '💸 از <b>دومین</b> خریدِ او به بعد: <b>'
+                . Str::faNumber((int) $policy['percent']) . '٪</b> از مبلغ خرید،'
+                . ' تا سقفِ <b>' . Str::faNumber((int) $policy['max_orders']) . ' خرید</b> برای هر دوست.';
+        }
 
         $keyboard = [];
 
@@ -2806,6 +2829,16 @@ final class Kernel
                 $lines[] = '   ⏳ پاداش در کرون بعدی داده می‌شود';
             }
 
+            // ⭐️ کمیسیون جدا از پاداش اولیه نشان داده می‌شود تا کاربر بداند این
+            // دوست «تا الان چقدر ارزشِ معرفی داشته» — همان چیزی که تصمیمِ
+            // «به او بیشتر پیگیری کنم یا نه» را می‌سازد.
+            $comm = (int) ($row['commission_toman'] ?? 0);
+
+            if ($comm > 0) {
+                $lines[] = '   💸 کمیسیون: ' . Str::formatToman($comm)
+                    . ' از ' . Str::faNumber((int) ($row['commission_orders'] ?? 0)) . ' خرید';
+            }
+
             $keyboard[] = [[
                 'text' => (empty($row['is_paid']) ? '⏳ ' : '✅ ') . Str::truncate($name, 24),
                 'data' => BotApi::encodeData('referral.one', ['id' => (int) $row['id']]),
@@ -2863,6 +2896,41 @@ final class Kernel
 
         if ($slate > 0) {
             $lines[] = '💎 پاداش اسلات: ' . Str::formatToman($slate);
+        }
+
+        // ------------------------------------------------------------------
+        // کمیسیونِ مدل دوم — با وضعیتِ سقف
+        // ------------------------------------------------------------------
+        //
+        // ⭐️ فقط وقتی این بخش نشان داده می‌شود که کمیسیون **واقعاً روشن** باشد.
+        // اگر ادمین درصد را گذاشته ولی سقف را نه، نوشتنِ «۵٪ کمیسیون» اینجا
+        // یعنی وعدهٔ پولی که هرگز پرداخت نمی‌شود.
+        $policy = $this->discounts()->commissionPolicy();
+        $comm   = $this->discounts()->referrals()->commissionStatsFor((int) $user['id']);
+        $mine   = $comm['per_referral'][$referralId] ?? null;
+
+        $lines[] = '';
+
+        if (!empty($policy['enabled'])) {
+            $lines[] = '💸 <b>کمیسیون خریدهای بعدی</b>: <b>'
+                . Str::faNumber((int) $policy['percent']) . '٪</b>'
+                . ' تا سقفِ <b>' . Str::faNumber((int) $policy['max_orders']) . ' خرید</b>';
+
+            $lines[] = (int) ($mine['total'] ?? 0) > 0
+                ? '💸 کمیسیونِ دریافتی از این دوست: <b>'
+                    . Str::formatToman((int) $mine['total']) . '</b> از '
+                    . Str::faNumber((int) $mine['orders']) . ' خرید'
+                : '💸 هنوز کمیسیونی از خریدهای بعدیِ او نگرفته‌اید.';
+
+            $used    = (int) ($mine['orders'] ?? 0);
+            $room    = max(0, (int) $policy['max_orders'] - $used);
+
+            $lines[] = $room > 0
+                ? '   <i>تا سقف، ' . Str::faNumber($room) . ' خریدِ دیگر از این دوست کمیسیون می‌دهد.</i>'
+                : '   <i>سقفِ کمیسیونِ این دوست پر شده است.</i>';
+        } elseif ((int) $policy['percent'] > 0) {
+            // نیمه‌تنظیم: ادمین درصد را گذاشته ولی سقف را نه.
+            $lines[] = '💸 کمیسیون خریدهای بعدی: <i>فعلاً خاموش است</i>';
         }
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [

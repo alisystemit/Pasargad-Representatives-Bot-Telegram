@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Pasargad\Store;
 
 use Pasargad\Support\Db;
+use Pasargad\Support\Logger;
 
 /**
  * مخزن معرفی کاربر (زیرشاخه‌ها).
@@ -221,6 +222,242 @@ public function statsFor(int $referrerId): array
              WHERE r.id = ?',
             [$referralId]
         );
+    }
+
+    /**
+     * سفارش‌هایِ یک معرفی‌شده که **واجد کمیسیون** هستند و هنوز پرداخت نشده‌اند.
+     *
+     * ## «بدوی از چندمین خرید؟»
+     *
+     * اولین خریدِ موفق، سهمِ **پاداشِ ثابت** است (`referral_bonus_toman`) و
+     * کمیسیون ندارد؛ مدلِ دوم از **دومین** خرید شروع می‌شود. پس این کوئری
+     * همیشه یک سفارشِ موفق را «کنار می‌گذارد» — به‌ترتیبِ زمان پرداخت، نه
+     * شناسه.
+     *
+     * ⚠️ ترتیب بر اساس `paid_at` است نه `id`: اگر دو سفارش در یک ثانیه پرداخت
+     * شوند، «اولی» باید همان باشد که واقعاً زودتر پرداخت شده، نه آنکه
+     * تصادفاً شناسهٔ کوچک‌تری دارد.
+     *
+     * ## سقف
+     *
+     * `$maxOrders` روی **کمیسیون‌های ثبت‌شده** اعمال می‌شود، نه روی کلِ
+     * سفارش‌ها. اگر روی کلِ سفارش‌ها بود، یک سفارشِ بدون کمیسیون (مثلاً
+     * سفارشی که هنوز سقفش پر بوده) سهمِ سفارش‌های بعدی را می‌خورد و سقف هرگز
+     * پر نمی‌شد — یعنی کمیسیون برای همیشه قطع می‌شد.
+     *
+     * @param  int $maxOrders سقف؛ ۰ یعنی بدون سقف. منفی عملاً «بسته» است.
+     * @return array<int, array<string, mixed>>
+     */
+    public function eligibleCommissionOrders(int $refereeId, int $maxOrders = 0, int $since = 0, int $limit = 50): array
+    {
+        $paidCount = $this->commissionOrderCount($refereeId)['count'];
+
+        // سقف پر شده ⇒ هیچ سفارشِ واجدشرایطی نیست.
+        if ($maxOrders > 0 && $paidCount >= $maxOrders) {
+            return [];
+        }
+
+        // اگر سقف محدود است، فقط به‌اندازهٔ جای مانده برمی‌گردانیم؛ وگرنه کلِ
+        // دسته را می‌گیریم و `payCommissions()` در چند دورِ کرون بقیه را می‌خواند.
+        $room = $maxOrders > 0 ? min($limit, $maxOrders - $paidCount) : $limit;
+
+        // ⭐️ سقفِ زمانی: فقط سفارش‌هایی که **بعد از** شروع کمیسیون پرداخت شده‌اند.
+        //
+        // بدون این، روشن کردنِ کمیسیون توسط ادمین یک «پرداختِ یک‌بارهٔ گذشته»
+        // به کیف پول ده‌ها معرف تبدیل می‌شد — رقمی که هیچ‌کس درخواستش نکرده و
+        // ممکن است از کلِ سودِ ماهانه بیشتر باشد. جزئیات در
+        // `Settings::REFERRAL_COMMISSION_SINCE`.
+        $sinceClause = $since > 0
+            ? ' AND COALESCE(o.paid_at, o.created_at) >= :since'
+            : '';
+
+        $params = ['uid' => $refereeId];
+
+        if ($since > 0) {
+            $params['since'] = $since;
+        }
+
+        return $this->db->all(
+            "SELECT o.id, o.code, o.price_toman, o.paid_at, o.applied_at
+               FROM orders o
+              WHERE o.user_id = :uid
+                AND o.status IN ('paid','applied')"
+            . $sinceClause
+            . "
+                -- ⭐️ سهمِ خریدِ اول، پاداشِ ثابت است نه کمیسیون.
+                --
+                -- «اولین» یعنی قدیمی‌ترین سفارشِ پرداخت‌شده به ترتیب
+                -- (paid_at, id) — نه کم‌ترین id. اگر روزی هم‌زمانی پیش بیاید
+                -- که یک سفارشِ قدیمی‌تر هم‌زمان پرداخت شود، انتخاب بر اساس id
+                -- می‌تواند سفارشِ اشتباه را «اول» اعلام کند و کمیسیونِ واقعیِ
+                -- خریدِ اول را از کاربر بگیرد.
+                AND o.id <> (
+                    SELECT f.id FROM orders f
+                     WHERE f.user_id = o.user_id
+                       AND f.status IN ('paid','applied')
+                     ORDER BY COALESCE(f.paid_at, f.created_at) ASC, f.id ASC
+                     LIMIT 1
+                )
+                -- دفترِ کمیسیون: هر سفارش حداکثر یک بار.
+                AND NOT EXISTS (
+                    SELECT 1 FROM referral_commissions c WHERE c.order_id = o.id
+                )
+              ORDER BY COALESCE(o.paid_at, o.created_at) ASC, o.id ASC
+              LIMIT " . max(1, min($room, 200)),
+            $params
+        );
+    }
+
+    /**
+     * چند سفارش تا این لحظه برای این معرفی‌شده کمیسیون گرفته است.
+     *
+     * از **دفتر** خوانده می‌شود، نه از شمارشِ سفارش‌ها — چون سقف باید روی
+     * چیزی اعمال شود که واقعاً پرداخت شده.
+     *
+     * @return array{count:int, total:int}
+     */
+    public function commissionOrderCount(int $refereeId): array
+    {
+        $row = $this->db->first(
+            'SELECT COUNT(*) AS c, COALESCE(SUM(amount_toman), 0) AS t
+               FROM referral_commissions
+              WHERE referee_user_id = ?',
+            [$refereeId]
+        ) ?? [];
+
+        return [
+            'count' => (int) ($row['c'] ?? 0),
+            'total' => (int) ($row['t'] ?? 0),
+        ];
+    }
+
+    /**
+     * ثبتِ یک کمیسیون در دفتر.
+     *
+     * ⭐️ برمی‌گردد که واقعاً ثبت شد یا نه. قیدِ یکتای `order_id` است که از
+     * پرداختِ دوباره جلوگیری می‌کند؛ این متد آن را نمی‌بلعد بلکه **گزارش**
+     * می‌کند، تا کرون بتواند پول را فقط یک‌بار بریزد.
+     *
+     * نکتهٔ ترتیب: `adjustWallet` باید **بعد** از این موفقیت صدا زده شود.
+     * اگر اول پول ریخته شود و ثبت شکست بخورد، پول رفته ولی در دفتر نیست —
+     * و کرونِ بعدی دوباره می‌ریزد.
+     *
+     * @return bool
+     */
+    public function recordCommission(
+        int $referralId,
+        int $referrerId,
+        int $refereeId,
+        int $orderId,
+        int $percent,
+        int $baseToman,
+        int $amountToman
+    ): bool {
+        try {
+            $this->db->insert('referral_commissions', [
+                'referral_id'      => $referralId,
+                'referrer_user_id' => $referrerId,
+                'referee_user_id'  => $refereeId,
+                'order_id'         => $orderId,
+                'percent'          => $percent,
+                'base_toman'       => $baseToman,
+                'amount_toman'     => $amountToman,
+                'created_at'       => time(),
+            ]);
+        } catch (\Throwable $e) {
+            // قیدِ یکتا خورد ⇒ سفارش قبلاً کمیسیون گرفته. این **خطا نیست**،
+            // نتیجهٔ درست است.
+            Logger::info('Commission already recorded', ['order_id' => $orderId]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * مجموع کمیسیون‌های یک معرف، و پراکندگی‌اش بین دعوت‌ها.
+     *
+     * @return array{total:int, count:int, per_referral:array<int, array<string, mixed>>}
+     */
+    public function commissionStatsFor(int $referrerId): array
+    {
+        $row = $this->db->first(
+            'SELECT COALESCE(SUM(amount_toman), 0) AS total, COUNT(*) AS c
+               FROM referral_commissions
+              WHERE referrer_user_id = ?',
+            [$referrerId]
+        ) ?? [];
+
+        $per = $this->db->all(
+            'SELECT referral_id,
+                    COUNT(*) AS orders,
+                    COALESCE(SUM(amount_toman), 0) AS total
+               FROM referral_commissions
+              WHERE referrer_user_id = ?
+              GROUP BY referral_id',
+            [$referrerId]
+        );
+
+        $byReferral = [];
+        foreach ($per as $r) {
+            $byReferral[(int) $r['referral_id']] = [
+                'orders' => (int) $r['orders'],
+                'total'  => (int) $r['total'],
+            ];
+        }
+
+        return [
+            'total'        => (int) ($row['total'] ?? 0),
+            'count'        => (int) ($row['c'] ?? 0),
+            'per_referral' => $byReferral,
+        ];
+    }
+
+    /**
+     * معرفی‌هایی که معرفی‌شده‌شان حداقل یک خریدِ موفق دارد.
+     *
+     * برای کرونِ کمیسیون: لازم نیست کلِ جدولِ معرفی‌ها را بکوبیم — کسی که هرگز
+     * نخریده، کمیسیونی هم ندارد. این فیلتر، بارِ کار را به معرفی‌های
+     * واقعاً فعال محدود می‌کند.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+public function allWithPaidReferee(int $limit = 100): array
+{
+    return $this->db->all(
+        "SELECT r.*, u.first_name, u.telegram_id
+           FROM referrals r
+           LEFT JOIN users u ON u.id = r.referee_user_id
+          WHERE EXISTS (
+              SELECT 1 FROM orders o
+               WHERE o.user_id = r.referee_user_id
+                 AND o.status IN ('paid','applied')
+          )
+          ORDER BY r.id DESC
+          LIMIT " . max(1, min($limit, 500))
+    );
+}
+
+/**
+     * آمارِ کلِ کمیسیون در کل سیستم — برای داشبورد ادمین.
+     *
+     * @return array{total:int, count:int, referrers:int}
+     */
+    public function commissionTotals(): array
+    {
+        $row = $this->db->first(
+            'SELECT COALESCE(SUM(amount_toman), 0) AS total,
+                    COUNT(*) AS c,
+                    COUNT(DISTINCT referrer_user_id) AS rr
+               FROM referral_commissions'
+        ) ?? [];
+
+        return [
+            'total'     => (int) ($row['total'] ?? 0),
+            'count'     => (int) ($row['c'] ?? 0),
+            'referrers' => (int) ($row['rr'] ?? 0),
+        ];
     }
 
     /**

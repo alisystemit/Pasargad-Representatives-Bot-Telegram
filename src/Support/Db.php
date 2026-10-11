@@ -81,12 +81,69 @@ final class Db
     }
 
     /**
+     * ⚠️ چرا پارامترها دستی bind می‌شوند و نه با `execute($params)`:
+     *
+     * `PDOStatement::execute($array)` **همهٔ مقادیر را به‌صورت رشته** می‌بندد
+     * (`PDO::PARAM_STR`). بیشتر کوئری‌ها این را لو نمی‌دهند چون SQLite وقتی یک
+     * **ستون** با یک مقدارِ متنی مقایسه می‌شود، affinity ستون را اعمال می‌کند و
+     * `'2'` را به `2` تبدیل می‌کند — یعنی `user_id = :id` درست کار می‌کند.
+     *
+     * ولی وقتی سمتِ چپ یک **عبارت** باشد نه ستون، affinity ندارد و تبدیلی هم
+     * رخ نمی‌دهد. در SQLite ترتیبِ نوع‌ها این است:
+     *
+     *     NULL < INTEGER/REAL < TEXT < BLOB
+     *
+     * یعنی هر TEXT از هر INTEGER بزرگ‌تر است. پس
+     *
+     *     COALESCE(paid_at, created_at) >= :since     ← همیشه FALSE
+     *
+     * چون سمتِ چپ عدد است و سمتِ راست رشته. نتیجه: کوئری **بی‌صدا** صفر ردیف
+     * برمی‌گرداند — نه خطا، نه استثنا. دقیقاً همان چیزی که هنگام افزودن
+     * سقفِ زمانیِ کمیسیون معرفی اتفاق افتاد و شبیه «کمیسیون پرداخت نمی‌شود»
+     * به نظر می‌رسید.
+     *
+     * پس اینجا نوعِ واقعیِ PHP حفظ می‌شود: عدد به‌عنوان عدد بسته می‌شود.
+     * کلیدها هم چه با `:` و چه بدون آن پذیرفته می‌شوند.
+     *
      * @param  array<string|int, mixed> $params
      */
     public function run(string $sql, array $params = []): \PDOStatement
     {
         $statement = $this->pdo->prepare($sql);
-        $statement->execute($params);
+
+        if ($params === []) {
+            $statement->execute();
+
+            return $statement;
+        }
+
+        foreach ($params as $key => $value) {
+            $name = is_int($key) ? $key + 1 : $key;
+
+            if (is_int($name)) {
+                $statement->bindValue($name, $value, match (true) {
+                    is_int($value)  => \PDO::PARAM_INT,
+                    is_bool($value) => \PDO::PARAM_INT,
+                    is_null($value) => \PDO::PARAM_NULL,
+                    default         => \PDO::PARAM_STR,
+                });
+
+                continue;
+            }
+
+            $statement->bindValue(
+                ':' . ltrim((string) $name, ':'),
+                $value,
+                match (true) {
+                    is_int($value)  => \PDO::PARAM_INT,
+                    is_bool($value) => \PDO::PARAM_INT,
+                    is_null($value) => \PDO::PARAM_NULL,
+                    default         => \PDO::PARAM_STR,
+                }
+            );
+        }
+
+        $statement->execute();
 
         return $statement;
     }

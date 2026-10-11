@@ -609,10 +609,22 @@ freshBot();
 click(980011, 'referral.my');
 
 check('آمارِ «خرید کرده‌اند» درست است', str_contains(text(), 'خرید کرده‌اند'), text());
-check('درآمد نمایش داده شد', str_contains(text(), 'مجموع درآمد شما'), text());
+// ⭐️ «پاداش اولیه» و «کمیسیون» باید **جدا** برچسب بخورند. وقتی هر دو زیر یک
+// عنوانِ کلی («مجموع درآمد») می‌روند، کاربر نمی‌تواند بفهمد کدام تنظیم روی
+// کدام عدد اثر دارد — و موقع عیب‌یابی هیچ راهی برای تطبیق ندارد.
+check('پاداش اولیه جدا از کمیسیون برچسب خورد',
+    str_contains(lastText(), 'پاداش اولیه'), lastText());
 check('موجودی کیف پول نمایش داده شد', str_contains(text(), 'موجودی کیف پول'), text());
 check('دکمهٔ «دعوت‌شده‌های من» ظاهر شد', $bot->hasButton('دعوت‌شده‌های من'), text());
 check('صفحهٔ همکاری بدون خطا رندر شد', !broken(), text());
+
+// ⭐️ کمیسیون وقتی خاموش است نباید وعده داده شود — نمایشِ «۵٪ کمیسیون» وقتی
+// تنظیم خاموش است یعنی وعدهٔ پولی که هرگز پرداخت نمی‌شود.
+$policyOff = $discounts->commissionPolicy();
+if (empty($policyOff['enabled'])) {
+    check('کمیسیون خاموش ⇒ در صفحهٔ معرفی وعدهٔ کمیسیون داده نشد',
+        !str_contains(lastText(), 'کمیسیون فروش'), lastText());
+}
 
 clearFlood();
 click(980011, 'referral.list');
@@ -813,14 +825,376 @@ check('درگاهِ واقعی هم کنارش هست', $bot->hasButton('کار�
 check('صفحهٔ پرداخت بدون خطا رندر شد', !broken(), text());
 
 // ==================================================================
+echo "\n▶ بخش ۸) مدل دوم: کمیسیونِ درصدیِ خریدهای بعدی\n";
+// ==================================================================
+//
+// مدل: اولین خریدِ موفق ⇒ پاداشِ **ثابت**. خریدهای بعدی ⇒ **درصدی**، تا سقف.
+//
+// ⭐️ چرا این بخش جدا از بقیه است: کمیسیون جایی است که منطقِ «کدام سفارش سهمِ
+// چه کسی است» به پول وصل می‌شود. یک اشتباهِ کوچک در ترتیب یعنی معرفِ
+// کارمندِ خودش را کمیسیون می‌گیرد، یا برای هر سفارش چند بار پول می‌ریزد.
+
+// ---- ۸.۱: در حالتِ خاموش، هیچ اتفاقی نمی‌افتد --------------------
+$settings->set(Settings::REFERRAL_COMMISSION_PERCENT, '5');
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, '0');
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+
+$policy = $discounts->commissionPolicy();
+check('درصد تنها ⇒ کمیسیون «غیرفعال» گزارش می‌شود', ($policy['enabled'] ?? true) === false,
+    json_encode($policy, JSON_UNESCAPED_UNICODE));
+check('درصد تنها ⇒ کمیسیون پرداخت نمی‌شود',
+    (int) $discounts->payCommissions()['orders'] === 0);
+
+// نیمه‌تنظیمِ برعکس
+$settings->set(Settings::REFERRAL_COMMISSION_PERCENT, '0');
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, '5');
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+check('سقف تنها ⇒ کمیسیون «غیرفعال» گزارش می‌شود',
+    ($discounts->commissionPolicy()['enabled'] ?? true) === false);
+check('سقف تنها ⇒ کمیسیون پرداخت نمی‌شود',
+    (int) $discounts->payCommissions()['orders'] === 0);
+
+// ---- ۸.۲: تنظیم کامل --------------------------------------------
+const AGENT   = 980101;   // معرفی که کمیسیون می‌گیرد
+const CLIENT  = 980102;   // دوستی که چند بار می‌خرد
+const RATE    = 10;      // ۱۰٪
+const CAP     = 3;       // حداکثر ۳ خریدِ کمیسیونی
+
+$users->upsertByTelegram(AGENT, ['first_name' => 'Agent']);
+$users->upsertByTelegram(CLIENT, ['first_name' => 'Client']);
+$agentId  = (int) $users->findByTelegramId(AGENT)['id'];
+$clientId = (int) $users->findByTelegramId(CLIENT)['id'];
+
+$referrals->bind($agentId, $clientId, 50000);
+
+$settings->set(Settings::REFERRAL_COMMISSION_PERCENT, (string) RATE);
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, (string) CAP);
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+
+// روش کمکی: یک خریدِ موفقِ تازه با مبلغ مشخص.
+$buy = static function (int $userId, int $price): int {
+    global $orders, $agencyPkgId;
+
+    $o = mkOrder($userId, [
+        'package_id'           => $agencyPkgId,
+        'code'                 => Str::orderCode('CM'),
+        'status'               => OrderRepository::STATUS_CREATED,
+        'price_toman'          => $price,
+        'original_price_toman' => $price,
+        'discount_toman'       => 0,
+    ]);
+
+    $orders->update((int) $o['id'], ['status' => OrderRepository::STATUS_PAID, 'paid_at' => time()]);
+
+    return (int) $o['id'];
+};
+
+/**
+ * اجرای کرون و برگرداندنِ آمارِ **همین معرف**.
+ *
+ * ⭐️ چرا به‌جای `payCommissions()` خام؟
+ *
+ * کرون روی **همهٔ** معرف‌ها کار می‌کند، و در این فایل بخش‌های قبلی هم معرفی و
+ * خریدِ موفق ساخته‌اند. پس شمارشِ سراسریِ `orders` به درِ کارِ این بخش بستگی
+ * دارد و تست را به بخش‌های قبلی قفل می‌کند.
+ *
+ * سنجیدنِ «این دعوتِ خاص چقدر کمیسیون دارد» هم دقیق‌تر است — همان قاعدهٔ
+ * کسب‌وکاری که می‌خواهیم بسنجیم — و از هر داده‌ای مستقل است.
+ *
+ * @return array{count:int, total:int}
+ */
+$commissionOf = static function (int $referrerId) use ($discounts, $referrals): array {
+    $discounts->payCommissions();
+
+    return $referrals->commissionStatsFor($referrerId);
+};
+
+// ---- خریدِ اول ⇒ فقط پاداشِ ثابت، نه کمیسیون -------------------
+$order1 = $buy($clientId, 1000000);
+
+$initial = $discounts->rewardReferrers();
+check('خریدِ اول پاداشِ ثابت داد', (int) $initial['rewarded'] === 1, json_encode($initial));
+
+$comm = $commissionOf($agentId);
+check('خریدِ اول کمیسیون نداد', (int) $comm['count'] === 0, json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('موجودی معرف = فقط پاداش اولیه', $users->walletBalance($agentId) === 50000,
+    (string) $users->walletBalance($agentId));
+
+// ---- خریدِ دوم ⇒ کمیسیونِ ۱۰٪ ---------------------------------
+$order2 = $buy($clientId, 500000);
+
+$comm = $commissionOf($agentId);
+check('خریدِ دوم کمیسیون گرفت', (int) $comm['count'] === 1, json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('مبلغ کمیسیون ۱۰٪ از ۵۰۰ هزار است', (int) $comm['total'] === 50000, json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('موجودی معرف = پاداش + کمیسیون', $users->walletBalance($agentId) === 100000,
+    (string) $users->walletBalance($agentId));
+
+// ---- خریدِ سوم و چهارم: تا سقف ---------------------------------
+$buy($clientId, 200000);   // ۲۰٬۰۰۰ کمیسیون ⇒ ۲ سفارشِ کمیسیونی
+$buy($clientId, 300000);   // ۳۰٬۰۰۰ کمیسیون ⇒ ۳ سفارش = سقف
+$comm = $commissionOf($agentId);
+check('دو خریدِ بعدی پرداخت شدند', (int) $comm['count'] === 3, json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('مجموع کمیسیون ۱۰۰ هزار است', (int) $comm['total'] === 100000, json_encode($comm, JSON_UNESCAPED_UNICODE));
+
+$buy($clientId, 900000);   // از سقف گذشته ⇒ نباید کمیسیون بگیرد
+$comm = $commissionOf($agentId);
+check('سفارشِ چهارم از سقف رد شد', (int) $comm['count'] === 3, json_encode($comm, JSON_UNESCAPED_UNICODE));
+
+$expectedWallet = 50000 + 50000 + 20000 + 30000;
+check('موجودی نهایی معرف دقیقاً درست است',
+    $users->walletBalance($agentId) === $expectedWallet,
+    sprintf('انتظار=%d واقع=%d', $expectedWallet, $users->walletBalance($agentId)));
+
+// ---- ۸.۳: idempotent — کرون نباید دوباره بدهد -----------------
+$before  = $users->walletBalance($agentId);
+$again   = $discounts->payCommissions();
+check('اجرای دوبارهٔ کرون هیچ کمیسیونی نمی‌دهد', (int) $again['orders'] === 0, json_encode($again));
+check('موجودی تغییر نکرد', $users->walletBalance($agentId) === $before);
+
+// ---- ۸.۴: ثبت در دفتر، نه فقط در کیف پول ------------------------
+$ledger = $db->all(
+    'SELECT order_id, base_toman, percent, amount_toman FROM referral_commissions WHERE referrer_user_id = ? ORDER BY id',
+    [$agentId]
+);
+check('دفتر: ۳ کمیسیون ثبت شده', count($ledger) === 3, (string) count($ledger));
+check('دفتر: مجموع درست است', (int) $referrals->commissionStatsFor($agentId)['total'] === 100000);
+
+$ledgerOrders = array_column($ledger, 'order_id');
+check('دفتر: خریدِ اول در دفتر نیست', !in_array($order1, $ledgerOrders, true),
+    implode(',', array_map('intval', $ledgerOrders)));
+check('دفتر: خریدِ دوم در دفتر هست', in_array($order2, $ledgerOrders, true));
+
+$mismatch = array_filter(
+    $ledger,
+    static fn (array $l): bool => (int) floor((int) $l['base_toman'] * (int) $l['percent'] / 100) !== (int) $l['amount_toman']
+);
+check('دفتر: هر مبلغ با درصدش می‌خواند', $mismatch === [], json_encode(array_values($mismatch), JSON_UNESCAPED_UNICODE));
+
+// ---- ۸.۵: سقف روی «کمیسیون‌های ثبت‌شده» است، نه روی همهٔ سفارش‌ها
+//
+// اگر سقف روی کلِ سفارش‌های دوست اعمال می‌شد، سفارش‌هایی که به‌خاطرِ پُر بودنِ
+// سقف رد شده بودند سهمِ سفارش‌های بعدی را می‌خوردند و سقف هرگز پر نمی‌شد.
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, '5');
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+
+$buy($clientId, 400000);
+$comm = $commissionOf($agentId);
+
+// ⭐️ یک‌بارها ۳ سفارش کمیسیون گرفته بودند و **دو** سفارشِ دیگر (۹۰۰٬۰۰۰ که از
+// سقف رد شده بود، و ۴۰۰٬۰۰۰ تازه) معطل مانده بودند. بالا بردن سقف هر دو را
+// آزاد می‌کند — نه فقط سفارشِ جدید. این رفتارِ درست و قابل پیش‌بینی است: سقف
+// یعنی «حداکثر N کمیسیون»، و اگر N بزرگ‌تر شد، آن‌هایی که به‌خاطرِ N کوچک‌تر
+// کنار گذاشته شده بودند هم واجدشرایط می‌شوند.
+check('بالا بردن سقف ⇒ هر دو سفارشِ معطل آزاد شدند', (int) $comm['count'] === 5,
+    json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('مبلغ کمیسیون ۲۳۰ هزار شد',
+    (int) $comm['total'] === 230000, json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('موجودی معرف با دفتر هم‌خوان است',
+    $users->walletBalance($agentId) === 50000 + (int) $comm['total'],
+    sprintf('کیف پول=%d دفتر=%d', $users->walletBalance($agentId), (int) $comm['total']));
+
+// ---- ۸.۶: کوچک کردنِ سقف، پرداخت‌های انجام‌شده را پس نمی‌گیرد ----
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, '1');
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+
+$buy($clientId, 999000);
+$comm = $commissionOf($agentId);
+
+// ⭐️ کم کردنِ سقف، کمیسیون‌های پرداخت‌شده را **پس نمی‌گیرد**. پس گرفتنِ
+// پول از کیف پولِ کاربر برای تغییرِ یک تنظیم، بدترین کاری است که سیستم
+// کمیسیون می‌تواند بکند.
+check('کوچک کردنِ سقف، چیزی را پس نگرفت', (int) $comm['count'] === 5,
+    json_encode($comm, JSON_UNESCAPED_UNICODE));
+check('سفارشِ جدید کمیسیون نگرفت', (int) $comm['total'] === 230000,
+    json_encode($comm, JSON_UNESCAPED_UNICODE));
+
+// ---- ۸.۷: مبنا، مبلغِ پرداخت‌شده است نه قیمتِ قبل از تخفیف ----
+$settings->set(Settings::REFERRAL_COMMISSION_PERCENT, '10');
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, '50');
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+
+$agent2  = 980111;
+$client2 = 980112;
+$users->upsertByTelegram($agent2, ['first_name' => 'Agent2']);
+$users->upsertByTelegram($client2, ['first_name' => 'Client2']);
+$a2 = (int) $users->findByTelegramId($agent2)['id'];
+$c2 = (int) $users->findByTelegramId($client2)['id'];
+$referrals->bind($a2, $c2, 50000);
+
+$buy($c2, 1000000);   // خرید اول ⇒ پاداش ثابت
+
+// خریدِ دوم با تخفیف: قیمتِ پایه ۱٬۰۰۰٬۰۰۰ ولی پرداخت‌شده ۸۰۰٬۰۰۰
+$discounted = mkOrder($c2, [
+    'package_id'           => $agencyPkgId,
+    'code'                 => Str::orderCode('CD'),
+    'status'               => OrderRepository::STATUS_CREATED,
+    'price_toman'          => 800000,
+    'original_price_toman' => 1000000,
+    'discount_toman'       => 200000,
+]);
+$orders->update((int) $discounted['id'], ['status' => OrderRepository::STATUS_PAID, 'paid_at' => time()]);
+
+$comm2 = $commissionOf($a2);
+
+// ⭐️ اگر مبنا `original_price_toman` بود، کمیسیون ۱۰۰٬۰۰۰ می‌شد — یعنی از
+// درآمدی که فروشگاه اصلاً نگرفته بود. این تست همان تفاوت را نگه می‌دارد.
+check('کمیسیون از مبلغِ پرداخت‌شده حساب می‌شود، نه قیمتِ پایه',
+    (int) $comm2['total'] === 80000, json_encode($comm2, JSON_UNESCAPED_UNICODE));
+check('خریدِ اولِ این معرف هم کمیسیون نگرفته بود',
+    (int) $comm2['count'] === 1, json_encode($comm2, JSON_UNESCAPED_UNICODE));
+
+// ---- ۸.۸: صفحه‌های کاربر این اعداد را نشان دهند ------------------
+freshBot();
+click(AGENT, 'referral.my');
+$page = lastText();
+
+check('صفحهٔ معرفی، کمیسیون را جدا نشان می‌دهد',
+    str_contains($page, 'کمیسیون فروش'), $page);
+check('درصد کمیسیون روی صفحه هست', str_contains($page, '۱۰'), $page);
+check('سقف کمیسیون روی صفحه هست', str_contains($page, 'خرید'), $page);
+check('کمیسیون جدا از پاداش اولیه برچسب خورد',
+    str_contains($page, 'پاداش اولیه') && str_contains($page, 'کمیسیون فروش'), $page);
+
+clearFlood();
+click(AGENT, 'referral.list');
+check('در فهرست، کمیسیون هر دوست آمد', str_contains(lastText(), 'کمیسیون'), lastText());
+
+// ---- ۸.۹: تنظیمات در مینی‌اپ قابل تغییر باشند ------------------
+$adminApi = apiFor(980099, 'Admin', $panel);
+$settingsList = $adminApi->handle('admin.settings', []);
+
+$keys = array_column($settingsList['items'] ?? [], 'key');
+check('مینی‌اپ: تنظیم درصد کمیسیون در فهرستِ تنظیمات هست',
+    in_array(Settings::REFERRAL_COMMISSION_PERCENT, $keys, true));
+check('مینی‌اپ: تنظیم سقف کمیسیون در فهرستِ تنظیمات هست',
+    in_array(Settings::REFERRAL_COMMISSION_MAX_ORDERS, $keys, true));
+
+$save = $adminApi->handle('admin.setting.save', [
+    'key'   => Settings::REFERRAL_COMMISSION_PERCENT,
+    'value' => '7',
+]);
+check('مینی‌اپ: ادمین می‌تواند درصد کمیسیون را عوض کند',
+    ($save['ok'] ?? false) === true, json_encode($save, JSON_UNESCAPED_UNICODE));
+check('مینی‌اپ: مقدار جدید واقعاً ذخیره شد',
+    (new Settings())->int(Settings::REFERRAL_COMMISSION_PERCENT, 0) === 7);
+
+$tooBig = $adminApi->handle('admin.setting.save', [
+    'key'   => Settings::REFERRAL_COMMISSION_PERCENT,
+    'value' => '5000',
+]);
+check('مینی‌اپ: درصدِ غیرمنطقی (>۱۰۰) رد شد', ($tooBig['ok'] ?? true) === false,
+    json_encode($tooBig, JSON_UNESCAPED_UNICODE));
+
+$capSave = $adminApi->handle('admin.setting.save', [
+    'key'   => Settings::REFERRAL_COMMISSION_MAX_ORDERS,
+    'value' => '2',
+]);
+check('مینی‌اپ: سقف کمیسیون هم ذخیره شد', ($capSave['ok'] ?? false) === true);
+check('مینی‌اپ: سقفِ غیرمنطقی (>۱۰۰۰) رد می‌شود',
+    ($adminApi->handle('admin.setting.save', [
+        'key' => Settings::REFERRAL_COMMISSION_MAX_ORDERS, 'value' => '99999',
+    ])['ok'] ?? true) === false);
+
+// ⭐️ تغییر تنظیم باید روی پولِ پرداخت‌شده اثر **معکوس** نداشته باشد.
+check('تغییر تنظیم، کمیسیونِ قبلاً پرداخت‌شده را تغییر نمی‌دهد',
+    (int) $referrals->commissionStatsFor($a2)['total'] === 80000,
+    (string) (int) $referrals->commissionStatsFor($a2)['total']);
+
+// ---- ۸.۱۰: صفحهٔ ادمین در ربات هم تنظیمات را نشان دهد -----------
+$commissionBefore = (new ReferralRepository())->commissionTotals();
+check('داشبورد ادمین، مجموع کمیسیونِ کل سیستم را می‌دهد',
+    (int) $commissionBefore['total'] > 0, json_encode($commissionBefore, JSON_UNESCAPED_UNICODE));
+
+// ---- ۸.۱۱: تاریخِ شروع ثبت شده و به ادمین گفته می‌شود ----------
+//
+// ⚠️ تنظیمات را **صریح** برمی‌گردانیم: بخش ۸.۹ عمداً درصد را روی ۷ گذاشت و
+// سقف را ۲. بدون برگرداندن، ادعای «۱۰٪» در ادامه یعنی تست دربارهٔ عددی که
+// در حال حاضر اصلاً برقرار نیست — سبز می‌شود ولی هیچ چیز را نمی‌سنجد.
+$settings->set(Settings::REFERRAL_COMMISSION_PERCENT, '10');
+$settings->set(Settings::REFERRAL_COMMISSION_MAX_ORDERS, '50');
+Settings::flush();
+$discounts = new DiscountService(settings: new Settings());
+
+$startedAt = $discounts->commissionStartedAt();
+check('لحظهٔ شروعِ کمیسیون ثبت شده', $startedAt > 0, (string) $startedAt);
+
+// ⭐️ کمیسیون فقط برای سفارش‌هایِ **بعد** از این لحظه است.
+//
+// بدون این، روشن کردنِ کمیسیون توسط ادمین یک پرداختِ یک‌باره و غیرمنتظره به
+// کیف پول ده‌ها معرف تبدیل می‌شد — رقمی که هیچ‌کس درخواستش نکرده و ممکن است
+// از کلِ سودِ ماهانه بیشتر باشد.
+$historyBefore = time();
+$dbx = \Pasargad\Support\Db::instance();
+
+// یک سفارشِ «قدیمی» برای یک معرفِ تازه می‌سازیم، ولی با زمانی که قبل از شروع
+// کمیسیون است.
+$oldAgent = 980121;
+$oldClient = 980122;
+$users->upsertByTelegram($oldAgent, ['first_name' => 'OldAgent']);
+$users->upsertByTelegram($oldClient, ['first_name' => 'OldClient']);
+$oa = (int) $users->findByTelegramId($oldAgent)['id'];
+$oc = (int) $users->findByTelegramId($oldClient)['id'];
+$referrals->bind($oa, $oc, 50000);
+
+$oldOrder = mkOrder($oc, [
+    'package_id' => $agencyPkgId,
+    'code' => Str::orderCode('OL'),
+    'status' => OrderRepository::STATUS_CREATED,
+    'price_toman' => 700000,
+    'original_price_toman' => 700000,
+    'discount_toman' => 0,
+]);
+// پرداختِ «دیروز»
+$orders->update((int) $oldOrder['id'], [
+    'status' => OrderRepository::STATUS_PAID,
+    'paid_at' => $startedAt - 86400,
+    'created_at' => $startedAt - 86400,
+]);
+
+$discounts->payCommissions();
+$oldComm = $referrals->commissionStatsFor($oa);
+check('سفارشِ پرداخت‌شده پیش از شروع کمیسیون، پول نمی‌گیرد',
+    (int) $oldComm['count'] === 0, json_encode($oldComm, JSON_UNESCAPED_UNICODE));
+
+// ولی سفارشِ **بعد** از آن، می‌گیرد.
+$newOrder = mkOrder($oc, [
+    'package_id' => $agencyPkgId,
+    'code' => Str::orderCode('NW'),
+    'status' => OrderRepository::STATUS_CREATED,
+    'price_toman' => 700000,
+    'original_price_toman' => 700000,
+    'discount_toman' => 0,
+]);
+$orders->update((int) $newOrder['id'], [
+    'status' => OrderRepository::STATUS_PAID,
+    'paid_at' => $historyBefore + 1,
+]);
+
+$discounts->payCommissions();
+$oldComm2 = $referrals->commissionStatsFor($oa);
+check('سفارشِ بعد از شروع، کمیسیون گرفت', (int) $oldComm2['count'] === 1,
+    json_encode($oldComm2, JSON_UNESCAPED_UNICODE));
+check('و مبلغش ۱۰٪ از ۷۰۰ هزار است', (int) $oldComm2['total'] === 70000,
+    json_encode($oldComm2, JSON_UNESCAPED_UNICODE));
+
+echo "\n";
+
+// ==================================================================
 echo "\n▶ بخش ۷) مینی‌اپ — همان مسیر، لایهٔ دوم\n";
 // ==================================================================
 
-$TOKEN = Config::str('bot_token');
-
 function makeInitData(int $userId, string $firstName): string
 {
-    global $TOKEN;
+    // ⭐️ توکن از Config خوانده می‌شود نه از یک متغیرِ سراسری: ترتیبِ بخش‌های
+    // فایل عوض شود و آن متغیر هنوز مقدار نگرفته باشد، `hash_hmac` با null
+    // می‌ترکد و **کلِ تست** می‌میرد — نه فقط یک assertion.
+    $token = Config::str('bot_token');
 
     $pairs = [
         'auth_date' => (string) time(),
@@ -839,7 +1213,7 @@ function makeInitData(int $userId, string $firstName): string
         $check[] = $k . '=' . $v;
     }
 
-    $secret = hash_hmac('sha256', $TOKEN, 'WebAppData', true);
+    $secret = hash_hmac('sha256', $token, 'WebAppData', true);
     $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), $secret);
 
     $query = [];
