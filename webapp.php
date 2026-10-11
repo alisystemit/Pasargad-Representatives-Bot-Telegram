@@ -105,10 +105,20 @@ if ($method === 'POST') {
         Logger::warning('WebApp auth failed', [
             'ip'      => $_SERVER['REMOTE_ADDR'] ?? '',
             'action'  => $action,
+            'reason'  => $init['reason'] ?? 'unknown',
             'message' => $init['message'],
+            'uri'     => (string) ($_SERVER['REQUEST_URI'] ?? ''),
+            'method'  => $method,
         ]);
 
-        $json(401, ['ok' => false, 'message' => $init['message'], 'auth' => false]);
+        // `reason` به کلاینت برمی‌گردد تا پشتیبانی بتواند از سمت کاربر بپرسد
+        // و دقیقاً بداند کدام شاخه را ببیند (لاگ سرور کامل است).
+        $json(401, [
+            'ok'      => false,
+            'message' => $init['message'],
+            'auth'    => false,
+            'reason'  => $init['reason'] ?? 'unknown',
+        ]);
     }
 
     try {
@@ -133,7 +143,18 @@ if ($method === 'POST') {
         $auth = $api->authenticate($init);
 
         if (!$auth['ok']) {
-            $json(403, ['ok' => false, 'message' => $auth['message'], 'auth' => false]);
+            Logger::warning('WebApp authenticate rejected', [
+                'ip'     => $_SERVER['REMOTE_ADDR'] ?? '',
+                'action' => $action,
+                'reason' => $auth['reason'] ?? 'unknown',
+            ]);
+
+            $json(403, [
+                'ok'      => false,
+                'message' => $auth['message'],
+                'auth'    => false,
+                'reason'  => $auth['reason'] ?? 'unknown',
+            ]);
         }
 
         unset($input['action']);

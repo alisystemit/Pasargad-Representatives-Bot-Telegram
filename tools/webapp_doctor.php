@@ -89,6 +89,10 @@ verdict(
 );
 
 say('     طول توکن: ' . strlen($trimmed) . ' کاراکتر');
+say('     اثرانگشت توکن: ' . Pasargad\WebApp\AuthDiagnostics::tokenFingerprint($trimmed));
+
+echo "\n     ℹ️ اثرانگشت را یادداشت کنید. اگر در لاگ سرور اثرانگشتِ دیگری\n";
+echo "        دیدید، یعنی سرور توکن دیگری دارد ⇒ مشکل از توکن است، نه از کد.\n";
 
 // ------------------------------------------------------------------
 echo "\n۲) آیا توکن واقعاً کار می‌کند؟ (تست رفت‌وبرگشتی)\n";
@@ -167,12 +171,19 @@ if ($https) {
 echo "\n۵) اگر باز هم خطا گرفتید\n";
 // ------------------------------------------------------------------
 
-echo "  • لاگ را ببینید — از این پیام خطا دقیقاً می‌فهمید چه شده:\n";
-echo "      tail -n 30 data/logs/" . date('Y-m-d') . ".log | grep -i 'initData\\|signature'\n";
-echo "  • اگر در لاگ دیدید 'hash mismatch' ⇒ توکن کانفیگ با رباتی که مینی‌اپ را\n";
-echo "    باز کرده یکی نیست.\n";
-echo "  • اگر دیدید 'web_app initData required' یا hash غایب بود ⇒ هدر\n";
-echo "    X-Telegram-Init-Data به سرور نمی‌رسد (فایروال/پروکسی/کش).\n";
+echo "  • لاگ را ببینید — هر شکست یک خط با `reason` و `fix` می‌نویسد:\n";
+echo "      grep 'webapp.auth' data/logs/" . date('Y-m-d') . ".log | tail -n 20\n\n";
+echo "    معنی reasonها:\n";
+echo "      no_header      ⇒ هدر X-Telegram-Init-Data به PHP نرسید (فایروال/پروکسی)\n";
+echo "      empty          ⇒ هدر رسید ولی خالی بود (اپ بیرون از تلگرام باز شده)\n";
+echo "      too_long       ⇒ initData بریده شده (سقف ۸۱۹۰ بایت آپاچی)\n";
+echo "      token_placeholder / token_format ⇒ مشکل از bot_token کانفیگ\n";
+echo "      no_hash / hash_format ⇒ امضا اصلاً نرسده یا بریده شده\n";
+echo "      hash_mismatch  ⇒ توکن کانفیگ با رباتی که مینی‌اپ را باز کرده یکی نیست\n";
+echo "                       (یا کد روی سرور با این کد فرق دارد)\n";
+echo "      expired        ⇒ initData قدیمی است؛ اپ را ببندید و دوباره باز کنید\n";
+echo "      unverified_call⇒ باگ در مسیر احراز هویت سرور\n";
+echo "\n  • اثرانگشت توکن را با لاگ مقایسه کنید (بالا چاپ شد).\n";
 echo "  • مطمئن شوید OPcache را بعد از آپلود ریست کرده‌اید.\n";
 
 echo "\n" . str_repeat('═', 66) . "\n";

@@ -203,11 +203,17 @@ final class Api
         // پارس‌نشده صدا بزند، بدون بررسی امضا رد می‌شود، نه اینکه بی‌صدا یک
         // کاربر جعلی بسازد.
         if (($init['ok'] ?? false) !== true) {
-            Logger::warning('authenticate() called with unverified initData', [
-                'data_keys' => array_keys($init),
+            Logger::warning('webapp.auth.unverified_call', [
+                'data_keys'   => array_keys($init),
+                'token'       => \Pasargad\WebApp\AuthDiagnostics::tokenFacts(),
+                'declared_ok' => $init['ok'] ?? null,
             ]);
 
-            return ['ok' => false, 'message' => 'امضای داده ورودی نامعتبر است.'];
+            return [
+                'ok'      => false,
+                'message' => 'امضای داده ورودی نامعتبر است.',
+                'reason'  => 'unverified_call',
+            ];
         }
 
         $user = (array) ($init['user'] ?? []);

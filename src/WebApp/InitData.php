@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Pasargad\WebApp;
 
 use Pasargad\Support\Config;
-use Pasargad\Support\Logger;
 
 /**
  * اعتبارسنجی `Telegram.WebApp.initData` و استخراج کاربر از آن.
@@ -58,39 +57,78 @@ final class InitData
         $none = [
             'ok'          => false,
             'message'     => 'دادهٔ ورودی تلگرام معتبر نیست.',
+            'reason'      => '',
             'user'        => [],
             'auth_date'   => 0,
             'start_param' => '',
             'query_id'    => '',
         ];
 
+        // سطح انتقال: هدر رسید؟ چقدر بود؟ چه هدرهایی دیده شد؟
+        $transport = AuthDiagnostics::transportFacts($_SERVER);
+
         $raw = trim((string) $raw);
 
         if ($raw === '' || strlen($raw) > self::MAX_LENGTH) {
-            return $none;
+            // ⚠️ دلیل را **یک‌بار** حساب می‌کنیم و همان را هم لاگ می‌کنیم و هم
+            // به کلاینت می‌فرستیم؛ قبلاً این دو مسیر جدا بودند و برای حالت
+            // «خیلی بلند» کدِ `empty` برمی‌گشت که گمراه‌کننده بود.
+            $why = match (true) {
+                $raw === '' && ! $transport['header_present'] => 'no_header',
+                $raw === ''                                    => 'empty',
+                default                                        => 'too_long',
+            };
+
+            AuthDiagnostics::logFailure($why, [
+                'transport' => $transport,
+                'max_length' => self::MAX_LENGTH,
+            ]);
+
+            return ['message' => 'دادهٔ ورودی تلگرام معتبر نیست.', 'reason' => $why] + $none;
         }
 
         // ⚠️ حتماً `trim` — و **همان مقدارِ trim‌شده** باید داخل HMAC هم استفاده شود.
-//
-// قبلاً فقط برای مقایسه با placeholder trim می‌شد ولی خودِ `$token` بدون
-// trim به HMAC می‌رفت. یک فاصله یا خط‌جدید انتهایی در `config.php` (که روی
-// ویندوز/لارگون با ادیتورهای متنی خیلی پیش می‌آید) باعث می‌شد امضا **همیشه**
-// نادرست شود و کل مینی‌اپ خطای «امضای دادهٔ ورودی نامعتبر است» بدهد —
-// در حالی که توکن کاملاً درست بود.
-$token = trim($botToken ?? Config::str('bot_token', ''));
+        //
+        // قبلاً فقط برای مقایسه با placeholder trim می‌شد ولی خودِ `$token` بدون
+        // trim به HMAC می‌رفت. یک فاصله یا خط‌جدید انتهایی در `config.php` باعث
+        // می‌شد امضا **همیشه** نادرست شود و کل مینی‌اپ خطای «امضای دادهٔ ورودی
+        // نامعتبر است» بدهد — در حالی که توکن کاملاً درست بود.
+        $token = trim($botToken ?? Config::str('bot_token', ''));
 
-if (in_array($token, self::PLACEHOLDER_TOKENS, true)) {
-    Logger::error('initData rejected: bot_token is not configured');
+        if (in_array($token, self::PLACEHOLDER_TOKENS, true)) {
+            AuthDiagnostics::logFailure('token_placeholder', ['transport' => $transport]);
 
-    return ['message' => 'سرویس موقتاً در دسترس نیست.'] + $none;
-}
+            return ['message' => 'سرویس موقتاً در دسترس نیست.', 'reason' => 'token_placeholder'] + $none;
+        }
+
+        if (!AuthDiagnostics::tokenLooksValid($token)) {
+            // ⚠️ این هشدار **مسیر را نمی‌شکند**. توکنِ درست هنوز می‌تواند از
+            // همین فیلتر رد شود؛ ولی اگر اینجا زنگ بخورد، عملاً علتِ خطای
+            // بعدی همین است.
+            AuthDiagnostics::logFailure('token_format', ['transport' => $transport]);
+        }
 
         $pairs = self::pairs($raw);
 
         $hash = (string) ($pairs['hash'] ?? '');
 
-        if ($hash === '' || preg_match('/^[a-f0-9]{64}$/i', $hash) !== 1) {
-            return ['message' => 'امضای دادهٔ ورودی وجود ندارد.'] + $none;
+        if ($hash === '') {
+            AuthDiagnostics::logFailure('no_hash', [
+                'transport' => $transport,
+                'keys'      => array_keys($pairs),
+            ]);
+
+            return ['message' => 'امضای دادهٔ ورودی وجود ندارد.', 'reason' => 'no_hash'] + $none;
+        }
+
+        if (preg_match('/^[a-f0-9]{64}$/i', $hash) !== 1) {
+            AuthDiagnostics::logFailure('hash_format', [
+                'transport' => $transport,
+                'hash_len'  => strlen($hash),
+                'keys'      => array_keys($pairs),
+            ]);
+
+            return ['message' => 'امضای دادهٔ ورودی وجود ندارد.', 'reason' => 'hash_format'] + $none;
         }
 
         // ------------------------------------------------------------------
@@ -114,20 +152,23 @@ if (in_array($token, self::PLACEHOLDER_TOKENS, true)) {
         $expect = hash_hmac('sha256', $checkString, $secret);
 
         if (!hash_equals($expect, strtolower($hash))) {
-            // پیام عمداً کلی است (چیزی به کاربر لو نمی‌دهد)، ولی **لاگ**
-            // جزئیات لازم را می‌نویسد تا از سرور بشود علت را تشخیص داد:
-            // معمولاً یعنی توکنِ کانفیگ با توکنِ همین ربات یکی نیست.
-            Logger::warning('initData signature mismatch', [
-                'ip'      => $_SERVER['REMOTE_ADDR'] ?? '',
-                'keys'    => array_keys($pairs),
-                'reason'  => 'hash mismatch — check that bot_token in config.php '
-                    . 'belongs to the same bot that opened the Mini App '
-                    . '(a trailing space/newline in config.php causes this too)',
-                'got'     => strtolower($hash),
-                'expect'  => $expect,
+            // لاگ تشخیصی کامل. هیچ‌چیز حساس لو نمی‌رود: توکن فقط به‌صورت
+            // اثرانگشت، و initData فقط به‌صورت «کلیدها + طول رشتهٔ امضا».
+            //
+            // `key_order` مهم‌ترین فیلد است: اگر ترتیب کلیدها با چیزی که
+            // تلگرام می‌فرستد فرق کند (مثلاً به‌خاطر دستکاری کاراکتر `+` در
+            // `urlencode`)، هش عوض می‌شود و ما از همین می‌فهمیم مشکل کجاست.
+            AuthDiagnostics::logFailure('hash_mismatch', [
+                'transport'  => $transport,
+                'keys'       => array_keys($pairs),
+                'key_order'  => array_keys($pairs),
+                'check_string_length' => strlen($checkString),
+                'has_signature_key'    => array_key_exists('signature', $pairs),
+                'received_hash' => substr(strtolower($hash), 0, 16),
+                'computed_hash' => substr($expect, 0, 16),
             ]);
 
-            return ['message' => 'امضای دادهٔ ورودی نامعتبر است.'] + $none;
+            return ['message' => 'امضای دادهٔ ورودی نامعتبر است.', 'reason' => 'hash_mismatch'] + $none;
         }
 
         // ------------------------------------------------------------------
@@ -136,13 +177,21 @@ if (in_array($token, self::PLACEHOLDER_TOKENS, true)) {
         $authDate = (int) ($pairs['auth_date'] ?? 0);
 
         if ($authDate <= 0) {
-            return ['message' => 'زمان ورودی نامعتبر است.'] + $none;
+            AuthDiagnostics::logFailure('bad_auth_date', ['transport' => $transport, 'keys' => array_keys($pairs)]);
+
+            return ['message' => 'زمان ورودی نامعتبر است.', 'reason' => 'bad_auth_date'] + $none;
         }
 
         $maxAge = $maxAge ?? self::DEFAULT_MAX_AGE;
 
         if ($maxAge > 0 && (time() - $authDate) > $maxAge) {
-            return ['message' => 'نشست شما منقضی شده است. لطفاً اپلیکیشن را ببندید و دوباره باز کنید.'] + $none;
+            AuthDiagnostics::logFailure('expired', [
+                'transport' => $transport,
+                'age_seconds' => time() - $authDate,
+                'max_age'     => $maxAge,
+            ]);
+
+            return ['message' => 'نشست شما منقضی شده است. لطفاً اپلیکیشن را ببندید و دوباره باز کنید.', 'reason' => 'expired'] + $none;
         }
 
         // ------------------------------------------------------------------
@@ -151,12 +200,20 @@ if (in_array($token, self::PLACEHOLDER_TOKENS, true)) {
         $user = json_decode((string) ($pairs['user'] ?? ''), true);
 
         if (!is_array($user) || (int) ($user['id'] ?? 0) <= 0) {
-            return ['message' => 'اطلاعات کاربر در دادهٔ ورودی یافت نشد.'] + $none;
+            AuthDiagnostics::logFailure('no_user', [
+                'transport' => $transport,
+                'user_json_length' => strlen((string) ($pairs['user'] ?? '')),
+            ]);
+
+            return ['message' => 'اطلاعات کاربر در دادهٔ ورودی یافت نشد.', 'reason' => 'no_user'] + $none;
         }
+
+        AuthDiagnostics::logSuccess(['user_id' => (int) $user['id']]);
 
         return [
             'ok'          => true,
             'message'     => '',
+            'reason'      => 'ok',
             'user'        => $user,
             'auth_date'   => $authDate,
             'start_param' => trim((string) ($pairs['start_param'] ?? '')),
