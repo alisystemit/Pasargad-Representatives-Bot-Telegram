@@ -188,17 +188,24 @@ echo "\n▶ ۴) initData کلاینت جدید تلگرام (همراه signatur
 // ------------------------------------------------------------------
 //
 // تلگرام ۸ به بعد کنار `hash`، فیلد `signature` (امضای Ed25519) را هم می‌فرستد.
-// طبق مستندات رسمی، `signature` هم باید از data-check-string **حذف** شود.
+// نکتهٔ مهم: در روش **HMAC با توکن ربات**، فقط `hash` از رشتهٔ امضا حذف
+// می‌شود و `signature` **جزو داده‌های امضاشده باقی می‌ماند** — دقیقاً مثل
+// پیاده‌سازی botsaz-faxima. حذفش هش را خراب می‌کند.
 //
-// کد قبلی آن را نگه می‌داشت و روی هر کلاینت جدید امضا همیشه نادرست می‌شد —
-// همان چیزی که کل Mini App را از کار انداخته بود.
+// کد قبلی `signature` را هم unset می‌کرد؛ نتیجه این بود که روی هر کلاینت
+// جدید تلگرام امضا هرگز نمی‌خواند.
 
 $sigRaw = static function (int $userId, string $token = TOKEN): string {
     $pairs = [
         'auth_date' => (string) time(),
         'query_id'  => 'AAHQ_newclient',
         'user'      => json_encode(['id' => $userId, 'first_name' => 'نو', 'username' => 'new'], JSON_UNESCAPED_UNICODE),
+        // مقدار ساختگی است؛ فقط «وجود داشتنش» مهم است.
+        'signature' => rtrim(strtr(base64_encode(hash('sha256', $token . $userId, true)), '+/', '-_'), '='),
     ];
+
+    // ⚠️ مرتب‌سازی باید **بعد** از افزودن signature انجام شود، چون تلگرام همهٔ
+    // فیلدها را با هم مرتب می‌کند (auth_date, query_id, signature, user).
     ksort($pairs, SORT_STRING);
 
     $check = [];
@@ -206,12 +213,7 @@ $sigRaw = static function (int $userId, string $token = TOKEN): string {
         $check[] = $k . '=' . $v;
     }
 
-    $checkString = implode("\n", $check);
-
-    // `signature` دقیقاً همان چیزی است که تلگرام برای اعتبارسنجی شخص‌ثالث
-    // می‌فرستد (base64url). اینجا مقدار ساختگی است؛ فقط «وجود داشتنش» مهم است.
-    $pairs['signature'] = rtrim(strtr(base64_encode(hash('sha256', $checkString, true)), '+/', '-_'), '=');
-    $pairs['hash']      = hash_hmac('sha256', $checkString, hash_hmac('sha256', $token, 'WebAppData', true));
+    $pairs['hash'] = hash_hmac('sha256', implode("\n", $check), hash_hmac('sha256', $token, 'WebAppData', true));
 
     $out = [];
     foreach ($pairs as $k => $v) {
