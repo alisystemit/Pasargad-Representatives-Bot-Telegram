@@ -22,6 +22,11 @@ $suites = [
     ['جریان‌های چندمرحله‌ای',  $root . '/tests/state_flow_test.php', false],
     ['ساختار کیبورد',         $root . '/tests/keyboard_test.php',   false],
     ['ناوبری و دکمه‌های مرده', $root . '/tests/navigation_test.php', false],
+    // این دو، تست‌های «ساختاری» هستند و جلوی دو دسته باگِ کاملاً بی‌صدا را
+    // می‌گیرند: دکمه‌ای که ساخته می‌شود ولی مسیریابی ندارد، و نوعی که در امضای
+    // یک متد به کلاسِ ناموجود اشاره می‌کند (که `php -l` آن را نمی‌بیند).
+    ['مسیریابی همهٔ دکمه‌ها',   $root . '/tests/routing_test.php',   false],
+    ['نوع‌های حل‌نشده',        $root . '/tests/types_test.php',     false],
     ['مایگریشن',               $root . '/tests/migrator_test.php',   false],
     ['پنل متصل و کلید API',     $root . '/tests/panel_access_test.php', false],
     ['تقسیم پیام بلند',       $root . '/tests/message_split_test.php', false],

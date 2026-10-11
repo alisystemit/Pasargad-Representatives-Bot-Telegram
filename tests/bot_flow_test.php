@@ -392,6 +392,69 @@ check('پنل دیگر دست‌نخورده ماند', (int) $firstAfter['data_
     'other=' . $firstAfter['data_limit']);
 
 // ------------------------------------------------------------------
+echo "\n▶ سناریؤ ارتقا: پنلِ قدیمی که فقط رمز دارد\n";
+// ------------------------------------------------------------------
+//
+// با حذف رمز، هر نمایندهٔ قبلی پنلی دارد که `api_key` ندارد. آن پنل دیگر
+// شارژ/آمار/قطع‌دسترسی نمی‌شود، ولی نباید بی‌صدا از کار بیفتد: باید دقیقاً
+// بگوید چه شده و چه کند.
+//
+// این سناریو برای **همهٔ** کاربرانِ فعلی رخ می‌دهد، پس باید صریح آزموده شود.
+
+$legacyUid = (int) $users->upsertByTelegram(6105, ['telegram_id' => 6105])['id'];
+
+$panel->addAdmin('legacy_rep', ['data_limit' => 50 * 1073741824, 'used_traffic' => 5 * 1073741824]);
+
+// ⚠️ دقیقاً وضعیتِ ردیفِ قدیمی: رمز دارد، کلید ندارد.
+$panels->create($legacyUid, 'legacy_rep', 'old-password', [
+    'panel_status' => PanelRepository::STATUS_ACTIVE,
+    'data_limit'   => 50 * 1073741824,
+    'login_url'    => 'https://legacy.example.com',
+]);
+
+$bot->reset();
+$kernel->handle(cb(6105, ['n' => 'panel.list']));
+$legacyListText = $bot->allText();
+
+check('پنل قدیمی در فهرست دیده می‌شود', str_contains($legacyListText, 'legacy_rep'), $legacyListText);
+check('به کاربر گفته می‌شود کلید ندارد', str_contains($legacyListText, 'کلید API ندارد'), $legacyListText);
+check('راه‌حل گفته می‌شود (ساخت کلید از داخل پنل)',
+    str_contains($legacyListText, 'API Keys'), $legacyListText);
+check('دکمهٔ وصل‌کردن کلید هست', $bot->hasButton('وصل کردن کلید'), $legacyListText);
+check('نگرانیِ مالی بی‌مورد ایجاد نمی‌شود',
+    str_contains($legacyListText, 'هیچ پولی از شما کسر نمی‌شود'), $legacyListText);
+
+// و مسیر شارژ هم باید **شفاف** شکست بخورد، نه مبهم.
+$legacyPanel = $panels->findByPanelUsername('legacy_rep');
+// و مسیر شارژ هم باید **شفاف** شکست بخورد، نه مبهم.
+//
+// ⚠️ `package_id` باید واقعی باشد: `orders.package_id` کلیدِ خارجی دارد و
+// `0` باعث خطای SQLite می‌شد — یعنی تست هرگز به مسیرِ موردنظر نمی‌رسید.
+$topupPkg = (new PackageRepository())->create([
+    'title' => 'شارژ ۱۰ گیگ', 'kind' => PackageRepository::KIND_TOPUP,
+    'volume_gb' => 10, 'duration_days' => 30, 'price_toman' => 100000, 'active' => 1,
+]);
+
+$legacyOrder = $orders->create($legacyUid, [
+    'package_id' => $topupPkg, 'package_title' => 'شارژ ۱۰ گیگ',
+    'kind' => PackageRepository::KIND_TOPUP,
+    'volume_gb' => 10.0, 'duration_days' => 30, 'price_toman' => 100000,
+    'panel_id'  => (int) $legacyPanel['id'],
+]);
+$orders->markPaid((int) $legacyOrder['id'], 'card2card', 'ref');
+
+$legacyTopup = $provisioner->provision($orders->find((int) $legacyOrder['id']));
+
+check('شارژ پنلِ بدون‌کلید ناموفق است', ($legacyTopup['ok'] ?? false) === false,
+    (string) ($legacyTopup['message'] ?? ''));
+check('پیامش می‌گوید کلید ندارد، نه «رمز اشتباه»',
+    str_contains((string) ($legacyTopup['message'] ?? ''), 'کلید API'),
+    (string) ($legacyTopup['message'] ?? ''));
+check('پنل باطل‌شده علامت نخورد',
+    (string) $panels->find((int) $legacyPanel['id'])['panel_status'] === PanelRepository::STATUS_ACTIVE,
+    'status=' . (string) $panels->find((int) $legacyPanel['id'])['panel_status']);
+
+// ------------------------------------------------------------------
 echo "\n▶ مرحلهٔ ۹: دسترسی کاربر دیگر به پنل و سفارش\n";
 // ------------------------------------------------------------------
 

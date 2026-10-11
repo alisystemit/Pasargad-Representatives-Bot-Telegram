@@ -225,6 +225,60 @@ final class OrderRepository
     }
 
     /**
+     * بازگرداندن یک سفارشِ «متوقف با دلیلِ قابل‌رفع» به صف اجرا.
+     *
+     * ⭐️ **چرا لازم است**
+     *
+     * `markTerminal()` برای خطاهایی مثل `permission_denied` هم استفاده
+     * می‌شود. ولی «نبودِ مجوز» چیزی نیست که برای همیشه بسته باشد: کلید درست
+     * می‌شود و همه‌چیز کار می‌کند.
+     *
+     * مشکل: `markApplying()` شرط `terminal_reason IS NULL` دارد و **هیچ مسیری
+     * آن را پاک نمی‌کرد**. یعنی سفارشِ متوقف‌شده با دلیلِ قابل‌رفع برای همیشه
+     * از کار افتاده بود — حتی با دکمهٔ «تلاش مجدد» ادمین. نتیجه: خریدار پول
+     * می‌داد، خطا گزارش می‌شد، و بسته هرگز اعمال نمی‌شد.
+     *
+     * فقط دلایلِ **قابل‌رفع** پاک می‌شوند. سفارشِ ردشده/لغوشده (که وضعیتش
+     * نهایی است) دست‌نخورده می‌ماند — پولِ برگشت‌خورده نباید دوباره بسته تولید
+     * کند، و همین شرط `isTerminal()` تضمینش می‌کند.
+     *
+     * @return bool آیا سفارش دوباره قابل اجرا شد؟
+     */
+    public function reopen(int $id): bool
+    {
+        $fixable = [
+            'permission_denied',
+            'auth_error',
+            'panel_unlinked',
+            'panel_missing',
+            'non_retryable',
+            'max_attempts',
+            'agency_not_configured',
+            'kind_retired',
+        ];
+
+        $row = $this->find($id);
+
+        if ($row === null || $this->isTerminal((string) ($row['status'] ?? ''))) {
+            return false;
+        }
+
+        if (!in_array((string) ($row['terminal_reason'] ?? ''), $fixable, true)) {
+            return false;
+        }
+
+        $this->db->update('orders', [
+            'terminal_reason' => null,
+            'next_attempt_at' => null,
+            'attempts'        => 0,
+            'status'          => self::STATUS_PAID,
+            'updated_at'      => time(),
+        ], ['id' => $id]);
+
+        return true;
+    }
+
+    /**
      * محاسبهٔ زمان تلاش مجدد بعدی (نمایی).
      */
     public function nextAttemptDelay(int $attempts): int

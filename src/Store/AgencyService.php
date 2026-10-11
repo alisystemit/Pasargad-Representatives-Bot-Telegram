@@ -164,7 +164,18 @@ final class AgencyService
     /**
      * ساخت کلید API برای ادمینِ تازه‌ساخته.
      *
-     * نام کلید محدود و قابل تشخیص است تا اگر مدیر پنل وارد پنل شد، بداند این
+     * ⭐️ **چرا `inherit_permissions = true`**
+     *
+     * کلید تازه **مجوزهای کلید سازنده را به ارث می‌برد**. یعنی اگر کلیدِ ربات
+     * `admins.update` نداشته باشد، کلیدِ پنل نمایندگی هم نخواهد داشت و **شارژ
+     * آن پنل برای همیشه ۴۰۳ می‌دهد** — یعنی خرید موفق، سرویس ناکارآمد.
+     *
+     * این آگاهانه انتخاب شده: دادن مجوزِ صریحِ بیشتر از آنچه کلیدِ سازنده دارد
+     * یا پنل رد می‌کند یا به ارتقای دسترسی تبدیل می‌شود که ناامن است. پس
+     * درست‌تر کار این است که کلیدِ سازنده کامل باشد — و دقیقاً برای همین
+     * `tools/panel_key_check.php` همهٔ مجوزهای لازم را می‌سنجد.
+     *
+     * نام کلید محدود و قابل‌تشخیص است تا اگر مدیر پنل وارد پنل شد، بداند این
      * کلید مال ربات است و بتواند باطلش کند.
      *
      * @return string کلید، یا رشتهٔ خالی اگر ساخته نشد
@@ -182,6 +193,7 @@ final class AgencyService
                 'name'                => 'pasargad-bot-' . $username,
                 'admin_id'            => $adminId,
                 'inherit_permissions' => true,
+                'note'                => 'ساخته‌شده توسط ربات پاسارگاد برای مدیریت خودکار',
             ], $parentKey);
 
             $key = trim((string) ($response['api_key'] ?? ''));
@@ -198,6 +210,9 @@ final class AgencyService
             Logger::info('Panel api key issued for new agency admin', [
                 'admin_id' => $adminId,
                 'username' => $username,
+                // یادآوری: مجوزها ارثی می‌رسند. اگر کلید سازنده ناقص باشد،
+                // شارژِ همین پنل بعداً ۴۰۳ می‌دهد.
+                'inherited_from_parent' => true,
             ]);
 
             return $key;
@@ -493,7 +508,32 @@ final class AgencyService
         // پنل ثبت می‌شود تا نمایش سقف و هشدار پر شدن ممکن باشد.
         $maxUsers = max(0, (int) ($order['max_users'] ?? 0));
 
-        $panels  = new PanelRepository();
+        $panels = new PanelRepository();
+
+        // ⚠️ در بازیابی، رمزِ این تلاش **تازه ساخته شده و روی پنل وجود ندارد**.
+        //
+        // رمز فقط موقع `createAdmin` ساخته می‌شود؛ اگر آن مرحله قبلاً موفق شده
+        // و تلاش بعدی به ۴۰۹ خورد، حساب روی پنل رمزِ **قبلی** را دارد. نوشتن
+        // رمز جدید روی ردیف یعنی: (۱) کاربر رمزی تحویل می‌گیرد که کار نمی‌کند،
+        // و (۲) رمزِ درست برای همیشه از بین می‌رود.
+        //
+        // این مسیر با حذف رمزِ ورودی مهم‌تر شد: ساخت کلید (`POST /api/api_key`)
+        // یک مرحلهٔ تازه و قابل‌شکست است، پس «ساخت شد ولی بعدش شکست خورد» به
+        // مسیری تکرارشونده تبدیل شده که هر بار رمز را خراب می‌کرد.
+        if ($recovered) {
+            $existing = $panels->findByPanelUsername($username);
+            $stored   = $existing === null ? '' : $panels->plainPassword($existing);
+
+            if ($stored !== '') {
+                $password = $stored;
+            } else {
+                Logger::warning('Recovered agency panel has no stored password', [
+                    'order_id' => (int) $order['id'],
+                    'username' => $username,
+                ]);
+            }
+        }
+
         $panelId = $panels->upsertFromPanel($userId, $username, $password, $admin, PanelRepository::SOURCE_BOT);
 
         $panels->update($panelId, [

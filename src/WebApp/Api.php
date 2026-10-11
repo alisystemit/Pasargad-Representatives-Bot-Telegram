@@ -2405,6 +2405,12 @@ final class Api
             return ['ok' => false, 'message' => 'این سفارش پرداخت‌شده نیست؛ اجرای آن یعنی بستهٔ رایگان.'];
         }
 
+        // مثل دکمهٔ «تلاش مجدد» ربات: سفارشِ متوقف با دلیلِ قابل‌رفع (نبودِ مجوز،
+        // کلیدِ نادرست) باید دوباره قابل اجرا شود، وگرنه این دکمه برای
+        // دقیقاً همان سفارش‌هایی که مشکلشان رفع شده بی‌اثر است.
+        $this->orders->reopen($orderId);
+        $order = $this->orders->find($orderId) ?? $order;
+
         $result = $this->provisioner->provision($order);
 
         if (!($result['ok'] ?? false)) {

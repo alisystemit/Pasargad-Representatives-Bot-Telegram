@@ -289,6 +289,16 @@ final class FakePanelClient extends PasarGuardClient
     public string $apiKeyForbiddenScope = 'admins.update';
 
     /**
+     * فقط `POST /api/api_key` را ۴۰۳ می‌کند، بقیهٔ عملیات سالم‌اند.
+     *
+     * جدا از `apiKeyForbidden` لازم است، چون خرید پنل نمایندگی را **بعد** از
+     * ساخت موفقِ ادمین می‌شکند. یعنی سناریوی «پنل نیمه‌ساخته» و مسیر بازیابی
+     * بدون این قابل تست نیست — و بازیابی دقیقاً جایی است که یک اشکال
+     * (رمز تازه‌ای که روی پنل وجود ندارد) به کاربر آسیب می‌زند.
+     */
+    public bool $apiKeyCreateForbidden = false;
+
+    /**
      * کلیدهای معتبر. خالی = هر کلیدی معتبر است.
      *
      * لازم است تا تست بتواند «کلید اشتباه» را واقعاً شبیه‌سازی کند؛ بدون آن
@@ -325,7 +335,10 @@ final class FakePanelClient extends PasarGuardClient
         if ($path === '/api/api_key' && $method === 'POST') {
             $this->loggedRequests[] = ['method' => 'createApiKey', 'path' => $path];
 
-            if ($this->apiKeyForbidden) {
+            // کلیدی که ادمین می‌سازد ولی کلید نمی‌سازد — یعنی `admins.create`
+            // دارد و `api_keys.create` ندارد. این حالت خرید را **بعد** از ساختِ
+            // ادمین می‌شکند، یعنی دقیقاً جایی که بازیابی لازم می‌شود.
+            if ($this->apiKeyForbidden || $this->apiKeyCreateForbidden) {
                 throw new PanelException('Permission denied: api_keys.create', 403);
             }
 
@@ -401,9 +414,19 @@ final class FakePanelClient extends PasarGuardClient
         }
 
         // اپراتور عادی فقط خودش را می‌بیند؛ اکانت sudo همه را. این تفاوت مهم
-        // است: مسیر «بازیابی پنل پس از خطای ذخیره» در AgencyService با **اکانت
-        // مالک** صدا زده می‌شود و باید بتواند ادمین دیگری را ببیند.
-        $isSudo = $this->ownerUsername !== '' && $username === $this->ownerUsername;
+        // است: مسیر «بازیابی پنل پس از خطای ذخیره» در AgencyService با **کلیدِ
+        // سازنده** صدا زده می‌شود و باید بتواند ادمینِ دیگری را ببیند.
+        //
+        // ⚠️ در مسیر کلید API، «sudo» از **نام کاربری** معلوم نمی‌شود. آنجا
+        // نام کاربری همیشه رشتهٔ یکسانِ `'api'` است و تصمیم با **مجوزِ کلید**
+        // گرفته می‌شود (`admins.read` روی ادمین‌های دیگر). پس با کلید، فهرست
+        // کامل برگردانده می‌شود.
+        //
+        // اگر این شرط را نمی‌گذاشتیم، بازیابیِ پنلِ نیمه‌ساخته همیشه ۴۰۴ می‌گرفت
+        // و مسیر شکستِ-و-بازیابی هرگز اجرا نمی‌شد — دقیقاً همان باگی که این
+        // تغییر باید جلویش را می‌گرفت.
+        $isSudo = $this->authScheme() === 'ApiKey'
+            || ($this->ownerUsername !== '' && $username === $this->ownerUsername);
 
         $all = array_values($this->admins);
 

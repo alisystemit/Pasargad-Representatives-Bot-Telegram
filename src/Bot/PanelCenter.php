@@ -16,6 +16,14 @@ use Pasargad\Store\TestConfigService;
 use Pasargad\Support\Str;
 use Pasargad\Telegram\BotApi;
 use Pasargad\Telegram\Keyboard;
+// ⚠️ این `use` حیاتی است.
+//
+// کلاسِ واقعی در فضای‌نام `Telegram` است. بدون این import، نامِ سادهٔ `Update`
+// داخل فضای‌نام `Bot` به `Pasargad\Bot\Update` تبدیل می‌شد — کلاسی که وجود
+// ندارد. نتیجه: PHP فقط هنگام **صدا زدن** متدها خطا می‌داد (نه هنگام لود فایل)،
+// پس کلاس بی‌صدا سالم به نظر می‌رسید و فقط سه دکمهٔ «حذف خودکارِ کانفیگ تست»
+// در محیط واقعی می‌مردند.
+use Pasargad\Telegram\Update;
 
 /**
  * صفحه‌های مربوط به پنل‌های نمایندگی.
@@ -119,15 +127,14 @@ final class PanelCenter
                 '',
                 'اگر از قبل پنل دارید و فقط می‌خواهید آن را به ربات وصل کنید، '
                     . 'از دکمهٔ «🔗 من پنل دارم» استفاده کنید! 🔌👇 '
-                    . 'اگر پنل روی دامنهٔ خودتان نصب است، «➕ اتصال پنل جدید» را بزنید '
-                    . 'تا آدرس پنل، نام کاربری و رمز (یا کلید API) را بپرسد. 🔑',
+                    . 'برای اتصال، فقط کلید API لازم است (از داخل پنل بسازید). 🔑',
             ]), [
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                     [
                         ['text' => '🛒 خرید پنل نمایندگی', 'data' => BotApi::encodeData('shop', ['kind' => 'agency'])],
                     ],
                     [['text' => '🔗 من پنل دارم', 'data' => BotApi::encodeData('panel.self')]],
-                    [['text' => '➕ اتصال پنل جدید (آدرس + رمز یا کلید API)', 'data' => BotApi::encodeData('panel.connect')]],
+                    [['text' => '➕ اتصال پنل با کلید API', 'data' => BotApi::encodeData('panel.connect')]],
                     Keyboard::back('menu'),
                 ])),
             ]);
@@ -140,6 +147,37 @@ final class PanelCenter
             '',
         ];
         $keyboard = [];
+
+        // ⭐️ پنل‌هایی که کلید ندارند، از این به بعد **هیچ‌کاری** برایشان انجام
+        // نمی‌شود: نه شارژ، نه آمار، نه قطع دسترسی.
+        //
+        // بدون این هشدار، نماینده می‌دید پنلش سالم است و بعد با پیام مبهمِ
+        // «اطلاعات ورود ذخیره نشده» روبه‌رو می‌شد و نمی‌فهمید باید چه کند. با
+        // حذف رمز، این وضعیت برای همهٔ نمایندگانِ قبلی به وجود می‌آید، پس باید
+        // **پیشاپیش و روشن** گفته شود.
+        $withoutKey = array_values(array_filter(
+            $panels,
+            static fn (array $p): bool => !PanelAccess::isApiKey($p)
+        ));
+
+        if ($withoutKey !== []) {
+            $lines[] = '⚠️ <b>نیاز به اقدام شما</b>';
+            $lines[] = '';
+            $lines[] = Str::faNumber(count($withoutKey)) . ' پنل شما هنوز کلید API ندارد، '
+                . 'برای همین ربات دیگر نمی‌تواند آن را شارژ یا بروزرسانی کند.';
+            $lines[] = '';
+            $lines[] = '🔑 ساخت کلید: داخل پنل ← تنظیمات ← API Keys ← کلید جدید';
+            $lines[] = 'سپس دکمهٔ زیر را بزنید و کلید را بفرستید.';
+            $lines[] = '';
+            $lines[] = 'تا آن زمان هیچ پولی از شما کسر نمی‌شود و حجم شما سرِ جایش می‌ماند.';
+            $lines[] = '';
+
+            $keyboard[] = [[
+                'text' => '🔑 وصل کردن کلید ' . Str::faNumber(count($withoutKey)) . ' پنل',
+                'data' => BotApi::encodeData('panel.self'),
+            ]];
+            $lines[] = '';
+        }
 
         foreach ($panels as $panel) {
             $limit = (int) $panel['data_limit'];

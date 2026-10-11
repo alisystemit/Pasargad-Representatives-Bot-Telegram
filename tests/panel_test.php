@@ -20,6 +20,7 @@ require_once __DIR__ . '/FakeBotApi.php';
 
 use Pasargad\Panel\FakePanelClient;
 use Pasargad\Store\OrderRepository;
+use Pasargad\Store\PanelAccess;
 use Pasargad\Store\PackageRepository;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Store\Provisioner;
@@ -273,6 +274,136 @@ check('پیام به پشتیبانی ارجاع می‌دهد', str_contains((s
 check('سفارش پایانی شد', $orders2->find((int) $legacyOrder['id'])['terminal_reason'] !== null);
 
 // ==================================================================
+echo "\n▶ بازیابی پنلِ نیمه‌ساخته — رمزِ تحویلی باید کار کند\n";
+// ==================================================================
+//
+// سناریوی واقعی و تکرارشونده: ادمین روی پنل ساخته شد، ولی مرحلهٔ بعد —
+// ساخت کلید — ۴۰۳ گرفت (کلید سازنده `api_keys.create` ندارد). تلاش مجدد به
+// ۴۰۹ می‌خورد و `AgencyService` حساب موجود را بازیابی می‌کند.
+//
+// خطر: هر تلاش یک رمزِ تازه می‌سازد. اگر رمز تازه روی ردیف نوشته شود، کاربر
+// رمزی تحویل می‌گیرد که **روی پنل وجود ندارد** و رمز درست برای همیشه پاک
+// می‌شود — یعنی خریدِ موفق‌نما با حسابی که کار نمی‌کند.
+
+$recUser = (int) $users->upsertByTelegram(777001, ['telegram_id' => 777001])['id'];
+$recPkg  = $packages->find($agencyPkgId);
+
+$countBeforeRecovery = $panels->countAll();
+
+$recOrder = $orders->create($recUser, [
+    'package_id'    => (int) $recPkg['id'],
+    'package_title' => (string) $recPkg['title'],
+    'kind'          => (string) $recPkg['kind'],
+    'volume_gb'     => (float) $recPkg['volume_gb'],
+    'duration_days' => (int) $recPkg['duration_days'],
+    'price_toman'   => (int) $recPkg['price_toman'],
+]);
+$orders->markPaid((int) $recOrder['id'], 'card2card', 'ref');
+$recOrder = $orders->find((int) $recOrder['id']);
+$recId    = (int) $recOrder['id'];
+$recUser2 = 'rep' . $recId;
+
+// ---- تلاش اول: ادمین ساخته می‌شود، ساخت کلید ۴۰۳ می‌گیرد ----
+$panel->apiKeyCreateForbidden = true;
+
+$attempt1 = $provisioner->provision($orders->find($recId));
+
+check('تلاش اول ناموفق بود', ($attempt1['ok'] ?? false) === false, (string) ($attempt1['message'] ?? ''));
+check('ادمین روی پنل ساخته شد', isset($panel->admins[$recUser2]), 'user=' . $recUser2);
+check('سفارش «اعمال‌شده» علامت نخورد', (int) $orders->find($recId)['panel_applied'] === 0,
+    'panel_applied=' . (int) $orders->find($recId)['panel_applied']);
+
+// رمزی که تلاش اول روی پنل گذاشت — مرجع حقیقت.
+$panelPassword = (string) ($panel->admins[$recUser2]['password'] ?? '');
+check('تلاش اول روی پنل رمز گذاشت', $panelPassword !== '', 'panel_pw=EMPTY');
+
+$rowAfterFail = $panels->findByPanelUsername($recUser2);
+check('ردیف محلی هم همان رمز را دارد',
+    $rowAfterFail !== null && $panels->plainPassword($rowAfterFail) === $panelPassword,
+    'local=' . ($rowAfterFail === null ? 'NULL' : $panels->plainPassword($rowAfterFail)));
+
+// ---- تلاش دوم: کلید ساخته می‌شود، ادمین بازیابی می‌شود ----
+//
+// اینجا از مسیرِ واقعیِ «تلاش مجددِ مدیر» می‌رویم، چون سفارش بعد از ۴۰۳
+// `terminal_reason` می‌گیرد و `markApplying()` بدون پاک‌شدنِ آن رد می‌کند.
+$panel->apiKeyCreateForbidden = false;
+
+check('۴۰۳ سفارش را پایانی کرد', ($orders->find($recId)['terminal_reason'] ?? '') === 'permission_denied',
+    'reason=' . var_export($orders->find($recId)['terminal_reason'] ?? null, true));
+
+$reopened = $orders->reopen($recId);
+check('سفارشِ متوقف دوباره قابل اجرا شد', $reopened, 'reason=' . var_export($orders->find($recId)['terminal_reason'] ?? null, true));
+
+$attempt2 = $provisioner->provision($orders->find($recId));
+
+check('تلاش دوم موفق بود', ($attempt2['ok'] ?? false) === true, (string) ($attempt2['message'] ?? ''));
+check('بازیابی انجام شد', str_contains((string) ($attempt2['message'] ?? ''), 'بازیابی'),
+    (string) ($attempt2['message'] ?? ''));
+check('ادمین دومی ساخته نشد', count($panel->createdAdmins) >= 2
+    && (string) ($panel->createdAdmins[count($panel->createdAdmins) - 1]['username'] ?? '') === $recUser2,
+    'admins_created=' . count($panel->createdAdmins));
+
+$recRow       = $panels->findByPanelUsername($recUser2);
+$storedPw     = $panels->plainPassword($recRow);
+$deliveredPw  = (string) ($attempt2['details']['panel_password'] ?? '');
+
+check('رمزِ ذخیره‌شده همان رمزِ روی پنل است', $storedPw === $panelPassword,
+    'stored=' . $storedPw . ' panel=' . $panelPassword);
+check('رمزِ تحویلی به کاربر هم همان است', $deliveredPw === $panelPassword,
+    'delivered=' . $deliveredPw . ' panel=' . $panelPassword);
+check('برای پنل بازیابی‌شده هم کلید صادر شد', PanelAccess::isApiKey((array) $recRow),
+    'api_key=' . var_export($recRow['api_key'] ?? null, true));
+
+// ==================================================================
+echo "\n▶ بازگشایی سفارش — پولِ برگشت‌خورده نباید بسته تولید کند\n";
+// ==================================================================
+//
+// `reopen()` جدید است و باید کنترل شود: اگر دلیلِ پایانیِ مالی را هم پاک کند، یک
+// سفارشِ لغوشده دوباره اجرا می‌شود و بازیگر می‌تواند پول را پس بگیرد **و** حجم
+// را هم بگیرد.
+
+$guardUser = (int) $users->upsertByTelegram(777002, ['telegram_id' => 777002])['id'];
+
+// الف) دلیلِ قابل‌رفع ⇒ باز می‌شود
+$gOrder = $orders->create($guardUser, [
+    'package_id' => (int) $recPkg['id'], 'package_title' => (string) $recPkg['title'],
+    'kind' => (string) $recPkg['kind'], 'volume_gb' => 5.0, 'duration_days' => 30,
+    'price_toman' => 100000,
+]);
+$orders->markPaid((int) $gOrder['id'], 'card2card', 'ref');
+$orders->markTerminal((int) $gOrder['id'], OrderRepository::STATUS_FAILED, 'permission_denied', 'تست');
+
+check('سفارشِ «permission_denied» باز می‌شود', $orders->reopen((int) $gOrder['id']) === true);
+check(
+    'و دلیلِ پایانی پاک شد',
+    array_key_exists('terminal_reason', $orders->find((int) $gOrder['id']))
+        && $orders->find((int) $gOrder['id'])['terminal_reason'] === null,
+    'reason=' . var_export($orders->find((int) $gOrder['id'])['terminal_reason'] ?? 'MISSING', true)
+);
+
+// ب) دلیلِ مالی ⇒ هرگز باز نمی‌شود
+foreach ([
+    [OrderRepository::STATUS_REJECTED, 'rejected_by_admin'],
+    [OrderRepository::STATUS_CANCELLED, 'user_cancelled'],
+    [OrderRepository::STATUS_REFUNDED, 'refunded'],
+] as [$status, $reason]) {
+    $rOrder = $orders->create($guardUser, [
+        'package_id' => (int) $recPkg['id'], 'package_title' => (string) $recPkg['title'],
+        'kind' => (string) $recPkg['kind'], 'volume_gb' => 5.0, 'duration_days' => 30,
+        'price_toman' => 100000,
+    ]);
+    $orders->markPaid((int) $rOrder['id'], 'card2card', 'ref');
+    $orders->markTerminal((int) $rOrder['id'], $status, $reason, 'تست');
+
+    check("سفارشِ «{$status}» باز نمی‌شود", $orders->reopen((int) $rOrder['id']) === false);
+    check("دلیلِ «{$status}» سرِ جایش ماند",
+        ($orders->find((int) $rOrder['id'])['terminal_reason'] ?? '') === $reason);
+}
+
+// پ) سفارشِ ناموجود
+check('سفارشِ ناموجود باز نمی‌شود', $orders->reopen(99999999) === false);
+
+// ==================================================================
 echo "\n▶ نرمال‌سازی نام نوع بسته\n";
 // ==================================================================
 
@@ -301,7 +432,10 @@ check('برچسب پنل منقضی درست است',
 echo "\n▶ آمار و فهرست‌ها\n";
 // ==================================================================
 
-check('شمارش کل پنل‌ها', $panels->countAll() === 2, 'count=' . $panels->countAll());
+// ⚠️ نسبت به قبلِ بخش بازیابی سنجیده می‌شود، چون آن بخش یک پنلِ دیگر می‌سازد
+// و عددِ مطلق گمراه‌کننده می‌شد.
+check('شمارش کل پنل‌ها', $panels->countAll() === $countBeforeRecovery + 1,
+    'count=' . $panels->countAll() . ' baseline=' . $countBeforeRecovery);
 check('فهرست کاربر ۲ پنل دارد', count($panels->listByUser($uid)) === 2);
 check('پنل‌های فعال کاربر هر دو هستند', count($panels->listActiveByUser($uid)) === 2);
 check('کاربر نماینده است', $panels->isRepresentative($uid));

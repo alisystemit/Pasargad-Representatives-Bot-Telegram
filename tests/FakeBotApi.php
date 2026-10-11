@@ -84,6 +84,35 @@ final class FakeBotApi extends BotApi
         return ['ok' => true, 'result' => ['message_id' => count($this->sentPhotos)]];
     }
 
+    /**
+     * ارسال سند (بکاپ، رسید، فایل کانفیگ).
+     *
+     * ⭐️ بازنویسی **لازم** است، وگرنه مسیر «⚡️📦 بکاپ همون لحظه» در تست‌ها
+     * می‌مرد.
+     *
+     * نسخهٔ واقعی مستقیم به `$this->token` دست می‌زند (برای ساخت URL) و فیک
+     * اصلاً توکنی ندارد ⇒ خطای «must not be accessed before initialization».
+     * این خطا شبیهٔ یک باگِ محصول به نظر می‌رسید، ولی در محیط واقعی توکن
+     * تنظیم است و بکاپ درست کار می‌کند — یعنی تست، قابلیتی سالم را
+     * «خراب» گزارش می‌کرد.
+     *
+     * @return array<string, mixed>
+     */
+    public function sendDocument(int $chatId, string $filePath, string $caption = '', array $keyboard = []): array
+    {
+        $this->sentDocuments[] = [
+            'chat_id' => $chatId,
+            'path'    => $filePath,
+            'caption' => $caption,
+            'exists'  => is_file($filePath),
+        ];
+
+        return ['ok' => true, 'result' => ['message_id' => count($this->sentDocuments)]];
+    }
+
+    /** @var array<int, array<string, mixed>> اسناد ارسال‌شده */
+    public array $sentDocuments = [];
+
     public function call(string $method, array $params = []): array
     {
         if ($method === 'answerCallbackQuery') {

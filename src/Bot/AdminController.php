@@ -416,7 +416,7 @@ final class AdminController
                 break;
 
             case 'admin.panel.transfer.execute':
-                $this->executeTransferOwnership($chatId, (int) ($data['id'] ?? 0));
+                $this->askTransferOwnership($chatId, (int) $update->userId(), (int) ($data['id'] ?? 0));
                 break;
 
             // ---------------- لاگ حسابرسی ----------------
@@ -1429,6 +1429,15 @@ final class AdminController
             $this->showOrder($chatId, $orderId);
             return;
         }
+
+        // ⭐️ تلاش دستیِ مدیر باید سفارشِ متوقف‌شده را هم دوباره قابل اجرا کند.
+//
+// بدون این، `provision()` بی‌صدا «این سفارش قابل اجرا نیست» برمی‌گرداند چون
+// `terminal_reason` هنوز پر است — یعنی دکمهٔ «تلاش مجدد» روی سفارشی که به
+// دلیلِ قابل‌رفع (نبودِ مجوز، کلیدِ نادرست) متوقف شده، **هیچ کاری نمی‌کرد**.
+// خریدار پول می‌داد و سفارش برای همیشه از کار می‌افتاد.
+        $this->orders->reopen($orderId);
+        $order = $this->orders->find($orderId) ?? $order;
 
         $this->bot->sendMessage($chatId, '⏳⚙️ در حال اجرای بسته روی پنل... 🔄');
 
@@ -3618,7 +3627,23 @@ final class AdminController
         ]);
     }
 
-    private function executeTransferOwnership(int $chatId, int $panelId): void
+    /**
+     * مرحلهٔ اول انتقال مالکیت: پرسیدنِ کاربرِ مقصد.
+     *
+     * ⭐️ **چرا این بازطراحی شد**
+     *
+     * نسخهٔ قبلی یک قابلیتِ نیمه‌کاره بود: پنل را به `user_id = 0` می‌داد و در
+     * کامنت می‌نوشت «for demo». ولی `panels.user_id` کلیدِ خارجی به `users.id`
+     * دارد، پس آن UPDATE با خطای SQLite می‌مرد و مدیر فقط «⚠️ خطایی رخ داد»
+     * می‌گرفت — یعنی دکمهٔ «🔄 انتقال» **در محیط واقعی هم هیچ‌وقت کار نمی‌کرد**.
+     *
+     * و بدتر: اگر کلیدِ خارجی نبود، پنل یتیم می‌شد؛ نه خودش را در
+     * «پنل‌های من» می‌دید و نه مدیر می‌توانست برگرداندش.
+     *
+     * حالا کاربرِ مقصد واقعاً پرسیده و **اعتبارسنجی** می‌شود، پس چنین
+     * پنلی ساخته نمی‌شود.
+     */
+    private function askTransferOwnership(int $chatId, int $telegramId, int $panelId): void
     {
         $panel = $this->panels->find($panelId);
 
@@ -3627,16 +3652,100 @@ final class AdminController
             return;
         }
 
-        // For demo, transfer to a dummy user id 0 — in real use, ask admin for new owner id.
-        $this->panels->update($panelId, [
-            'original_user_id' => (int) $panel['user_id'],
-            'user_id'          => 0,
+        $owner = $this->users->findById((int) $panel['user_id']);
+
+        $this->sessions->set($telegramId, [
+            'step'     => 'admin_panel_transfer',
+            'panel_id' => $panelId,
         ]);
 
-        $this->logAdminAction($chatId, 'transfer_ownership', 'panel', $panelId, 'انتقال به کاربر ناشناس');
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '🔄✨ <b>انتقال مالکیت پنل</b>',
+            '',
+            'پنل: <code>' . Str::escape((string) $panel['panel_username']) . '</code>',
+            'مالک فعلی: ' . ($owner === null
+                ? '<code>#' . (int) $panel['user_id'] . '</code>'
+                : Str::escape((string) ($owner['first_name'] ?? ''))
+                    . ' • <code>' . (int) $owner['telegram_id'] . '</code>'),
+            '',
+            '👤 <b>آیدی عددی تلگرامِ کاربرِ جدید را بفرستید</b>',
+            '',
+            '⚠️ پنل، حجم، مدت و آمارش به آن کاربر منتقل می‌شود و مالک قبلی',
+            'دسترسی‌اش را از دست می‌دهد.',
+            'اگر کاربر تا حالا به ربات پیام نداده، ابتدا باید یک‌بار بدهد.',
+            '',
+            '❌ برای لغو: /cancel',
+        ]), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back('admin.panels', '🔙 بازگشت به پنل‌ها'),
+            ])),
+        ]);
+    }
 
-        $this->bot->sendMessage($chatId, '✅ مالکیت پنل منتقل شد.');
-        $this->showHome($chatId);
+    /**
+     * مرحلهٔ دوم: کاربرِ مقصد را گرفت؛ اعتبارسنجی و اعمال.
+     */
+    public function saveTransferOwnership(int $chatId, int $telegramId, string $text): void
+    {
+        $digits = preg_replace('/\D+/', '', Str::toEnglishDigits(trim($text))) ?? '';
+
+        if ($digits === '') {
+            $this->bot->sendMessage($chatId, '⚠️ آیدی عددی معتبر بفرستید، یا /cancel.');
+            return;
+        }
+
+        $target = $this->users->findByTelegramId((int) $digits);
+
+        if ($target === null) {
+            $this->sessions->clear($telegramId);
+
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '❌ کاربری با آیدی <code>' . $digits . '</code> پیدا نشد.',
+                '',
+                'کاربر باید حداقل یک‌بار به ربات پیام بدهد تا ثبت شود.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    Keyboard::back('admin.panels', '🔙 بازگشت به پنل‌ها'),
+                ])),
+            ]);
+
+            return;
+        }
+
+        $panelId = (int) ($this->sessions->get($telegramId)['panel_id'] ?? 0);
+        $panel   = $this->panels->find($panelId);
+
+        if ($panel === null) {
+            $this->sessions->clear($telegramId);
+            $this->bot->sendMessage($chatId, Text::notFound());
+            return;
+        }
+
+        if ((int) $target['id'] === (int) $panel['user_id']) {
+            $this->sessions->clear($telegramId);
+            $this->bot->sendMessage($chatId, 'ℹ️ این پنل هم‌اکنون متعلق به همین کاربر است.');
+            return;
+        }
+
+        $this->panels->update($panelId, [
+            'original_user_id' => (int) $panel['user_id'],
+            'user_id'          => (int) $target['id'],
+        ]);
+
+        $this->logAdminAction($chatId, 'transfer_ownership', 'panel', $panelId,
+            'انتقال به #' . (int) $target['telegram_id']);
+
+        $this->notifier->notifyUser((int) $target['telegram_id'],
+            "🔄 یک پنل نمایندگی به شما منتقل شد.\n\n"
+            . 'پنل: <code>' . Str::escape((string) $panel['panel_username']) . '</code>');
+
+        $this->sessions->clear($telegramId);
+
+        $this->bot->sendMessage($chatId, '✅ مالکیت پنل منتقل شد.', [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back('admin.panels', '🧾 بازگشت به پنل‌ها'),
+            ])),
+        ]);
     }
 
     // ------------------------------------------------------------------

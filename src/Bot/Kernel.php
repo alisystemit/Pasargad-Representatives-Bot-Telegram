@@ -502,6 +502,7 @@ final class Kernel
         'admin_text',
         'admin_wallet',
         'admin_testconfig',
+        'admin_panel_transfer',
     ];
 
     private function handleChannelGate(Update $update, int $chatId): void
@@ -751,6 +752,28 @@ final class Kernel
 
             $this->sessions->clear($telegramId);
             $this->adminController()->saveTestConfig($chatId, $field, $update->text());
+            return;
+        }
+
+        // انتقال مالکیت پنل: مرحلهٔ دوم (کاربرِ مقصد).
+        //
+        // دکمهٔ «🔄 انتقال» قبلاً پنل را به `user_id = 0` می‌داد که با کلیدِ
+        // خارجی می‌مرد و پنل یتیم می‌شد. حالا کاربرِ مقصد پرسیده و اعتبارسنجی
+        // می‌شود، پس این مرحله حیاتی است.
+        if ($isAdmin && ($state['step'] ?? '') === 'admin_panel_transfer') {
+            if ($update->command() === 'cancel' || $update->command() === 'start') {
+                $this->sessions->clear($telegramId);
+                $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                return;
+            }
+
+            if ($text === '') {
+                $this->bot->sendMessage($chatId, '⚠️ آیدی عددی را بفرستید، یا /cancel را بزنید.');
+                return;
+            }
+
+            $this->sessions->clear($telegramId);
+            $this->adminController()->saveTransferOwnership($chatId, $telegramId, $update->text());
             return;
         }
 
@@ -1740,7 +1763,14 @@ final class Kernel
         // توجه: دکمه‌های این کلاس `data` خام دارند (نه JSON)، پس `$ns` از
         // همان رشتهٔ خام پر می‌شود.
 
-        if ($ns === 'profile:menu') {
+        // ⚠️ هر دو شکل پذیرفته می‌شود.
+        //
+        // دکمه‌هایی که `UserProfile` می‌سازد `data` خام دارند (مثلاً
+        // `profile:menu`)، ولی دو جا در کد با نقطه ساخته شده‌اند
+        // (`UserSettings` و منوی اصلی). چون نقطه با دونقطه اشتباه گرفته می‌شد،
+        // کلیک روی «👤 پروفایل من» به «این گزینه در دسترس نیست» می‌رسید.
+        // پذیرفتن هر دو، این کلاسِ درگیرِ دوگانه را هم بی‌خطر می‌کند.
+        if ($ns === 'profile:menu' || $ns === 'profile.menu') {
             $this->bot->answerCallback($callbackId);
             $this->userProfile()->showMenu($chatId, (int) $update->userId());
             return;
