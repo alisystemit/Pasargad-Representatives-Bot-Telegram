@@ -113,7 +113,7 @@ final class AdminController
 
             // ---------------- پنل‌های نمایندگی ----------------
             case 'admin.panels':
-                $this->showPanels($chatId, (int) ($data['page'] ?? 0), (string) ($data['q'] ?? ''));
+                $this->showPanels($chatId, $this->pageFrom($data), (string) ($data['q'] ?? ''));
                 break;
 
             case 'admin.panel.view':
@@ -134,11 +134,11 @@ final class AdminController
 
             // ---------------- بسته‌ها ----------------
             case 'admin.packages':
-                $this->showPackages($chatId, (int) ($data['page'] ?? 0), false);
+                $this->showPackages($chatId, $this->pageFrom($data), false);
                 break;
 
             case 'admin.packages.active':
-                $this->showPackages($chatId, (int) ($data['page'] ?? 0), true);
+                $this->showPackages($chatId, $this->pageFrom($data), true);
                 break;
 
             case 'admin.pkg.view':
@@ -163,7 +163,7 @@ final class AdminController
 
             // ---------------- سفارش‌ها ----------------
             case 'admin.orders':
-                $this->showOrders($chatId, (int) ($data['page'] ?? 0), (string) ($data['status'] ?? ''));
+                $this->showOrders($chatId, $this->pageFrom($data), (string) ($data['status'] ?? ''));
                 break;
 
             case 'admin.order.view':
@@ -180,7 +180,7 @@ final class AdminController
 
             // ---------------- کاربران ----------------
             case 'admin.users':
-                $this->showUsers($chatId, (int) ($data['page'] ?? 0), (string) ($data['q'] ?? ''));
+                $this->showUsers($chatId, $this->pageFrom($data), (string) ($data['q'] ?? ''));
                 break;
 
             case 'admin.user.view':
@@ -3190,6 +3190,36 @@ final class AdminController
      *
      * @return array<string, array{label:string, key:string, min:int, max:int, hint:string}>
      */
+    /**
+     * خواندنِ شمارهٔ صفحه از `callback_data` — به‌صورتِ **محدود**.
+     *
+     * ⚠️ دلیلش یک کرشِ واقعی است: `(int)` روی رشتهٔ عددیِ خیلی بزرگ عددی
+     * می‌دهد که در `* perPage` سرریز می‌کند و PHP آن را float می‌کند؛ بعد
+     * `array_slice()` با float یک TypeError می‌دهد و صفحه می‌میرد
+     * (`Argument #2 ($offset) must be of type int, float given`).
+     *
+     * یعنی یک دکمهٔ جعلی کلِ صفحه‌بندیِ پنل مدیریت را می‌شکست. این متد
+     * ورودی را به بازهٔ معقول می‌آورد تا به «صفحهٔ صفر» تبدیل شود.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function pageFrom(array $data): int
+    {
+        $raw = $data['page'] ?? 0;
+
+        if (is_bool($raw) || !is_scalar($raw)) {
+            return 0;
+        }
+
+        $digits = preg_replace('/\D/', '', \Pasargad\Support\Str::toEnglishDigits(trim((string) $raw))) ?? '';
+
+        if ($digits === '' || strlen($digits) > 4) {
+            return 0;
+        }
+
+        return max(0, min(999, (int) $digits));
+    }
+
     private static function growthFields(): array
     {
         return [

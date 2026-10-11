@@ -31,7 +31,7 @@ final class Version
      *
      * قالب پیشنهادی: `<تاریخ>-<۶ کاراکتر اول هش کامیت>`.
      */
-    public const STAMP = '2026-10-11-commission-r6';
+    public const STAMP = '2026-10-11-hostile-r7';
 
     /** آیا این پروسه مُهر را چاپ کرده است؟ */
     private static bool $stamped = false;

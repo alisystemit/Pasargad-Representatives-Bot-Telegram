@@ -528,6 +528,45 @@ final class Kernel
         'admin_panel_transfer',
     ];
 
+    /**
+     * خواندنِ یک عدد از `callback_data` — به‌صورتِ **محدود**.
+     *
+     * ⭐️ چرا این متد و نه `(int) ($data['x'] ?? 0)`:
+     *
+     * `callback_data` ورودیِ کاربر است، هرچه باشد. `(int)` روی یک رشتهٔ
+     * عددیِ خیلی بزرگ عددی درمی‌آورد که در `* 5` سرریز می‌کند و PHP آن را
+     * **float** می‌کند. بعد `array_slice()` با آرگومانِ float یک `TypeError`
+     * می‌دهد و صفحه می‌میرد:
+     *
+     *     array_slice(): Argument #2 ($offset) must be of type int, float given
+     *
+     * یعنی یک دکمهٔ جعلیِ ساده کلِ فهرستِ سفارش‌ها را می‌شکند — و چون آپدیت
+     * برای تلاشِ مجدد پارک می‌شود، همان خطا بی‌نهایت تکرار می‌شود.
+     *
+     * این متد ورودی را به یک بازهٔ معقول می‌آورد تا هر مقدارِ دلبخواهی به
+     * «صفحهٔ صفر» تبدیل شود — کاربر چیزی از دست نمی‌دهد، فقط صفحهٔ اول را
+     * می‌بیند.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function pageFrom(array $data): int
+    {
+        $raw = $data['page'] ?? 0;
+
+        if (is_bool($raw) || !is_scalar($raw)) {
+            return 0;
+        }
+
+        $digits = preg_replace('/\D/', '', Str::toEnglishDigits(trim((string) $raw))) ?? '';
+
+        if ($digits === '' || strlen($digits) > 4) {
+            // بیش از ۴ رقم یعنی قطعاً یک عددِ جعلی است (صفحٔ ۱۰٬۰۰۰ وجود ندارد).
+            return 0;
+        }
+
+        return max(0, min(999, (int) $digits));
+    }
+
     private function handleChannelGate(Update $update, int $chatId): void
     {
         $guard  = $this->channelGuard();
@@ -849,18 +888,31 @@ final class Kernel
             case 'start':
                 // لینک دعوت: /start R123 یا /start ref_R123
                 //
-                // پارامتر فقط وقتی پذیرفته می‌شود که شکل کد معرفی داشته باشد،
-                // وگرنه هر متنی بعد از /start (مثلاً /start foo) یک «معرفی
-                // نامعتبر» نشان می‌داد و کاربر گیج می‌شد.
+                // ⚠️ فقط **شکلِ کد معرفی** پذیرفته می‌شود (`R123` یا `ref_R123`).
+                //
+                // کاربر ممکن است تصادفی بنویسد `/start hello`؛ گفتنِ «کد معرفی
+                // نامعتبر» به چنین پیامی یعنی ربات به هر متنی جوابِ نامربوط
+                // می‌دهد و کاربر گیج می‌شود که چرا. ولی اگر کد **واقعاً** شبیه
+                // کدِ معرفی باشد، سکوت کردن هم بد است — کاربر فکر می‌کند ثبت شده.
                 $refParam = trim((string) $update->argument());
 
-                if ($refParam !== '') {
+                if ($refParam !== '' && preg_match('/^(ref_)?R\d+$/i', $refParam) === 1) {
                     $refParam = preg_replace('/^ref_/i', '', $refParam) ?? '';
 
                     $bind = $this->bindReferral($user, $refParam);
 
-                    if (($bind['ok'] ?? false) && ($bind['message'] ?? '') !== '') {
-                        $this->bot->sendMessage($chatId, Str::escape((string) $bind['message']));
+                    // ⭐️ پیام **همیشه** فرستاده می‌شود، چه ثبت شود چه نشود.
+                    //
+                    // قبلاً فقط حالتِ موفق پیام داشت. نتیجه: کاربری که لینکِ
+                    // خودش را باز می‌کند، یا کدِ ناموجود می‌زند، فقط منوی اصلی
+                    // می‌بیند و **فکر می‌کند ثبت شده** — و بعد کلافه می‌شود که
+                    // چرا تخفیفی نگرفت. سکوتِ یک عملِ عمدی، بدترین پاسخ است.
+                    //
+                    // و بدون `Str::escape`: متنِ پیام را خودِ ما با `<b>` ساخته‌ایم
+                    // و هیچ دادهِ کاربر در آن نیست. escape کردنش باعث می‌شد کاربر
+                    // به‌جای «۱۰٪» تگِ خامِ `&lt;b&gt;` را ببیند.
+                    if (($bind['message'] ?? '') !== '') {
+                        $this->bot->sendMessage($chatId, (string) $bind['message']);
                     }
                 }
 
@@ -2010,7 +2062,7 @@ final class Kernel
         // ---------------- سفارش‌ها ----------------
         if ($ns === 'order.list' || $ns === 'orders') {
             $this->bot->answerCallback($callbackId);
-            $this->showOrders($chatId, $user, (int) ($data['page'] ?? 0));
+            $this->showOrders($chatId, $user, $this->pageFrom($data));
             return;
         }
 
@@ -2948,10 +3000,18 @@ final class Kernel
      */
     public function bindReferral(array $user, string $code): array
     {
-        $none = ['ok' => false, 'referrer' => null, 'message' => ''];
+        if (!$this->flags->isReferralEnabled()) {
+            // پیام دارد: کاربری که لینکِ دعوت را باز کرده باید بفهمد چرا
+            // چیزی ثبت نشد، وگرنه فکر می‌کند لینک خراب است.
+            return [
+                'ok'       => false,
+                'referrer' => null,
+                'message'  => 'سیستم معرفی در حال حاضر غیرفعال است. 😴',
+            ];
+        }
 
-        if (!$this->flags->isReferralEnabled() || trim($code) === '') {
-            return $none;
+        if (trim($code) === '') {
+            return ['ok' => false, 'referrer' => null, 'message' => ''];
         }
 
         $referrer = $this->discounts()->referrals()->findReferrerByCode($code);
@@ -3001,14 +3061,52 @@ final class Kernel
             return;
         }
 
-        // اگر کاربر گزینهٔ مدت/قیمت را انتخاب کرده، آن را اعمال کن
-        if ($periodDays > 0) {
+        // ------------------------------------------------------------------
+        // مدت/قیمتِ انتخابی
+        //
+        // ⚠️ چرا «ناشناخته» یعنی رد کردن، نه «بی‌خیال شدن»:
+        //
+        // `d` داخل `callback_data` است و کاربر می‌تواند هر عددی بفرستد. قبلاً اگر
+        // عدد با هیچ گزینه‌ای نمی‌خواند، بی‌صدا نادیده گرفته می‌شد و سفارش با
+        // **قیمتِ پیش‌فرضِ بسته** ساخته می‌شد.
+        //
+        // یعنی دکمه‌ای که رویش نوشته «۹۰ روزه • ۵۰۰ هزار» می‌توانست سفارشی با قیمتِ
+        // گزینهٔ ۳۰ روزه بسازد. کاربر فکر می‌کند گزینهٔ ۹۰ روزه را خریده و مبلغِ
+        // دیگری از او گرفته می‌شود — بدترین نوعِ باگِ مالی: بی‌صدا.
+        //
+        // پس: نبودنِ `d` یعنی «پیش‌فرض»؛ `d`ِ ناشناخته یعنی «اشتباه» و باید گفته شود.
+        // ------------------------------------------------------------------
+        if ($periodDays !== 0) {
+            $matched = false;
+
             foreach (PackageRepository::periodOptions($package) as $opt) {
                 if ((int) $opt['duration_days'] === $periodDays) {
                     $package['duration_days'] = (int) $opt['duration_days'];
                     $package['price_toman']   = (int) $opt['price_toman'];
+                    $matched = true;
                     break;
                 }
+            }
+
+            if (!$matched) {
+                $this->bot->sendMessage($chatId, implode("\n", [
+                    '⚠️ <b>این گزینه دیگر معتبر نیست</b>',
+                    '',
+                    'مدتی که انتخاب شده در گزینه‌های این بسته نیست، پس سفارشی ساخته',
+                    'نشد و از شما پولی گرفته نشد. ✅',
+                    '',
+                    'لطفاً از فهرست دوباره انتخاب کنید. 🔄',
+                ]), [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        Keyboard::back(
+                            BotApi::encodeData('pkg', ['id' => $packageId, 'p' => $panelId]),
+                            '🔙 بازگشت به بسته'
+                        ),
+                        Keyboard::back('menu', '🏠 منوی اصلی'),
+                    ])),
+                ]);
+
+                return;
             }
         }
 
