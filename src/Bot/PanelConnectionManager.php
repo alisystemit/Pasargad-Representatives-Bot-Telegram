@@ -6,6 +6,7 @@ namespace Pasargad\Bot;
 
 use Pasargad\Panel\PanelException;
 use Pasargad\Panel\PasarGuardClient;
+use Pasargad\Store\PanelAccess;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
@@ -398,7 +399,12 @@ final class PanelConnectionManager
                 $credential,
                 $probe['admin'],
                 $existing !== null ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
-                ['base_url' => $baseUrl]
+                [
+                    'base_url'  => $baseUrl,
+                    // بدون این، «بروزرسانی از پنل» و «ساخت پنل نمایندگی» روی این
+                    // ردیف همیشه ۴۰۳ می‌دادند، چون با رمز عبور حرف می‌زدند.
+                    'auth_mode' => $isKey ? PanelAccess::MODE_API_KEY : PanelAccess::MODE_PASSWORD,
+                ]
             );
 
             $this->clearPending($chatId, $pending);
@@ -516,14 +522,19 @@ final class PanelConnectionManager
     private function probeWithApiKey(PasarGuardClient $client, string $apiKey): array
     {
         try {
-            $response = $client->request('GET', '/api/admin/me', 'api', $apiKey);
-
-            $data = $response['data'] ?? [];
+            // ⚠️ قبلاً اینجا `request('GET', ..., 'api', $apiKey)` صدا زده
+            // می‌شد، یعنی نام کاربری «api» با کلید به‌عنوان رمز عبور. آن
+            // مسیر یک `POST /api/admin/token` با grant_type=password می‌فرستد
+            // که کلید API آن را نمی‌پذیرد — پس این شاخه **همیشه** خطا می‌داد
+            // و کاربر هرگز نمی‌توانست با کلید وصل شود.
+            //
+            // حالا کلید مستقیم در هدر Authorization می‌رود.
+            $data = $client->getAdminWithApiKey($apiKey);
 
             return [
                 'ok'      => true,
                 'message' => 'اتصال با کلید API برقرار شد.',
-                'admin'   => is_array($data) ? $data : [],
+                'admin'   => $data,
             ];
         } catch (PanelException $e) {
             return [

@@ -30,6 +30,7 @@ if (PHP_SAPI !== 'cli') {
 
 require_once __DIR__ . '/../bootstrap.php';
 
+use Pasargad\Support\BaseUrl;
 use Pasargad\Support\Config;
 use Pasargad\WebApp\InitData;
 
@@ -207,15 +208,30 @@ if ($ok) {
 echo "\n۵) آدرس‌ها\n";
 // ------------------------------------------------------------------
 
-$baseUrl = rtrim(trim((string) Config::str('base_url', '')), '/');
+$configuredBase = rtrim(trim((string) Config::str('base_url', '')), '/');
+$baseUrl        = BaseUrl::current();
 
-say('     base_url: ' . ($baseUrl !== '' ? $baseUrl : '(خالی)'));
+say('     base_url در config: ' . ($configuredBase !== '' ? $configuredBase : '(تنظیم نشده)'));
+say('     آدرس مؤثر:         ' . ($baseUrl !== '' ? $baseUrl : '(قابل تشخیص نیست)'));
+say('     منبع آدرس:         ' . match (BaseUrl::source()) {
+    'config' => 'config.php',
+    'server' => '⚠️ تشخیص خودکار از متغیرهای سرور (چون در config نیست)',
+    default  => 'هیچ‌کدام',
+});
 
 verdict(
     $baseUrl !== '' && preg_match('#^https?://#i', $baseUrl) === 1,
-    'base_url معتبر است',
-    'base_url خالی یا نامعتبر است.'
+    'آدرس پایه قابل استفاده است',
+    'هیچ آدرس پایه‌ای نه در config هست نه از هدر قابل تشخیص. '
+        . 'در CLI معمولاً هیچ هدری وجود ندارد، پس این پیام در سرور طبیعی است — '
+        . 'ولی اگر در وب هم دکمهٔ اپلیکیشن نمی‌آید، base_url را در config.php بگذارید.'
 );
+
+if (BaseUrl::source() === 'server') {
+    say('     ℹ️  تنظیم نکردن base_url کار می‌کند ولی شکننده است: اگر ربات');
+    say('        پشت پروکسی عوض شود یا هدر Host را چیزی بفرستد، آدرس');
+    say('        تغییر می‌کند. یک‌بار در config.php ثابت کنید.');
+}
 
 $https = str_starts_with(strtolower($baseUrl), 'https://');
 

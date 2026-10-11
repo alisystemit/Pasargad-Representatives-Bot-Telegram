@@ -6,7 +6,6 @@ namespace Pasargad\Support;
 
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
-
 /**
  * فاکتور خرید — متن تلگرام + صفحهٔ HTML قابل چاپ.
  *
@@ -98,7 +97,9 @@ final class Invoice
             return '';
         }
 
-        $base = rtrim(trim(Config::str('base_url', '')), '/');
+        // تشخیص خودکار هم اینجا لازم است، وگرنه لینک فاکتور هم بی‌صدا
+        // ساخته نمی‌شود و کاربر فاکتورش را نمی‌بیند.
+        $base = BaseUrl::current();
 
         if ($base === '') {
             return '';

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Payment;
 
+use Pasargad\Support\BaseUrl;
 use Pasargad\Support\Config;
 use Pasargad\Support\Http;
 use Pasargad\Support\Logger;
@@ -82,7 +83,21 @@ final class NowPaymentsGateway implements PaymentGateway
             $amountUsd = $minimumUsd;
         }
 
-        $callbackBase = rtrim(Config::str('base_url'), '/');
+        // آدرس callback به درگاه داده می‌شود تا نتیجهٔ پرداخت را بفرستد. اگر
+        // خالی باشد، پرداخت انجام می‌شود ولی هرگز تأیید نمی‌شود — بدترین
+        // حالت ممکن، پس اینجا سخت‌گیریم و به‌جای ارسال URL خراب، پرداخت را
+        // اصلاً شروع نمی‌کنیم.
+        $callbackBase = BaseUrl::current();
+
+        if ($callbackBase === '') {
+            return [
+                'ok'      => false,
+                'message' => 'آدرس پایهٔ ربات (base_url) قابل تشخیص نیست، پس درگاه نمی‌تواند '
+                    . 'نتیجهٔ پرداخت را بفرستد. آن را در config.php تنظیم کنید.',
+                'data'    => [],
+            ];
+        }
+
         $payload      = [
             'price_amount'      => $amountUsd,
             'price_currency'    => 'usd',

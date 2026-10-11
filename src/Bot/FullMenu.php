@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Bot;
 
+use Pasargad\Support\BaseUrl;
 use Pasargad\Support\Config;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
@@ -41,9 +42,12 @@ final class FullMenu
      */
     private function webAppUrl(): string
     {
-        $base = rtrim(trim(Config::str('base_url', '')), '/');
+        // ⚠️ قبلاً این مقدار فقط از config خوانده می‌شد و اگر تنظیم نبود،
+        // دکمه **بی‌صدا** حذف می‌شد. `BaseUrl` خودش از متغیرهای سرور
+        // تشخیص می‌دهد.
+        $base = BaseUrl::current();
 
-        if ($base === '' || !str_starts_with($base, 'https://')) {
+        if ($base === '') {
             return '';
         }
 
@@ -147,10 +151,10 @@ final class FullMenu
         if ($url === '') {
             // ⚠️ قبلاً این دکمه **بی‌صدا** حذف می‌شد و کاربر فقط می‌دید یک
             // گزینه کم است، بدون اینکه بفهمد چرا. حالا علتش در لاگ می‌آید.
-            Logger::warning('Mini App button hidden — base_url is not a usable https URL', [
-                'base_url' => rtrim(trim(Config::str('base_url', '')), '/'),
-                'fix'      => 'base_url در config.php باید مثل https://example.com باشد '
-                    . '(با اسلیم جلو و بدون مسیر انتهایی).',
+            Logger::warning('Mini App button hidden — no usable base URL', [
+                'configured' => Config::str('base_url', '') === '' ? 'missing' : 'present but not https',
+                'detected'   => 'failed (host header absent or invalid)',
+                'fix'        => 'base_url را در config.php تنظیم کنید (مثل https://example.com).',
             ]);
 
             return [];

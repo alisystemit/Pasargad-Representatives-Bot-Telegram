@@ -23,6 +23,7 @@ $suites = [
     ['ساختار کیبورد',         $root . '/tests/keyboard_test.php',   false],
     ['ناوبری و دکمه‌های مرده', $root . '/tests/navigation_test.php', false],
     ['مایگریشن',               $root . '/tests/migrator_test.php',   false],
+    ['پنل متصل و کلید API',     $root . '/tests/panel_access_test.php', false],
     ['تقسیم پیام بلند',       $root . '/tests/message_split_test.php', false],
     ['منطق خرید و اجرا',      $root . '/tests/shop_test.php',      false],
     ['پنل‌های نمایندگی',       $root . '/tests/panel_test.php',     false],

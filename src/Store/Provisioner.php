@@ -333,7 +333,13 @@ final class Provisioner
         // ------------------------------------------------------------------
         // مسیر ۲: ساخت واقعی.
         //
-        // نکتهٔ حیاتی: اینجا **قبل** از ساخت، پرچم panel_applied ست نمی‌شود.
+        // پنل نمایندگی روی **پنلی ساخته می‌شود که خودِ خریدار وصل کرده**؛
+        // اگر نداشته باشد، به اکانت owner سراسری برمی‌گردیم (رفتار قدیمی).
+        // بدون این، خرید برای نماینده‌ای که پنلش روی دامنهٔ خودش بود
+        // بی‌فایده می‌شد: پنل زیر سرور پیش‌فرض ساخته می‌شد، نه جایی که
+        // نماینده واقعاً از آن استفاده می‌کند.
+        //
+        // نکتهٔ مهم: `panel_applied` **قبل** از ساخت ست نمی‌شود.
         //
         // اگر آن را از قبل می‌ستادیم و ساخت شکست می‌خورد، fail() می‌دید
         // panel_applied=1 و سفارش را «قبلاً اعمال شده» علامت می‌زد — یعنی
@@ -341,7 +347,11 @@ final class Provisioner
         // قفل همزمانیِ اجرا را همان markApplying در provision() می‌گیرد که
         // وضعیت را applying می‌کند و پروسهٔ دوم دیگر وارد نمی‌شود.
         // ------------------------------------------------------------------
-        $result = $this->agency->createPanel($user, $order, $bytes, (int) $order['duration_days']);
+        $creatorPanel = (new PanelAccess($this->panels))->creatorPanelFor($user);
+
+        $result = $this->agency
+            ->useCreatorPanel($creatorPanel)
+            ->createPanel($user, $order, $bytes, (int) $order['duration_days']);
 
         if (!$result['ok']) {
             $isFatal = (bool) ($result['details']['fatal'] ?? false);
@@ -386,7 +396,13 @@ final class Provisioner
 
         $this->orders->logProvision($orderId, PackageRepository::KIND_AGENCY, 'پنل نمایندگی ساخته شد.', [
             'request'  => ['volume_bytes' => $bytes, 'days' => (int) $order['duration_days']],
-            'response' => ['panel_id' => $panelId, 'username' => $details['panel_username'] ?? null],
+            'response' => [
+                'panel_id'       => $panelId,
+                'username'       => $details['panel_username'] ?? null,
+                // ثبت اینکه کجا ساخته شد، تا بعداً معلوم باشد چرا شارژ روی
+                // سرور دیگری می‌رفت اگر این ثبت نمی‌شد.
+                'created_on'     => $creatorPanel !== null ? 'user_panel#' . (int) ($creatorPanel['id'] ?? 0) : 'global_owner',
+            ],
         ]);
 
         return [

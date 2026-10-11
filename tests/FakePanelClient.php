@@ -79,6 +79,67 @@ final class FakePanelClient extends PasarGuardClient
     }
 
     /**
+     * احراز هویت با کلید API — همتای واقعی `requestWithApiKey()`.
+     *
+     * بدون این بازنویسی، تست‌های مسیر «کلید API» به شبکهٔ واقعی می‌رفتند.
+     *
+     * ⚠️ `GET /api/admin` **یک رکورد تنهاست، نه لیست** — عیناً مثل پنل واقعی.
+     * اگر اینجا لیست برگردانیم، مصرف‌کننده‌ها یک `admins` می‌گیرند و فیلدهای
+     * `data_limit`/`status` گم می‌شوند، در حالی که تست سبز می‌ماند.
+     *
+     * @param array<string, mixed>|null $payload
+     * @return array<string, mixed>
+     */
+    public function requestWithApiKey(string $method, string $path, string $apiKey, ?array $payload = null): array
+    {
+        $this->loggedRequests[] = ['method' => 'requestWithApiKey', 'path' => $path];
+        $this->authHeadersSeen[] = $this->authScheme();
+
+        if ($this->loginError !== '') {
+            throw new PanelException($this->loginError, 401);
+        }
+
+        if (trim($apiKey) === '') {
+            throw new PanelException('کلید API خالی است.', 0);
+        }
+
+        if ($method === 'GET' && in_array($path, ['/api/admin', '/api/admins/simple'], true)) {
+            return $this->apiKeyOwner();
+        }
+
+        return ['admins' => array_values($this->admins), 'total' => count($this->admins)];
+    }
+
+    /**
+     * ادمینی که کلید API به او تعلق دارد.
+     *
+     * @return array<string, mixed>
+     */
+    private function apiKeyOwner(): array
+    {
+        $username = $this->apiKeyUsername;
+
+        if ($username === '') {
+            $first = reset($this->admins);
+            $username = is_array($first) ? (string) ($first['username'] ?? '') : '';
+        }
+
+        if ($username !== '' && isset($this->admins[$username])) {
+            return $this->admins[$username];
+        }
+
+        $first = reset($this->admins);
+
+        return is_array($first) ? $first : ['username' => 'api', 'status' => 'active'];
+    }
+
+    /** نام ادمینی که کلید API به او تعلق دارد (خالی = اولین ادمین). */
+    public string $apiKeyUsername = '';
+
+    /** @var array<int, string> طرح هدری که هر درخواست با آن رفته */
+    public array $authHeadersSeen = [];
+
+    /**
      * ادمین جاری — معادل `GET /api/admin`.
      *
      * پاسخ یک رکورد تنهاست (نه لیست)، عیناً مثل پنل واقعی؛ پس اگر کلاینت واقعی

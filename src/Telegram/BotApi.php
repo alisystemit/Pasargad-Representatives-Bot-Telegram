@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Pasargad\Telegram;
 
+use Pasargad\Support\BaseUrl;
 use Pasargad\Support\Config;
 use Pasargad\Support\Http;
 use Pasargad\Support\Logger;
@@ -1097,23 +1098,25 @@ class BotApi
             return false;
         }
 
-        $base = trim(Config::str('base_url', ''));
+        // ⚠️ این مقایسه باید با همان چیزی باشد که دکمه را ساخته، وگرنه یا
+        // دکمه ساخته نمی‌شود یا ساخته می‌شود ولی اینجا رد می‌شود.
+        // `BaseUrl::host()` هر دو حالتِ «از config» و «تشخیص خودکار» را
+        // پوشش می‌دهد.
+        $baseOk = BaseUrl::host();
 
-        if ($base === '') {
+        if ($baseOk === '') {
             return false;
         }
 
-        $baseHost = parse_url($base, PHP_URL_HOST);
-
-        if (!is_string($baseHost) || $baseHost === '') {
-            return false;
-        }
-
-        $host   = strtolower((string) $parts['host']);
-        $baseOk = strtolower($baseHost);
+        $host = strtolower((string) $parts['host']);
 
         if ($host !== $baseOk && !str_ends_with($host, '.' . $baseOk)) {
-            Logger::warning('WebApp host does not match base_url', ['host' => $host, 'base_host' => $baseOk]);
+            Logger::warning('WebApp host does not match base URL', [
+                'host'    => $host,
+                'base'    => $baseOk,
+                'source'  => BaseUrl::source(),
+            ]);
+
             return false;
         }
 

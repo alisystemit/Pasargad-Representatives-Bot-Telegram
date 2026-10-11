@@ -68,20 +68,33 @@ final class AccessCutoff
      */
     public function listPanelUsers(array $panelRow, int $limit = 20): array
     {
-        $username = trim((string) $panelRow['panel_username']);
-        $password = $this->panels->plainPassword($panelRow);
+        $filterAdmin = trim((string) $panelRow['panel_username']);
 
-        if ($username === '' || $password === '') {
+        // مثل PanelSyncer: باید روی آدرس و روش احراز هویت خودِ همین پنل
+        // حرف بزنیم، نه روی پنل سراسری. رفتن به سرور اشتباه یعنی «فهرست
+        // کاربران» ۴۰۳ می‌داد و مدیر ناچار می‌شد دستی غیرفعال کند.
+        $access      = new PanelAccess($this->panels);
+        $credentials = $access->credentialsOf($panelRow);
+        $client      = $access->clientForPanel($panelRow, $this->panel);
+
+        // تزریق کلاینت فقط **کلاینت** را عوض می‌کند، نه اینکه رازِ ذخیره‌شده را
+        // بی‌اهمیت کند: پنلی که رمز ندارد، در دنیای واقعی هم قابل قطع نیست.
+        if ($credentials === null || $client === null || $filterAdmin === '') {
             return ['ok' => false, 'message' => 'اطلاعات ورود این پنل در ربات ذخیره نشده است.'];
         }
+
+        // در مسیر کلید API نام کاربری نقشی ندارد؛ کلاینت خودش توکن ثابت دارد.
+        $authUser = $credentials['mode'] === PanelAccess::MODE_API_KEY
+            ? 'api'
+            : $filterAdmin;
 
         try {
             // فیلتر admin یعنی فقط کاربران همین نماینده، نه همهٔ پنل.
             // (کلید ناشناخته برای نسخه‌های قدیمی نادیده گرفته می‌شود.)
-            $response = $this->panelClient()->listUsers($username, $password, [
+            $response = $client->listUsers($authUser, $credentials['credential'], [
                 'limit'  => max(1, min($limit, self::PAGE_SIZE)),
                 'offset' => 0,
-                'admin'  => $username,
+                'admin'  => $filterAdmin,
             ]);
         } catch (PanelException $e) {
             if ($e->isAuthError()) {
@@ -119,11 +132,14 @@ final class AccessCutoff
      */
     public function cutoff(array $panelRow): array
     {
-        $username = trim((string) $panelRow['panel_username']);
-        $password = $this->panels->plainPassword($panelRow);
-        $panelId  = (int) $panelRow['id'];
+        $access = new PanelAccess($this->panels);
+        $credentials = $access->credentialsOf($panelRow);
 
-        if ($username === '' || $password === '') {
+        $panelId = (int) $panelRow['id'];
+
+        // تزریق کلاینت فقط **کلاینت** را عوض می‌کند، نه اینکه رازِ ذخیره‌شده را
+        // بی‌اهمیت کند: پنلی که رمز ندارد، در دنیای واقعی هم قابل قطع نیست.
+        if ($credentials === null) {
             return [
                 'ok'      => false,
                 'message' => 'اطلاعات ورود این پنل در ربات ذخیره نشده؛ قطع دسترسی ممکن نیست.',
@@ -131,12 +147,29 @@ final class AccessCutoff
             ];
         }
 
-        $client = $this->panelClient();
+        $username = trim((string) $panelRow['panel_username']);
+        $password = $credentials['credential'];
+
+        // روی آدرس خودِ همین پنل، با روش احراز هویت خودش (رمز یا کلید API).
+        $client = $access->clientForPanel($panelRow, $this->panel);
+
+        if ($client === null) {
+            return [
+                'ok'      => false,
+                'message' => 'اتصال به آدرس این پنل ممکن نشد.',
+                'details' => ['needs_manual' => true],
+            ];
+        }
+
+        // در مسیر کلید API نام کاربری نقشی ندارد؛ کلاینت توکن ثابت دارد.
+        $authUser = $credentials['mode'] === PanelAccess::MODE_API_KEY
+            ? 'api'
+            : $username;
 
         // ------------------------------------------------------------------
         // مسیر سریع: یک درخواست به‌جای N درخواست
         // ------------------------------------------------------------------
-        $bulk = $this->cutoffBulk($client, $username, $password);
+        $bulk = $this->cutoffBulk($client, $username, $authUser, $password);
 
         if ($bulk !== null) {
             $this->panels->markCutoffDone($panelId, $bulk['disabled']);
@@ -168,22 +201,29 @@ final class AccessCutoff
         // ------------------------------------------------------------------
         // مسیر تکی: صفحه‌بندی + سقف اجرا + بودجهٔ زمانی
         // ------------------------------------------------------------------
-        return $this->cutoffOneByOne($client, $panelRow, $panelId, $username, $password);
+        return $this->cutoffOneByOne($client, $panelRow, $panelId, $username, $authUser, $password);
     }
 
     /**
      * تلاش برای قطع گروهی. اگر پنل پذیرفت، `null` برنمی‌گردد.
      *
+     * @param string $username  نام اپراتوری که کاربرانش قطع می‌شوند (هدف)
+     * @param string $authUser  نام کاربری احراز هویت روی پنل
+     * @param string $password  رمز یا کلید API احراز هویت
      * @return array{disabled:int, skipped:int}|null
      */
-    private function cutoffBulk(PasarGuardClient $client, string $username, string $password): ?array
-    {
+    private function cutoffBulk(
+        PasarGuardClient $client,
+        string $username,
+        string $authUser,
+        string $password
+    ): ?array {
         // قبل از عمل، شمارش وضعیت‌ها تا گزارش صادقانه باشد (پنل بدنهٔ شمارشی
         // نمی‌دهد و «غیرفعال شد» بدون عدد یعنی ادعای بی‌سند).
-        $before = $this->countStatuses($client, $username, $password);
+        $before = $this->countStatuses($client, $authUser, $password);
 
         try {
-            $client->disablePanelUsers($username, $username, $password);
+            $client->disablePanelUsers($username, $authUser, $password);
         } catch (PanelException $e) {
             // ۴۰۳ یعنی نقش اپراتور اجازهٔ این کار را ندارد، ۴۰۴/۴۰۵ یعنی مسیر
             // در این نسخه از پنل نیست — هر دو یعنی «مسیر گروهی در دسترس نیست».
@@ -201,7 +241,7 @@ final class AccessCutoff
             return null;
         }
 
-        $after = $this->countStatuses($client, $username, $password);
+        $after = $this->countStatuses($client, $authUser, $password);
 
         // اگر شمارش ممکن نشد، عدد را نمی‌سازیم — صادقانه «نامشخص» می‌گوییم.
         if ($before === null || $after === null) {
@@ -234,14 +274,16 @@ final class AccessCutoff
     /**
      * مسیر تکی: صفحه‌بندی کامل + سقف اجرا + بودجهٔ زمانی.
      *
-     * @param  array<string, mixed> $panelRow
-     * @return array{ok:bool, message:string, details:array<string, mixed>}
+     * @param array<string, mixed> $panelRow
+     * @param string $username نام اپراتوری که کاربرانش قطع می‌شوند (هدف)
+     * @param string $authUser نام کاربری احراز هویت روی پنل
      */
     private function cutoffOneByOne(
         PasarGuardClient $client,
         array $panelRow,
         int $panelId,
         string $username,
+        string $authUser,
         string $password
     ): array {
         // بودجهٔ زمانی این اجرا؛ با احتیاط از سقف PHP کمتر تا fatal ندهیم.
@@ -258,7 +300,7 @@ final class AccessCutoff
             $offset = 0;
 
             while (true) {
-                $response = $client->listUsers($username, $password, [
+                $response = $client->listUsers($authUser, $password, [
                     'limit'  => self::PAGE_SIZE,
                     'offset' => $offset,
                     'admin'  => $username,
@@ -335,7 +377,7 @@ final class AccessCutoff
             }
 
             try {
-                $client->disableUser($target, $username, $password);
+                $client->disableUser($target, $authUser, $password);
                 $disabled++;
             } catch (PanelException $e) {
                 $failed[] = $target . ' (' . $e->getMessage() . ')';

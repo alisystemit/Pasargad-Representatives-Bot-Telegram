@@ -13,10 +13,19 @@ use Pasargad\Support\Str;
 /**
  * ساخت حساب اپراتور (ادمین پنل) برای نمایندهٔ جدید.
  *
- * وقتی کاربری بستهٔ «پنل نمایندگی» می‌خرد، ربات با اکانت **owner** پنل یک
- * حساب ادمین تازه می‌سازد و نقش آن را روی اپراتور می‌گذارد. از این لحظه
- * نماینده از داخل خودِ پنل دسترسی عملیاتی دارد (ساخت کاربر برای
- * مشتریانش، دیدن آمار و…).
+ * وقتی کاربری بستهٔ «پنل نمایندگی» می‌خرد، ربات یک حساب ادمین تازه
+ * می‌سازد و نقش آن را روی اپراتور می‌گذارد. از این لحظه نماینده از داخل
+ * خودِ پنل دسترسی عملیاتی دارد (ساخت کاربر برای مشتریانش، دیدن آمار و…).
+ *
+ * ## ساخت روی کدام پنل؟
+ *
+ * اولویت با **پنلی است که خودِ کاربر وصل کرده** (`$creator`)، و اگر
+ * نداشته باشد به اکانت owner سراسریِ `config.php` برمی‌گردیم.
+ *
+ * چ��یی که قبلاً اینجا اشتباه بود: خرید همیشه روی `panel.base_url` و با
+ * اکانت owner انجام می‌شد. یعنی نماینده‌ای که پنلش را روی دامنهٔ خودش
+ * نصب کرده و وصل کرده بود، بسته می‌خرید و پنلش زیر **سرور دیگری** ساخته
+ * می‌شد — یعنی خریدش به کارش نمی‌آمد.
  *
  * چرا ربات این کار را می‌کند و خودِ نماینده؟
  *   • رمز باید یک‌بار تولید و به نماینده داده شود؛ ساخت دستی در پنل، رمز را
@@ -29,14 +38,63 @@ final class AgencyService
 {
     private ?PasarGuardClient $panel;
 
-    public function __construct(?PasarGuardClient $panel = null)
+    /**
+     * آیا کلاینت از بیرون تزریق شده است؟
+     *
+     * کلاینت تزریق‌شده (کلاینت جعلیِ تست‌ها، یا کلاینتی که وبهوک با بودجهٔ
+     * زمانی ساخته) **هرگز** نباید دور ریخته شود. قبلاً `useCreatorPanel()`
+     * همیشه `$this->panel` را صفر می‌کرد و در نتیجه تست‌ها به‌جای کلاینت
+     * جعلی، به پنل واقعی وصل می‌شدند و همه‌شان با «رمز اشتباه» می‌افتادند.
+     */
+    private bool $clientInjected = false;
+
+    /**
+     * منبع اختیار ساخت پنل: ردیف `panels` خودِ خریدار.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $creator = null;
+
+    private PanelAccess $access;
+
+    public function __construct(?PasarGuardClient $panel = null, ?PanelAccess $access = null)
     {
-        $this->panel = $panel;
+        $this->panel          = $panel;
+        $this->clientInjected = $panel !== null;
+        $this->access         = $access ?? new PanelAccess();
+    }
+
+    /**
+     * تعیین می‌کند پنل نمایندگی روی **کدام** پنل ساخته شود.
+     *
+     * @param  array<string, mixed>|null $panel ردیف `panels` خریدار؛ null یعنی
+     *                                      از اکانت owner سراسری استفاده شود.
+     */
+    public function useCreatorPanel(?array $panel): self
+    {
+        $this->creator = $panel;
+
+        // کلاینتی که خودمان ساخته‌ایم با پنل قبلی ساخته شده و با تغییر
+        // مقصد بی‌معنی می‌شود؛ ولی کلاینت تزریق‌شده دست‌نخورده می‌ماند.
+        if (!$this->clientInjected) {
+            $this->panel = null;
+        }
+
+        return $this;
     }
 
     private function panelClient(): PasarGuardClient
     {
         if ($this->panel === null) {
+            // اولویت با پنلی است که خریدار وصل کرده.
+            if ($this->creator !== null) {
+                $client = $this->access->clientFor($this->creator);
+
+                if ($client !== null) {
+                    return $this->panel = $client;
+                }
+            }
+
             $this->panel = new PasarGuardClient();
         }
 
@@ -44,13 +102,34 @@ final class AgencyService
     }
 
     /**
-     * اکانت owner پنل که با آن ادمین جدید ساخته می‌شود.
+     * اکانتی که با آن ادمین جدید ساخته می‌شود.
      *
      * بدون این اکانت، خرید «پنل نمایندگی» قابل اجرا نیست — ولی خرید
      * «شارژ پنل» کار می‌کند چون از اکانت خودِ نماینده استفاده می‌کند.
+     *
+     * اگر خریدار پنلی وصل کرده باشد، همان مبناست (چه با رمز، چه با کلید
+     * API). وگرنه به owner سراسری برمی‌گردیم.
+     *
+     * @return array{0:string, 1:string, 2:string}|null [authUsername, secret, mode]
      */
     private function ownerCredentials(): ?array
     {
+        if ($this->creator !== null) {
+            $credentials = $this->access->credentialsOf($this->creator);
+
+            if ($credentials === null) {
+                return null;
+            }
+
+            // در مسیر کلید API نام کاربری بی‌معناست؛ خودِ کلید نقش را دارد و
+            // `panelClient()` آن را به‌عنوان توکن ثابت ست می‌کند.
+            $authName = $credentials['mode'] === PanelAccess::MODE_API_KEY
+                ? 'api'
+                : $credentials['username'];
+
+            return [$authName, $credentials['credential'], $credentials['mode']];
+        }
+
         $username = trim(Config::str('panel.owner_username', ''));
         $password = Config::str('panel.owner_password', '');
 
@@ -58,7 +137,7 @@ final class AgencyService
             return null;
         }
 
-        return [$username, $password];
+        return [$username, $password, PanelAccess::MODE_PASSWORD];
     }
 
     /**
@@ -68,16 +147,27 @@ final class AgencyService
      */
     public function canCreatePanels(): array
     {
-        if ($this->ownerCredentials() === null) {
+        if ($this->ownerCredentials() !== null) {
+            return ['ok' => true, 'message' => ''];
+        }
+
+        if ($this->creator !== null) {
+            // کاربر پنل وصل کرده ولی اطلاعاتش ناقص است — پیام باید همان
+            // را بگوید، نه اینکه سراغ تنظیمات سراسری برود.
             return [
                 'ok'      => false,
-                'message' => 'اکانت سازندهٔ پنل در config.php تنظیم نشده است '
-                    . '(panel.owner_username و panel.owner_password). '
-                    . 'تا وقتی تنظیم نشود، خرید پنل نمایندگی ممکن نیست.',
+                'message' => 'پنلی که به حساب شما وصل است اطلاعات ورود کاملی ندارد. '
+                    . 'با دکمهٔ «➕ اتصال پنل جدید» دوباره آدرس و رمز یا کلید API را ثبت کنید.',
             ];
         }
 
-        return ['ok' => true, 'message' => ''];
+        return [
+            'ok'      => false,
+            'message' => 'اکانت سازندهٔ پنل در config.php تنظیم نشده است '
+                . '(panel.owner_username و panel.owner_password). '
+                . 'یا پنلی به حساب کاربر وصل کنید. '
+                . 'تا وقتی هیچ‌کدام نباشد، خرید پنل نمایندگی ممکن نیست.',
+        ];
     }
 
     /**
@@ -220,12 +310,21 @@ final class AgencyService
             return ['ok' => false, 'message' => $guard['message'], 'details' => ['fatal' => true]];
         }
 
-        [$ownerUser, $ownerPassword] = $this->ownerCredentials();
+        [$ownerUser, $ownerPassword, $authMode] = $this->ownerCredentials();
 
         $client   = $this->panelClient();
         $userId   = (int) $botUser['id'];
         $username = $this->generateUsername($order);
         $password = $this->generatePassword();
+
+        Logger::info('Creating agency panel', [
+            'user_id' => $userId,
+            // نشانیِ منبع اختیار، نه خودِ راز.
+            'source'  => $this->creator !== null
+                ? 'user_panel#' . (int) ($this->creator['id'] ?? 0)
+                : 'global_owner',
+            'auth'    => $authMode,
+        ]);
 
         $payload = [
             'username'   => $username,
@@ -314,6 +413,20 @@ final class AgencyService
 
         $expireAt = $durationDays > 0 ? time() + $durationDays * 86400 : null;
 
+        // آدرسی که واقعاً رویش ساختیم — نه آنچه در config است. این مقدار باید
+        // روی ردیف تازه ثبت شود تا شارژ و بروزرسانی بعدی همان‌جا بروند.
+        //
+        // ⚠️ اگر خریدار پنلی وصل نکرده، عمداً **خالی** می‌ماند: تهی بودن این
+        // ستون یعنی «از `panel.base_url` سراسری استفاده کن» و همین قرارداد
+        // را `PanelAccess` و بقیهٔ مسیرها هم می‌فهمند. نوشتن آدرس سراسری به‌دستی
+        // فقط رکورد را اضافه می‌کرد و اگر بعداً config عوض شود، پنل را به
+        // سرور اشتباه می‌فرستاد.
+        $createdOnBaseUrl = '';
+
+        if ($this->creator !== null) {
+            $createdOnBaseUrl = (string) ($this->access->credentialsOf($this->creator)['base_url'] ?? '');
+        }
+
         // سقف کاربران بسته (۰ = نامحدود ♾️) — جدا از حجم و مدت، روی خود
         // پنل ثبت می‌شود تا نمایش سقف و هشدار پر شدن ممکن باشد.
         $maxUsers = max(0, (int) ($order['max_users'] ?? 0));
@@ -328,6 +441,17 @@ final class AgencyService
             'order_id'         => (int) $order['id'],
             'label'            => 'پنل ' . $username,
             'login_url'        => PanelRepository::loginUrl(),
+
+            // ⚠️ این دو ستون حیاتی‌اند و قبلاً همیشه خالی می‌ماندند.
+            //
+            // اگر پنل نمایندگی روی آدرس خریدار ساخته شده باشد ولی آدرسش
+            // ثبت نشود، «شارژ پنل» و «بروزرسانی از پنل» بعداً به پنل
+            // *پیش‌فرض سراسری* می‌روند و روی سرور اشتباه کار می‌کنند یا ۴۰۳
+            // می‌دهند — یعنی کاربر پول داده و سرویسش کار نمی‌کند.
+            'base_url'         => $createdOnBaseUrl,
+            // حساب تازه با رمز ساخته شده، پس روش احراز هویتش همیشه رمز است
+            // (حتی اگر ساخت با کلید API انجام شده باشد).
+            'auth_mode'        => PanelAccess::MODE_PASSWORD,
         ]);
 
         Logger::info('Agency panel ready', [

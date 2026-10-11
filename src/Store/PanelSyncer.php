@@ -25,11 +25,16 @@ final class PanelSyncer
 {
     private PanelRepository $panels;
     private ?PasarGuardClient $panel;
+    private PanelAccess $access;
 
-    public function __construct(?PanelRepository $panels = null, ?PasarGuardClient $panel = null)
-    {
+    public function __construct(
+        ?PanelRepository $panels = null,
+        ?PasarGuardClient $panel = null,
+        ?PanelAccess $access = null
+    ) {
         $this->panels = $panels ?? new PanelRepository();
         $this->panel  = $panel;
+        $this->access = $access ?? new PanelAccess($this->panels);
     }
 
     private function panelClient(): PasarGuardClient
@@ -49,15 +54,21 @@ final class PanelSyncer
      */
     public function syncOne(array $panelRow): array
     {
-        $password = $this->panels->plainPassword($panelRow);
         $username = trim((string) $panelRow['panel_username']);
 
-        if ($username === '' || $password === '') {
+        // ⚠️ قبلاً اینجا همیشه از کلاینت سراسری (`panel.base_url`) استفاده
+        // می‌شد. یعنی «بروزرسانی» روی پنلی که کاربر به آدرس دیگری وصل
+        // کرده بود، درخواست را به سرور اشتباه می‌زد — یا ۴۰۳ می‌داد و پنل
+        // درست را «باطل‌شده» علامت می‌زد.
+        $client = $this->access->clientForPanel($panelRow, $this->panel);
+
+        if ($client === null || $username === '') {
             return ['ok' => false, 'message' => 'اطلاعات ورود این پنل در ربات ذخیره نشده است.'];
         }
 
         try {
-            $admin = $this->panelClient()->getAdmin($username, $username, $password);
+            // کلاینت با روش احراز هویت خودِ ردیف ساخته شده: رمز عبور یا کلید API.
+            $admin = $this->access->readAdmin($panelRow, $client);
         } catch (PanelException $e) {
             if ($e->isAuthError()) {
                 // رمز عوض شده یا حساب حذف شده؛ بازخوانی لازم است.

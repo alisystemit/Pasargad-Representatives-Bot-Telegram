@@ -17,6 +17,18 @@ use Pasargad\Support\Logger;
  */
 class PasarGuardClient
 {
+    /** هدرِ توکنی که از `/api/admin/token` می‌گیریم. */
+    public const SCHEME_BEARER = 'Bearer';
+
+    /**
+     * هدرِ کلید API.
+     *
+     * آزمایش زنده روی پنل نشان داد `ApiKey` کار می‌کند و `Bearer` برای کلید
+     * همیشه ۴۰۱ می‌دهد — پس انتخاب این ثابت یک تفاوت «کار می‌کند/نمی‌کند»
+     * است، نه یک جزئیات ظاهری.
+     */
+    public const SCHEME_API_KEY = 'ApiKey';
+
     /**
      * ⚠️ این سه `protected` هستند نه `private`.
      *
@@ -69,6 +81,31 @@ class PasarGuardClient
 
     /** @var array<string, string> کش توکن: کلید md5(baseUrl|username) */
     private array $tokenCache = [];
+
+    /**
+     * توکن ثابت وقتی احراز هویت با **کلید API** است.
+     *
+     * با کلید API نه می‌شود و نه باید `login()` زد: سرور توکن رمز عبور را
+     * نمی‌پذیرد. پس کلید مستقیم نقش توکن را بازی می‌کند و `login()` بدون
+     * تماس شبکه همان را برمی‌گرداند.
+     *
+     * در لاگ هیچ‌جا نوشته نمی‌شود.
+     */
+    private string $staticToken = '';
+
+    /**
+     * طرحِ هدر احراز هویت: `Bearer` برای توکنِ سرور توکن، `ApiKey` برای کلید API.
+     *
+     * ⚠️ این تفاوت **واقعی** است و آزمایش زنده نشان داد:
+     *
+     *     Authorization: Bearer pg_key_…  →  401 «Could not validate credentials»
+     *     Authorization: ApiKey pg_key_…  →  200
+     *
+     * یعنی فرستادن کلید با طرح Bearer هرگز کار نمی‌کند — و چون خطایش ۴۰۱
+     * است، دقیقاً شبیه «کلید اشتباه» به نظر می‌رسد و کاربر بی‌جهت کلید تازه
+     * می‌سازد.
+     */
+    private string $authScheme = 'Bearer';
 
     public function __construct(?string $baseUrl = null)
     {
@@ -205,6 +242,11 @@ class PasarGuardClient
      */
     public function login(string $username, string $password, bool $useCache = true): string
     {
+        // کلید API: هیچ سفری به سرور توکن، چون اصلاً پذیرفته نمی‌شود.
+        if ($this->staticToken !== '') {
+            return $this->staticToken;
+        }
+
         $username = trim($username);
         $cacheKey = $this->tokenCacheKey($username);
 
@@ -259,6 +301,42 @@ class PasarGuardClient
     public function forgetToken(string $username): void
     {
         unset($this->tokenCache[$this->tokenCacheKey($username)]);
+    }
+
+    /**
+     * این کلاینت با **کلید API** کار می‌کند، نه با نام کاربری و رمز.
+     *
+     * از این لحظه `login()` بدون تماس شبکه همین کلید را برمی‌گرداند، پس همهٔ
+     * متدهای موجود (`getAdmin`، `createAdmin`، `listRoles`…) بدون تغییر روی
+     * پنل‌های کلیددار کار می‌کنند.
+     *
+     * هدر با طرح `ApiKey` فرستاده می‌شود، نه `Bearer` — چون پنل با `Bearer`
+     * کلید را رد می‌کند (آزمایش زنده: ۴۰۱).
+     *
+     * ⚠️ `forgetToken()` روی چنین کلاینتی بی‌اثر است: کلید را نمی‌شود از نو
+     * گرفت. برای همین در `request()` تلاش مجددِ ۴۰۱ عمداً حذف شده — آنجا باید
+     * کلید تازه از خود کاربر گرفته شود.
+     */
+    public function useStaticToken(string $token, string $scheme = self::SCHEME_API_KEY): void
+    {
+        $this->staticToken = trim($token);
+        $this->authScheme  = $scheme === self::SCHEME_API_KEY ? self::SCHEME_API_KEY : self::SCHEME_BEARER;
+    }
+
+    public function hasStaticToken(): bool
+    {
+        return $this->staticToken !== '';
+    }
+
+    /**
+     * طرح هدر فعلی (`Bearer` یا `ApiKey`).
+     *
+     * فقط برای تست و تشخیص؛ رفتار از این مقدار می‌آید و تغییرش یعنی یکی از
+     * این دو حالت را انتخاب کرده‌ایم.
+     */
+    public function authScheme(): string
+    {
+        return $this->authScheme;
     }
 
     /**
@@ -795,7 +873,10 @@ class PasarGuardClient
     {
         $response = $this->send($method, $path, $username, $password, $payload);
 
-        if ($response['status'] === 401) {
+        // با کلید API تلاش مجدد فایده‌ای ندارد: کلید را نمی‌شود از نو گرفت و
+        // `forgetToken` هم آن را پاک نمی‌کند، پس درخواست دوم دقیقاً همان
+        // درخواست اول تکرار می‌شد — یک سفر شبکهٔ اضافه برای همان ۴۰۱.
+        if ($response['status'] === 401 && !$this->hasStaticToken()) {
             Logger::info('Panel token expired, re-login', ['path' => $path, 'username' => $username]);
             $this->forgetToken($username);
             $response = $this->send($method, $path, $username, $password, $payload);
@@ -832,6 +913,136 @@ class PasarGuardClient
     }
 
     /**
+     * ارسال درخواست با **کلید API**، بدون ورود با نام کاربری و رمز.
+     *
+     * ⚠️ چرا این متد جداگانه لازم است؟
+     *
+     * `request()` همیشه `login()` می‌کند، یعنی یک درخواست
+     * `POST /api/admin/token` با grant_type=password می‌فرستد. پنل‌هایی که
+     * دسترسی API با کلید دارند، معمولاً چنین مسیری ندارند یا کلید را به‌عنوان
+     * رمز عبور نمی‌پذیرند. تلاش قبلی برای «احراز هویت با کلید» همین کار را
+     * می‌کرد و همیشه ۴۰۳ می‌گرفت.
+     *
+     * اینجا کلید مستقیم در هدر `Authorization: Bearer` می‌رود — بدون سفر
+     * اضافه به سرور توکن، و بدون اینکه کلید جایی ذخیره یا لاگ شود.
+     *
+     * تلاش مجدد عمداً ندارد: کلید که عوض شده باشد با تلاش دوباره درست نمی‌شود
+     * و باید دوباره از کاربر گرفته شود. برای همین ۴۰۱ به‌عنوان «خطای احراز
+     * هویت» علامت می‌خورد، نه خطای گذرا.
+     *
+     * @param  array<string, mixed>|null $payload
+     * @return array<string, mixed>
+     */
+    public function requestWithApiKey(string $method, string $path, string $apiKey, ?array $payload = null): array
+    {
+        $apiKey = trim($apiKey);
+
+        if ($apiKey === '') {
+            throw new PanelException(
+                'کلید API خالی است.',
+                0,
+                ['path' => $path],
+                null,
+                true    // تقصیر ورودی کاربر است
+            );
+        }
+
+        $this->assertTimeLeft($path);
+
+        // طرح هدر را **در همین متد** هم ست می‌کنیم، نه فقط در `useStaticToken`.
+        // وگرنه فراخوانی مستقیم `requestWithApiKey()` روی کلاینتی که با
+        // `new PasarGuardClient(...)` ساخته شده، کلید را با طرح `Bearer`
+        // می‌فرستاد و همیشه ۴۰۱ می‌گرفت — یعنی همین باگ، دوباره.
+        $this->authScheme = self::SCHEME_API_KEY;
+
+        $response = $this->sendWithBearer($method, $path, $apiKey, $payload);
+
+        if ($response['error'] !== '' || $response['status'] === 0) {
+            Logger::error('Panel API-key request failed', [
+                'method' => $method,
+                'path'   => $path,
+                'status' => $response['status'],
+                'error'  => $response['error'],
+            ]);
+
+            throw $this->toException($response, 'ارتباط با پنل برقرار نشد. کمی بعد دوباره تلاش کنید.');
+        }
+
+        if ($response['status'] >= 400) {
+            Logger::warning('Panel API-key request returned an error', [
+                'method' => $method,
+                'path'   => $path,
+                'status' => $response['status'],
+            ]);
+
+            // ⚠️ تمایز ۴۰۱ از ۴۰۳ مهم است و هر دو یکی نیستند:
+            //
+            //   ۴۰۱ ⇒ کلید غلط یا منقضی است. `PanelSyncer` با دیدن این، پنل را
+            //        «باطل‌شده» علامت می‌زند و از کاربر رمز تازه می‌خواهد —
+            //        که دقیقاً رفتار درست برای کلید اشتباه است.
+            //
+            //   ۴۰۳ ⇒ کلید معتبر است ولی این عملیات را ندارد. این خطای کاربر
+            //        نیست و علامت‌زدن پنل باطل‌شده اشتباه و مخرب می‌شود
+            //        (کاربر مجبور می‌شود بی‌دلیل دوباره وصل کند). پس
+            //        `onTokenEndpoint` عمداً false می‌ماند.
+            if ($response['status'] === 401) {
+                throw new PanelException(
+                    'کلید API معتبر نیست یا منقضی شده است.',
+                    401,
+                    $response['data'],
+                    null,
+                    true    // ⇒ isAuthError() true
+                );
+            }
+
+            throw $this->toException($response, $this->httpErrorMessage($response));
+        }
+
+        $data = $response['data'];
+
+        return is_array($data) ? $data : ['ok' => true];
+    }
+
+    /**
+     * خواندن ادمین جاری با کلید API.
+     *
+     * ⚠️ مسیر `/api/admin/me` **وجود ندارد** — آزمایش زنده ۴۰۵ داد. مسیر
+     * درست `GET /api/admin` است (همان «ادمین جاری» که `getAdmin()` قدیمی
+     * جایگزینش شده).
+     *
+     * @return array<string, mixed>
+     */
+    public function getAdminWithApiKey(string $apiKey): array
+    {
+        return $this->requestWithApiKey('GET', '/api/admin', $apiKey);
+    }
+
+    /**
+     * ساخت ادمین جدید با کلید API (POST /api/admin).
+     *
+     * برای وقتی به کار می‌رود که کاربر به‌جای رمز عبور، کلید API بدهد.
+     *
+     * @param  array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function createAdminWithApiKey(array $payload, string $apiKey): array
+    {
+        return $this->requestWithApiKey('POST', '/api/admin', $apiKey, $payload);
+    }
+
+    /**
+     * فهرست نقش‌ها با کلید API (GET /api/admin-roles).
+     *
+     * @return array<string, mixed>
+     */
+    public function listRolesWithApiKey(string $apiKey, array $params = []): array
+    {
+        $query = $params === [] ? '' : '?' . http_build_query($params);
+
+        return $this->requestWithApiKey('GET', '/api/admin-roles' . $query, $apiKey);
+    }
+
+    /**
      * @param array<string, mixed>|null $payload
      * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
      */
@@ -847,9 +1058,28 @@ class PasarGuardClient
         // درخواست را شروع نمی‌کنیم.
         $this->assertTimeLeft($path);
 
+        return $this->sendWithBearer($method, $path, $token, $payload);
+    }
+
+    /**
+     * ارسال درخواست با یک توکن از پیش آماده (بدون ورود دوباره).
+     *
+     * مسیر مشترک `send()` و `requestWithApiKey()` است تا هر دو دقیقاً یک
+     * رفتار داشته باشند: همان هدرها، همان timeout، همان لاگ، همان تفسیر
+     * خطا.
+     *
+     * نام متد «Bearer» تاریخی است؛ طرحِ واقعی از `$authScheme` می‌آید.
+     *
+     * @param array<string, mixed>|null $payload
+     * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
+     */
+    private function sendWithBearer(string $method, string $path, string $token, ?array $payload): array
+    {
+        $url      = $this->baseUrl . $path;
+
         $headers  = [
             'accept: application/json',
-            'authorization: Bearer ' . $token,
+            'authorization: ' . $this->authScheme . ' ' . $token,
         ];
 
         $timeout  = $this->effectiveTimeout();

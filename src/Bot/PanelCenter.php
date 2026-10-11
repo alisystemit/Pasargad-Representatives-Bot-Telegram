@@ -6,6 +6,7 @@ namespace Pasargad\Bot;
 
 use Pasargad\Store\AccessCutoff;
 use Pasargad\Store\AgencyService;
+use Pasargad\Store\PanelAccess;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Store\PanelSyncer;
 use Pasargad\Store\PanelUserStats;
@@ -1045,7 +1046,11 @@ final class PanelCenter
             $username,
             $password,
             $admin,
-            $wasKnown ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF
+            $wasKnown ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
+            // این مسیر فقط با نام کاربری و رمز کار می‌کند، ولی روش احراز هویت
+            // باید صریح ثبت شود تا اگر بعداً این ردیف به «کلید API» عوض شد،
+            // «بروزرسانی از پنل» به‌جای تلاش ناموفق با رمز، با کلید حرف بزند.
+            ['auth_mode' => PanelAccess::MODE_PASSWORD]
         );
 
         $panel = $this->panels->find($panelId);

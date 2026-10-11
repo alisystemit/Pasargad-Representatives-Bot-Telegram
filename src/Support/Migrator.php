@@ -641,6 +641,14 @@ final class Migrator
             'ALTER TABLE users ADD COLUMN notifications_enabled INTEGER NOT NULL DEFAULT 1',
             'ALTER TABLE users ADD COLUMN digest_emails INTEGER NOT NULL DEFAULT 0',
         ],
+
+        // پنل‌هایی که با «کلید API» وصل شده‌اند با رمز عبور کار نمی‌کنند و
+        // برعکس. بدون این ستون، «بروزرسانی از پنل» یا ساخت پنل نمایندگی روی
+        // چنین پنل‌هایی همیشه ۴۰۳ می‌داد. مقدار NULL یعنی رمز عبور (حالت
+        // قدیمی که همهٔ ردیف‌های موجود دارند).
+        '014_panel_auth_mode' => [
+            'ALTER TABLE panels ADD COLUMN auth_mode TEXT',
+        ],
         ];
     }
 

@@ -76,20 +76,27 @@ final class PanelUserStats
      */
     public function refresh(array $panel): array
     {
-        $username = trim((string) $panel['panel_username']);
-        $password = $this->panels->plainPassword($panel);
+        $username    = trim((string) $panel['panel_username']);
+        $access      = new PanelAccess($this->panels);
+        $credentials = $access->credentialsOf($panel);
 
-        if ($username === '' || $password === '') {
+        // روی آدرس و روش احراز هویت خودِ همین پنل — نه پنل سراسری. تزریق
+        // کلاینت فقط کلاینت را عوض می‌کند، نه اینکه رازِ ذخیره‌شده را
+        // بی‌اهمیت کند.
+        $client = $access->clientForPanel($panel, $this->panel);
+
+        if ($username === '' || $credentials === null || $client === null) {
             return ['ok' => false, 'message' => 'اطلاعات ورود این پنل در ربات ذخیره نشده است.',
                 'total' => 0, 'active' => 0, 'disabled' => 0];
         }
 
-        $client  = $this->panelClient();
+        $authUser = $credentials['mode'] === PanelAccess::MODE_API_KEY ? 'api' : $username;
+        $password = $credentials['credential'];
 
         // مسیر سریع: ۳ شمارش ارزان به‌جای دانلود صفحه‌به‌صفحهٔ همهٔ کاربران.
         // برای پنل چند هزار کاربره یعنی ۳ درخواست به‌جای ده‌ها صفحه — وگرنه
         // وبهوک وسط آمار تایم‌اوت می‌خورد و کاربر هیچ پاسخی نمی‌گیرد («هنگ»).
-        $fast = $this->fastCounts($client, $username, $password);
+        $fast = $this->fastCounts($client, $authUser, $password, $username);
 
         if ($fast !== null) {
             [$total, $active, $off] = $fast;
@@ -111,7 +118,7 @@ final class PanelUserStats
 
         try {
             for ($page = 0; $page < self::MAX_PAGES; $page++) {
-                $response = $client->listUsers($username, $password, [
+                $response = $client->listUsers($authUser, $password, [
                     'limit'  => self::PAGE_SIZE,
                     'offset' => $offset,
                 ]);
@@ -177,24 +184,30 @@ final class PanelUserStats
      * قدیمی فیلتر status را نفهمد (۴۲۲ → null) یا total را فیلترنشده بدهد،
      * نتیجهٔ غلط هرگز ذخیره نمی‌شود، فقط کمی کندتر.
      *
+     * @param string $authUser نام کاربری احراز هویت (با کلید API بی‌معنی است)
+     * @param string $filterAdmin نام اپراتوری که کاربرانش شمرده می‌شوند
      * @return array{0:int,1:int,2:int}|null [total, active, off]
      */
-    private function fastCounts(PasarGuardClient $client, string $username, string $password): ?array
-    {
+    private function fastCounts(
+        PasarGuardClient $client,
+        string $authUser,
+        string $password,
+        string $filterAdmin = ''
+    ): ?array {
         try {
-            $total = $client->countUsers($username, $password, [], $username);
+            $total = $client->countUsers($authUser, $password, [], $filterAdmin);
 
             if ($total === null) {
                 return null;
             }
 
-            $active = $client->countUsers($username, $password, ['active', 'limited'], $username);
+            $active = $client->countUsers($authUser, $password, ['active', 'limited'], $filterAdmin);
 
             if ($active === null) {
                 return null;
             }
 
-            $off = $client->countUsers($username, $password, ['disabled', 'expired', 'on_hold'], $username);
+            $off = $client->countUsers($authUser, $password, ['disabled', 'expired', 'on_hold'], $filterAdmin);
 
             if ($off === null) {
                 return null;
