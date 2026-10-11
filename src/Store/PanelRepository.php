@@ -60,6 +60,23 @@ final class PanelRepository
         return $this->db;
     }
 
+    /**
+     * نام ستون‌های واقعی جدول `panels` (با کش، چون اسکیما در هر درخواست عوض نمی‌شود).
+     *
+     * @return array<int, string>
+     */
+    private function columnNames(): array
+    {
+        /** @var array<int, string>|null $cached */
+        static $cached = null;
+
+        if ($cached === null) {
+            $cached = array_column($this->db->all('PRAGMA table_info("panels")'), 'name');
+        }
+
+        return $cached;
+    }
+
     // ------------------------------------------------------------------
     // خواندن
     // ------------------------------------------------------------------
@@ -254,7 +271,7 @@ final class PanelRepository
      * @param array<string, mixed> $adminDetails پاسخ پنل
      * @return int شناسهٔ پنل
      */
-    public function upsertFromPanel(int $userId, string $panelUsername, string $password, array $adminDetails, string $source = self::SOURCE_BOT): int
+    public function upsertFromPanel(int $userId, string $panelUsername, string $password, array $adminDetails, string $source = self::SOURCE_BOT, array $extra = []): int
     {
         $existing = $this->findByPanelUsername($panelUsername);
 
@@ -274,6 +291,22 @@ final class PanelRepository
             'synced_at'      => time(),
             'updated_at'     => time(),
         ];
+
+        // ستون‌های اختیاری (مثل `login_url` در جریان «اتصال پنل جدید») فقط وقتی
+        // واقعاً داده شده باشند نوشته می‌شوند تا با payload ثابت قاطی نشوند.
+        //
+        // ⚠️ نام ستون حتماً باید در جدول `panels` وجود داشته باشد. نوشتن ستونِ
+        // ناموجود «no such column» می‌دهد و کل ذخیرهٔ پنل را از بین می‌برد،
+        // پس اینجا در برابر typo محافظت می‌کنیم.
+        foreach ($extra as $column => $value) {
+            if (!is_string($column) || !in_array($column, $this->columnNames(), true)) {
+                Logger::warning('Ignoring unknown column in panel upsert', ['column' => $column]);
+
+                continue;
+            }
+
+            $payload[$column] = $value;
+        }
 
         // تعداد کاربران پنل از خودِ پاسخ getAdmin (ارزان‌تر از walk کامل).
         // فقط وقتی می‌نویسیم که عدد معتبر باشد تا آمار تازه‌تر خراب نشود.

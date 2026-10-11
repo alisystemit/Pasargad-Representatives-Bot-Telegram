@@ -6,9 +6,10 @@ namespace Pasargad\Bot;
 
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Crypto;
+use Pasargad\Support\ErrorHandler;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
-use Pasargad\Telegram\Bot;
+use Pasargad\Telegram\BotApi;
 
 /**
  * User profile management
@@ -19,10 +20,10 @@ use Pasargad\Telegram\Bot;
  */
 final class UserProfile
 {
-    private Bot $bot;
+    private BotApi $bot;
     private UserRepository $users;
 
-    public function __construct(Bot $bot, UserRepository $users)
+    public function __construct(BotApi $bot, UserRepository $users)
     {
         $this->bot = $bot;
         $this->users = $users;
@@ -58,7 +59,9 @@ final class UserProfile
             [['text' => '⬅️ بازگشت', 'callback_data' => 'main_menu']],
         ];
 
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
+        $this->bot->sendMessage($chatId, $message, [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
     }
 
     /**
@@ -142,7 +145,9 @@ final class UserProfile
             [['text' => '⬅️ بازگشت', 'callback_data' => 'profile:menu']],
         ];
 
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
+        $this->bot->sendMessage($chatId, $message, [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
     }
 
     /**
@@ -215,7 +220,9 @@ final class UserProfile
             [['text' => '⬅️ بازگشت', 'callback_data' => 'profile:menu']],
         ];
 
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
+        $this->bot->sendMessage($chatId, $message, [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
     }
 
     /**

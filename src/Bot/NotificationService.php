@@ -6,7 +6,7 @@ namespace Pasargad\Bot;
 
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
-use Pasargad\Telegram\Bot;
+use Pasargad\Telegram\BotApi;
 
 /**
  * Enhanced Notification System with preferences and batching
@@ -18,10 +18,10 @@ use Pasargad\Telegram\Bot;
  */
 final class NotificationService
 {
-    private Bot $bot;
+    private BotApi $bot;
     private const RETRY_DELAYS = [5, 15, 60]; // seconds
 
-    public function __construct(Bot $bot)
+    public function __construct(BotApi $bot)
     {
         $this->bot = $bot;
     }
@@ -56,9 +56,15 @@ final class NotificationService
         for ($attempt = 1; $attempt <= count(self::RETRY_DELAYS) + 1; $attempt++) {
             try {
                 $keyboard = $options['keyboard'] ?? null;
-                $parseMode = $options['parse_mode'] ?? 'html';
+                // ⚠️ حروف بزرگ الزامی است: تلگرام مقدار `html` را رد می‌کند
+                // و خطای «can't parse entities» می‌دهد. پیش‌فرض `BotApi` هم
+                // `'HTML'` است، پس اینجا هم باید همان باشد.
+                $parseMode = $options['parse_mode'] ?? 'HTML';
 
-                $this->bot->sendMessage($telegramId, $message, keyboard: $keyboard, parseMode: $parseMode);
+                $this->bot->sendMessage($telegramId, $message, array_filter([
+                    'parse_mode'   => $parseMode,
+                    'reply_markup' => $keyboard === null ? null : $this->bot->buildMarkup($keyboard),
+                ], static fn ($v): bool => $v !== null));
 
                 Logger::info('Notification sent', [
                     'telegram_id' => $telegramId,
@@ -284,7 +290,7 @@ final class NotificationService
         $message = "🧪 <b>Test Notification</b>\n";
         $message .= "─────────────────────\n";
         $message .= "Your notification system is working! ✅\n";
-        $message .= "Sent at: " . Str::dateTime(time());
+        $message .= "Sent at: " . Str::date(time());
 
         return $this->send($telegramId, $message);
     }

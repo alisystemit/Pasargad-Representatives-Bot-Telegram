@@ -189,12 +189,24 @@ final class Api
      */
     public function authenticate(array $init): array
     {
-        // بررسی امضای تلگرام (حفاظت از جعل‌سازی داده)
-        if (!$this->verifyTelegramData($init)) {
-            Logger::warning('Invalid Telegram data signature', [
-                'hash' => $init['hash'] ?? 'missing',
+        // ⚠️ امضای تلگرام اینجا **دوباره** بررسی نمی‌شود، چون `InitData::parse()`
+        // همین حالا آن را با HMAC-SHA256 و `hash_equals` تأیید کرده و `webapp.php`
+        // بدونِ `ok` اصلاً این متد را صدا نمی‌زند.
+        //
+        // چرا دوباره نکنیم؟ چون `$init` اینجا خروجیِ parse است، نه رشتهٔ خام:
+        // کلید `hash` در آن وجود ندارد و مقادیرش هم `ok`/`message`/… است. هر
+        // بررسی مجددی روی این آرایه، همیشه fail می‌شود و کل Mini App را از کار
+        // می‌اندازد (و چون `$this->user` خالی می‌ماند، `userId()` صفر برمی‌گرداند
+        // و درج سفارش با خطای کلید خارجی می‌شکند ⇒ خطای ۵۰۰ به کاربر).
+        //
+        // گارد پایین «fail-closed» است: اگر کسی بعداً این متد را با دادهٔ
+        // پارس‌نشده صدا بزند، بدون بررسی امضا رد می‌شود، نه اینکه بی‌صدا یک
+        // کاربر جعلی بسازد.
+        if (($init['ok'] ?? false) !== true) {
+            Logger::warning('authenticate() called with unverified initData', [
                 'data_keys' => array_keys($init),
             ]);
+
             return ['ok' => false, 'message' => 'امضای داده ورودی نامعتبر است.'];
         }
 
@@ -240,55 +252,6 @@ final class Api
         }
 
         return ['ok' => true, 'message' => ''];
-    }
-
-    /**
-     * بررسی امضای داده‌های تلگرام (WebApp initData)
-     * این متد اطمینان می‌دهد که داده از تلگرام جعل نشده است
-     */
-    private function verifyTelegramData(array $init): bool
-    {
-        $hash = $init['hash'] ?? '';
-        if (empty($hash)) {
-            return false;
-        }
-
-        $botToken = \Pasargad\Support\Config::str('telegram.bot_token', '');
-        if (empty($botToken)) {
-            Logger::error('Telegram bot token not configured');
-            return false;
-        }
-
-        // ساخت checkString از تمام داده‌های به جز hash
-        $data = $init;
-        unset($data['hash']);
-
-        // مرتب‌سازی الفبایی
-        ksort($data);
-
-        // ایجاد string برای تأیید
-        $checkString = '';
-        foreach ($data as $key => $value) {
-            if (is_string($value)) {
-                $checkString .= $key . '=' . $value . "\n";
-            } elseif (is_array($value)) {
-                $checkString .= $key . '=' . json_encode($value, JSON_UNESCAPED_UNICODE) . "\n";
-            } else {
-                $checkString .= $key . '=' . $value . "\n";
-            }
-        }
-
-        // حذف آخرین newline
-        $checkString = rtrim($checkString, "\n");
-
-        // تولید secret key از bot token
-        $secretKey = hash_hmac('sha256', 'WebAppData', $botToken, true);
-
-        // محاسبه hash
-        $computedHash = hash_hmac('sha256', $checkString, $secretKey);
-
-        // مقایسه محفوظ برای جلوگیری از timing attack
-        return hash_equals($computedHash, $hash);
     }
 
     /**

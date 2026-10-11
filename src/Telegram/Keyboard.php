@@ -221,12 +221,21 @@ final class Keyboard
     }
 
     /**
-     * دکمهٔ لینک بیرونی.
+     * دکمهٔ لینک بیرونی (به‌تنهایی در یک ردیف).
+     *
+     * ⚠️ چرا سه سطح `[[[button]]]` و نه دو سطح `[[button]]`؟
+     *
+     * خروجی همهٔ این کلاس (مثل `back()` و `close()`) «ردیف‌های آماده» است تا
+     * بشود مستقیم به `BotApi::buildMarkup()` داد. آن متد هر عضو سطح بیرونی را یک
+     * **ردیف** و هر عضو داخلش را یک **دکمه** می‌گیرد. پس اگر اینجا فقط
+     * `[[button]]` برگردانده شود، سطح بیرونی نقش «دکمه» را می‌گیرد نه «ردیف»،
+     * `normalizeButton` آن را دور می‌اندازد و کل خروجی `null` می‌شود — یعنی
+     * دکمه بی‌سروصدا حذف می‌شود.
      *
      * @return array<int, array<int, array<string, mixed>>>
      */
     public static function link(string $text, string $url): array
     {
-        return [['text' => $text, 'url' => $url]];
+        return [[['text' => $text, 'url' => $url]]];
     }
 }

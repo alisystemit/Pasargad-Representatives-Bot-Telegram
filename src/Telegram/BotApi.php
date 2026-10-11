@@ -762,7 +762,9 @@ class BotApi
 
         $raw = curl_exec($curl);
         $err = curl_error($curl);
-        curl_close($curl);
+
+        // `curl_close()` از PHP 8.0 بی‌اثر است و از 8.5 deprecated شده؛
+        // منابع آزادسازی خودکار است.
 
         if (!is_string($raw) || $raw === '') {
             return ['ok' => false, 'description' => $err !== '' ? $err : 'ارسال فایل ناموفق بود.'];
@@ -930,6 +932,28 @@ class BotApi
             $buttons = [];
 
             foreach ($row as $button) {
+                // ⚠️ بعضی جاها `Keyboard::back()` / `close()` را مستقیم به‌عنوان
+                // یک عنصرِ لیست ردیف‌ها append می‌کنند:
+                //
+                //     $kb = [[button], [button]];
+                //     $kb[] = Keyboard::back('menu');   // ← خودش یک «ردیف» است
+                //     $this->bot->buildMarkup($kb);
+                //
+                // آن عنصر یک ردیفِ آماده است، نه دکمه؛ پس `normalizeButton`
+                // آن را `null` می‌داد و کل دکمه **بی‌صدا حذف می‌شد** (کاربر
+                // دکمهٔ بازگشت را نمی‌دید و فکر می‌کرد منو خراب است).
+                //
+                // اینجا بازش می‌کنیم تا همان ردیف را جدا اضافه کنیم.
+                if (is_array($button) && !$this->looksLikeButton($button)) {
+                    $nested = $this->normalizeKeyboard([$button]);
+
+                    foreach ($nested as $nestedRow) {
+                        $rows[] = $nestedRow;
+                    }
+
+                    continue;
+                }
+
                 $normalized = $this->normalizeButton($button);
 
                 if ($normalized !== null) {
@@ -943,6 +967,26 @@ class BotApi
         }
 
         return $rows;
+    }
+
+    /**
+     * آیا این آرایه یک دکمه است یا یک ردیفِ آماده از دکمه‌ها؟
+     *
+     * تفکیک بر اساس کلیدهای شناسهٔ دکمه است: `Keyboard::back()` خروجی‌اش
+     * `[[['text'=>…,'data'=>…]]]` است، پس عنصر بیرونی هیچ `text`/`data`/
+     * `url`/`callback_data` ندارد و در نتیجه «ردیف» تشخیص داده می‌شود.
+     *
+     * @param array<mixed> $candidate
+     */
+    private function looksLikeButton(array $candidate): bool
+    {
+        foreach (['text', 'data', 'callback_data', 'url', 'web_app', 'style', 'pay'] as $key) {
+            if (array_key_exists($key, $candidate)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -293,6 +293,19 @@ final class Migrator
             'CREATE INDEX IF NOT EXISTS idx_orders_panel ON orders(panel_id)',
 
             // ------------------------------------------------------------------
+            // آدرس پنل برای اتصال‌های چندپنلی
+            //
+            // چرا این ستون لازم شد؟ قبلاً فقط یک `panel.base_url` سراسری در
+            // `config.php` بود، پس «اتصال پنل جدید» عملاً بی‌معنا بود: هر
+            // اتصالی مجبور بود روی همان دامنهٔ ثابت کار کند. با این ستون هر
+            // ردیف آدرس خودش را دارد و نماینده می‌تواند به پنل دومش هم وصل شود.
+            //
+            // NULL یعنی «از `panel.base_url` استفاده کن» تا نصب‌های موجود بدون
+            // تغییر رفتار کار کنند.
+            // ------------------------------------------------------------------
+            'ALTER TABLE panels ADD COLUMN base_url TEXT',
+
+            // ------------------------------------------------------------------
             // انتقال دادهٔ موجود
             // ------------------------------------------------------------------
 
@@ -706,7 +719,100 @@ final class Migrator
             return $this->migrate();
         }
 
-        return [];
+        // نسخه به‌روز است، ولی این به‌تنهایی تضمین نمی‌کند اسکیما واقعاً کامل
+        // باشد: کافی است یک `ALTER TABLE … ADD COLUMN` در گذشته نیمه‌کاره مانده
+        // باشد (مثلاً دیتابیس از روی نسخهٔ پشتیبان برگردانده شده باشد). آن‌وقت
+        // `migrations` نسخهٔ جدید را نشان می‌دهد ولی ستون نیست و هر درخواست
+        // با «no such column» می‌میرد ⇒ خطای ۵۰۰ به کاربر.
+        //
+        // پس اینجا ارزان‌ترین ممکن بررسی واقعی اسکیما را انجام می‌دهیم و اگر
+        // چیزی کم بود، همان `ALTER` را دوباره اجرا می‌کنیم.
+        return $this->repairMissingColumns();
+    }
+
+    /**
+     * اجرای دوبارهٔ `ADD COLUMN`هایی که واقعاً در دیتابیس غایب‌اند.
+     *
+     * این کار **idempotent** است: اگر ستون از قبل باشد، SQLite خطای
+     * «duplicate column» می‌دهد که اینجا نادیده گرفته می‌شود. پس اگر دیتابیس
+     * سالم بود، هیچ اتفاقی نمی‌افتد.
+     *
+     * @return array<int, string> دستورهایی که واقعاً اجرا شدند
+     */
+    private function repairMissingColumns(): array
+    {
+        $fixed = [];
+
+        foreach ($this->missingColumns() as $sql) {
+            try {
+                $this->db->pdo()->exec($sql);
+                $fixed[] = $sql;
+            } catch (Throwable $e) {
+                // «duplicate column» یعنی در واقع هست؛ خطای دیگر مهم است.
+                if (!str_contains(strtolower($e->getMessage()), 'duplicate column')) {
+                    Logger::error('Could not repair missing column', [
+                        'sql'   => $sql,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        if ($fixed !== []) {
+            Logger::warning('Schema drift repaired on hot path', ['statements' => $fixed]);
+        }
+
+        return $fixed;
+    }
+
+    /**
+     * دستورهای `ALTER TABLE … ADD COLUMN` که ستونِ مقصدشان الان وجود ندارد.
+     *
+     * چرا این فهرست را از خودِ `migrations()` استخراج می‌کنیم و نه دستی
+     * نگه می‌داریم؟ چون فهرست دستی با هر مایگریشن تازه از راه می‌افتد و
+     * همان راه‌افتادگی، دقیقاً bugی است که این متد دارد درستش می‌کند.
+     *
+     * ⚠️ متنِ اصلی دستور برگردانده می‌شود، نه یک `ADD COLUMN` بازسازی‌شده؛ چون
+     * نوع و قید ستون (`TEXT`، `NOT NULL DEFAULT 0` و…) همان چیزی است که بقیهٔ
+     * کد رویش تکیه می‌کند و بازسازیِ بدون نوع، ستون را با affinity اشتباه
+     * می‌ساخت.
+     *
+     * @return array<int, string>
+     */
+    private function missingColumns(): array
+    {
+        /** @var array<string, array<string, string>> $wanted جدول ⇒ ستون ⇒ دستور اصلی */
+        $wanted = [];
+
+        foreach (self::migrations() as $statements) {
+            foreach ($statements as $sql) {
+                if (preg_match('/^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i', $sql, $m) === 1) {
+                    $wanted[$m[1]][$m[2]] = $sql;
+                }
+            }
+        }
+
+        $missing = [];
+
+        // هر جدول فقط **یک‌بار** پرسیده می‌شود، نه هر ستون.
+        foreach ($wanted as $table => $columns) {
+            if (!$this->db->tableExists($table)) {
+                continue;   // خودِ جدول را `migrate()` می‌سازد.
+            }
+
+            $existing = array_column(
+                $this->db->all('PRAGMA table_info("' . $table . '")'),
+                'name'
+            );
+
+            foreach ($columns as $column => $sql) {
+                if (!in_array($column, $existing, true)) {
+                    $missing[] = $sql;
+                }
+            }
+        }
+
+        return $missing;
     }
 
     /**

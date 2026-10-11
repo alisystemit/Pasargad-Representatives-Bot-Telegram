@@ -4,505 +4,647 @@ declare(strict_types=1);
 
 namespace Pasargad\Bot;
 
-use Pasargad\Panel\PasarGuardClient;
 use Pasargad\Panel\PanelException;
+use Pasargad\Panel\PasarGuardClient;
 use Pasargad\Store\PanelRepository;
-use Pasargad\Store\SessionStore;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
-use Pasargad\Telegram\Bot;
+use Pasargad\Telegram\BotApi;
+use Pasargad\Telegram\Keyboard;
 
 /**
- * مدیریت ایجاد و اتصال پنل‌های جدید
- * - درخواست اطلاعات پنل
- * - تست اتصال
- * - ذخیره اتصال موفق
- * - مدیریت خطاها
+ * ساخت اتصال تازه به پنل پاسارگاد از داخل ربات.
+ *
+ * چرا این مسیر جدا از «من پنل دارم» است؟
+ *
+ * `PanelCenter` فرض می‌گیرد پنل از قبل روی همان `panel.base_url` نصب است و فقط
+ * نام کاربری/رمز می‌خواهد. اما نماینده ممکن است پنلش روی دامنهٔ خودش نصب باشد،
+ * یا بخواهد با **کلید API** وصل شود نه رمز عبور. این کلاس جریان کامل را می‌دهد:
+ *
+ *     آدرس پنل → نام کاربری → رمز/API Key → تست اتصال → ثبت
+ *
+ * سه نکتهٔ مهم که این کلاس رعایت می‌کند:
+ *
+ * ۱) **تست قبل از ذخیره.** تا وقتی ورود واقعاً تأیید نشده، چیزی در دیتابیس
+ *    نوشته نمی‌شود؛ وگرنه پنل‌های خراب در فهرست نماینده جمع می‌شدند.
+ * ۲) **رمز رمزنگاری می‌شود.** `PanelRepository::upsertFromPanel()` خودش
+ *    `Crypto::encrypt` را انجام می‌دهد، پس `panel_password` هیچ‌وقت خام نیست.
+ * ۳) **کلاینت مشترک، نه curl خام.** `PasarGuardClient` هم SSL را درست بررسی
+ *    می‌کند (نسخهٔ قبلی `CURLOPT_SSL_VERIFYPEER` را خاموش کرده بود) و هم
+ *    سقف زمانی پروسه را رعایت می‌کند؛ بدون آن یک پنلِ کند می‌تواند وبهوک را از
+ *    ۶۰ ثانیهٔ تلگرام رد کند و همان update دوباره فرستاده شود.
  */
 final class PanelConnectionManager
 {
-    private Bot $bot;
+    /**
+     * کلید حالت در `SessionStore`.
+     *
+     * `Kernel::handleSessionState()` با `switch ($mode)` تصمیم می‌گیرد پیامِ متنیِ
+     * بعدی به کدام جریان تعلق دارد. بدون این کلید، پیام‌های این جریان می‌افتند
+     * به `default` و `false` برمی‌گردانند — یعنی بی‌صدا هیچ اتفاقی نمی‌افتد.
+     */
+    public const MODE = 'panel_connect';
+
+    /**
+     * مرحله‌های جریان.
+     *
+     * ⚠️ `Kernel::handleSessionState()` مسیریابیِ پیام‌های نشست را با
+     * `switch ($step)` انجام می‌دهد، پس این مقادیر باید **دقیقاً** همان
+     * رشته‌هایی باشند که آنجا در `case` آمده‌اند.
+     */
+    public const STEP_URL        = 'panel_connect_url';
+    public const STEP_USERNAME   = 'panel_connect_username';
+    public const STEP_CREDENTIAL = 'panel_connect_credential';
+
+    /** حداکثر طول آدرس پنل؛ جلوگیری از ورودی‌های غیرمنطقی. */
+    private const MAX_URL_LENGTH = 300;
+
+    private BotApi $bot;
     private PanelRepository $panels;
     private SessionStore $sessions;
 
     public function __construct(
-        Bot $bot,
+        BotApi $bot,
         PanelRepository $panels,
         SessionStore $sessions
     ) {
-        $this->bot = $bot;
-        $this->panels = $panels;
+        $this->bot      = $bot;
+        $this->panels   = $panels;
         $this->sessions = $sessions;
     }
 
-    /**
-     * نمایش منوی ایجاد اتصال جدید
-     */
-    public function showCreateConnectionMenu(int $chatId, int $telegramId): void
-    {
-        $message = MessageFormatter::info('🔗 ایجاد اتصال پنل جدید', [
-            '📍 آدرس پنل' => 'https://your-panel.com',
-            '👤 نام کاربری' => 'نام کاربری مدیریتی',
-            '🔑 رمز عبور یا API Key' => 'توضیح اتصال',
-        ]);
-
-        $message .= "\n\n<b>انتخاب نوع اتصال:</b>\n";
-
-        $keyboard = [
-            [['text' => '🔐 رمز عبور', 'callback_data' => 'panel:connect:password']],
-            [['text' => '🔑 API Key', 'callback_data' => 'panel:connect:apikey']],
-            [['text' => '⬅️ بازگشت', 'callback_data' => 'panel_menu']],
-        ];
-
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
-    }
+    // ------------------------------------------------------------------
+    // منوها
+    // ------------------------------------------------------------------
 
     /**
-     * شروع اتصال با رمز عبور
+     * منوی شروع: کاربر انتخاب می‌کند با رمز عبور وصل شود یا با کلید API.
      */
-    public function startPasswordConnection(int $chatId, int $telegramId): void
+    public function showMenu(int $chatId): void
     {
-        $this->sessions->set($telegramId, [
-            'mode' => 'panel_connect',
-            'auth_type' => 'password',
-            'step' => 'awaiting_url',
-        ]);
-
-        $message = MessageFormatter::inputRequest(
-            'آدرس پنل پاسارگاد',
-            'آدرس کامل پنل شامل پروتکل https:// یا http://',
-            'https://panel.example.com'
+        $this->bot->sendMessage(
+            $chatId,
+            "🔌 <b>اتصال پنل پاسارگاد</b>\n\n"
+            . "برای اینکه ربات بتواند پنل را مدیریت کند (ساخت نماینده، شارژ حجم، "
+            . "ساخت کانفیگ و…) یکی از این دو را انتخاب کنید:\n\n"
+            . "🔐 <b>نام کاربری و رمز عبور</b> — حساب مدیریتی در پنل\n"
+            . "🔑 <b>کلید API</b> — اگر پنل دسترسی API با کلید دارد\n\n"
+            . "🔒 اطلاعات شما **رمزنگاری‌شده** ذخیره می‌شود و هیچ‌وقت به‌صورت خام "
+            . "نمایش داده نمی‌شود.\n\n"
+            . "👇 کدام را دارید؟",
+            [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    [['text' => '🔐 نام کاربری و رمز عبور', 'data' => BotApi::encodeData('panel.connect.password')]],
+                    [['text' => '🔑 کلید API', 'data' => BotApi::encodeData('panel.connect.apikey')]],
+                    Keyboard::back(BotApi::encodeData('panel.list'), '🔙 بازگشت'),
+                ])),
+            ]
         );
-
-        $this->bot->sendMessage($chatId, $message);
     }
 
     /**
-     * شروع اتصال با API Key
-     */
-    public function startApiKeyConnection(int $chatId, int $telegramId): void
-    {
-        $this->sessions->set($telegramId, [
-            'mode' => 'panel_connect',
-            'auth_type' => 'apikey',
-            'step' => 'awaiting_url',
-        ]);
-
-        $message = MessageFormatter::inputRequest(
-            'آدرس پنل پاسارگاد',
-            'آدرس کامل پنل شامل پروتکل https:// یا http://',
-            'https://panel.example.com'
-        );
-
-        $this->bot->sendMessage($chatId, $message);
-    }
-
-    /**
-     * پردازش ورودی آدرس پنل
-     */
-    public function handlePanelUrl(int $chatId, int $telegramId, string $url): void
-    {
-        $url = trim($url);
-
-        // بررسی URL
-        $error = ErrorHandler::validateInput($url, 'url');
-        if ($error !== null) {
-            $this->bot->sendMessage($chatId, MessageFormatter::validationError('آدرس پنل', $error));
-            return;
-        }
-
-        // ذخیره URL
-        $state = $this->sessions->get($telegramId) ?? [];
-        $state['panel_url'] = $url;
-        $state['step'] = 'awaiting_username';
-        $this->sessions->set($telegramId, $state);
-
-        // درخواست نام کاربری
-        $message = MessageFormatter::inputRequest(
-            'نام کاربری مدیریتی',
-            'نام کاربری حساب مدیریتی در پنل',
-            'admin'
-        );
-
-        $this->bot->sendMessage($chatId, $message);
-    }
-
-    /**
-     * پردازش ورودی نام کاربری
-     */
-    public function handleUsername(int $chatId, int $telegramId, string $username): void
-    {
-        $username = trim($username);
-
-        // بررسی نام کاربری
-        $error = ErrorHandler::validateInput($username, 'username', ['min_length' => 3]);
-        if ($error !== null) {
-            $this->bot->sendMessage($chatId, MessageFormatter::validationError('نام کاربری', $error));
-            return;
-        }
-
-        // ذخیره نام کاربری
-        $state = $this->sessions->get($telegramId) ?? [];
-        $state['username'] = $username;
-        $state['step'] = 'awaiting_credential';
-        $this->sessions->set($telegramId, $state);
-
-        // درخواست رمز عبور یا API Key
-        $authType = $state['auth_type'] ?? 'password';
-        if ($authType === 'password') {
-            $message = MessageFormatter::inputRequest(
-                'رمز عبور',
-                'رمز عبور حساب مدیریتی در پنل',
-                '••••••••'
-            );
-        } else {
-            $message = MessageFormatter::inputRequest(
-                'API Key',
-                'کلید API برای احراز هویت',
-                'sk_live_...'
-            );
-        }
-
-        $this->bot->sendMessage($chatId, $message);
-    }
-
-    /**
-     * پردازش ورودی رمز عبور/API Key و تست اتصال
-     */
-    public function handleCredentialAndTest(int $chatId, int $telegramId, string $credential): void
-    {
-        $credential = trim($credential);
-
-        if (empty($credential)) {
-            $this->bot->sendMessage(
-                $chatId,
-                MessageFormatter::validationError(
-                    'اعتبارنامه',
-                    '⚠️ رمز عبور یا API Key نمی‌تواند خالی باشد.'
-                )
-            );
-            return;
-        }
-
-        $state = $this->sessions->get($telegramId) ?? [];
-        $panelUrl = $state['panel_url'] ?? null;
-        $username = $state['username'] ?? null;
-        $authType = $state['auth_type'] ?? 'password';
-
-        if (!$panelUrl || !$username) {
-            $this->bot->sendMessage(
-                $chatId,
-                MessageFormatter::error('خطا در جلسه کار', 'لطفاً دوباره شروع کنید.')
-            );
-            $this->sessions->clear($telegramId);
-            return;
-        }
-
-        // نمایش پیام "درحال تست"
-        $testingMsg = $this->bot->sendMessage($chatId, MessageFormatter::loading('تست اتصال با پنل'));
-
-        try {
-            // تست اتصال
-            $client = new PasarGuardClient();
-            $testResult = $this->testPanelConnection(
-                $panelUrl,
-                $username,
-                $credential,
-                $authType
-            );
-
-            if (!$testResult['ok']) {
-                $this->bot->editMessageText(
-                    $chatId,
-                    $testingMsg['result']['message_id'] ?? 0,
-                    MessageFormatter::error(
-                        'اتصال ناموفق',
-                        $testResult['message'] ?? 'خطای نامشخص'
-                    )
-                );
-                return;
-            }
-
-            // اتصال موفق - ذخیره
-            $adminInfo = $testResult['admin'] ?? [];
-            $state['step'] = 'awaiting_name';
-            $state['credential'] = $credential;
-            $this->sessions->set($telegramId, $state);
-
-            $confirmMsg = "✅ <b>اتصال موفق!</b>\n\n";
-            $confirmMsg .= "📊 <b>اطلاعات پنل:</b>\n";
-            $confirmMsg .= "  • آدرس: <code>" . Str::escape($panelUrl) . "</code>\n";
-            $confirmMsg .= "  • نام کاربری: <code>" . Str::escape($username) . "</code>\n";
-            $confirmMsg .= "  • مدیر: " . Str::escape($adminInfo['name'] ?? 'نامشخص') . "\n\n";
-            $confirmMsg .= "📝 <b>نام این پنل را وارد کنید</b> (برای نمایش در ربات):\n";
-            $confirmMsg .= "(مثال: \"پنل اصلی\" یا \"پنل کاربران\")\n\n";
-            $confirmMsg .= "❌ برای لغو: /cancel";
-
-            $this->bot->editMessageText($chatId, $testingMsg['result']['message_id'] ?? 0, $confirmMsg);
-        } catch (\Throwable $e) {
-            Logger::error('Panel connection test failed', [
-                'error' => $e->getMessage(),
-                'panel_url' => $panelUrl,
-            ]);
-
-            $this->bot->editMessageText(
-                $chatId,
-                $testingMsg['result']['message_id'] ?? 0,
-                MessageFormatter::error(
-                    'خطا در تست اتصال',
-                    $e->getMessage()
-                )
-            );
-        }
-    }
-
-    /**
-     * تست اتصال با پنل
-     */
-    private function testPanelConnection(
-        string $url,
-        string $username,
-        string $credential,
-        string $authType
-    ): array {
-        try {
-            // بررسی صحت URL
-            if (!filter_var($url, FILTER_VALIDATE_URL)) {
-                return [
-                    'ok' => false,
-                    'message' => 'آدرس پنل معتبر نیست',
-                ];
-            }
-
-            // تمیزکردن URL
-            $url = rtrim($url, '/');
-
-            // سعی برای اتصال
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url . '/api/check');
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-
-            if ($httpCode !== 200) {
-                return [
-                    'ok' => false,
-                    'message' => 'پنل در آدرس مشخص‌شده یافت نشد (HTTP ' . $httpCode . ')',
-                ];
-            }
-
-            // بررسی ساده - اگر پاسخ OK باشد
-            if (strpos($response, 'ok') === false && $response !== 'ok') {
-                // سعی برای login با credentials
-                $loginResult = $this->attemptPanelLogin($url, $username, $credential, $authType);
-                if (!$loginResult['ok']) {
-                    return $loginResult;
-                }
-            }
-
-            // اتصال موفق
-            return [
-                'ok' => true,
-                'message' => 'اتصال موفق',
-                'admin' => [
-                    'name' => $username,
-                ],
-            ];
-        } catch (\Throwable $e) {
-            Logger::error('Panel connection test error', ['error' => $e->getMessage()]);
-            return [
-                'ok' => false,
-                'message' => 'خطا: ' . $e->getMessage(),
-            ];
-        }
-    }
-
-    /**
-     * سعی برای ورود به پنل
-     */
-    private function attemptPanelLogin(
-        string $url,
-        string $username,
-        string $credential,
-        string $authType
-    ): array {
-        try {
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url . '/api/login');
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_POST, true);
-
-            $postData = [
-                'username' => $username,
-            ];
-
-            if ($authType === 'password') {
-                $postData['password'] = $credential;
-            } else {
-                $postData['api_key'] = $credential;
-            }
-
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postData));
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-
-            if ($httpCode !== 200) {
-                return [
-                    'ok' => false,
-                    'message' => 'احراز هویت ناموفق - نام کاربری یا رمز عبور اشتباه است',
-                ];
-            }
-
-            $result = json_decode($response, true);
-            if (($result['ok'] ?? false) === false) {
-                return [
-                    'ok' => false,
-                    'message' => $result['message'] ?? 'احراز هویت ناموفق',
-                ];
-            }
-
-            return [
-                'ok' => true,
-                'message' => 'اتصال موفق',
-            ];
-        } catch (\Throwable $e) {
-            return [
-                'ok' => false,
-                'message' => 'خطا در بررسی اعتبارات: ' . $e->getMessage(),
-            ];
-        }
-    }
-
-    /**
-     * پردازش نام پنل و ذخیره اتصال
-     */
-    public function handlePanelName(int $chatId, int $telegramId, string $panelName, int $userId): void
-    {
-        $panelName = trim($panelName);
-
-        if (empty($panelName)) {
-            $this->bot->sendMessage(
-                $chatId,
-                MessageFormatter::validationError('نام پنل', '⚠️ نام پنل نمی‌تواند خالی باشد.')
-            );
-            return;
-        }
-
-        if (mb_strlen($panelName) > 100) {
-            $this->bot->sendMessage(
-                $chatId,
-                MessageFormatter::validationError('نام پنل', '⚠️ نام پنل نمی‌تواند بیش از ۱۰۰ کاراکتر باشد.')
-            );
-            return;
-        }
-
-        $state = $this->sessions->get($telegramId) ?? [];
-        $panelUrl = $state['panel_url'] ?? null;
-        $username = $state['username'] ?? null;
-        $credential = $state['credential'] ?? null;
-
-        if (!$panelUrl || !$username || !$credential) {
-            $this->bot->sendMessage($chatId, MessageFormatter::error('خطا', 'اطلاعات ناقص است.'));
-            $this->sessions->clear($telegramId);
-            return;
-        }
-
-        try {
-            // ذخیره پنل در دیتابیس
-            $panelId = $this->panels->create([
-                'user_id' => $userId,
-                'panel_name' => $panelName,
-                'panel_url' => $panelUrl,
-                'panel_username' => $username,
-                'panel_password' => $credential, // باید رمزگذاری شود!
-                'status' => 'active',
-                'created_at' => time(),
-            ]);
-
-            $this->sessions->clear($telegramId);
-
-            $successMsg = MessageFormatter::success(
-                'پنل با موفقیت اضافه شد! ✨',
-                [
-                    'نام' => $panelName,
-                    'آدرس' => Str::escape($panelUrl),
-                    'وضعیت' => 'فعال ✅',
-                ]
-            );
-
-            $this->bot->sendMessage($chatId, $successMsg);
-
-            // نمایش منوی پنل
-            $this->showPanelMenu($chatId, $telegramId);
-        } catch (\Throwable $e) {
-            Logger::error('Failed to save panel', ['error' => $e->getMessage()]);
-
-            $this->bot->sendMessage(
-                $chatId,
-                MessageFormatter::error('خطا در ذخیره پنل', $e->getMessage())
-            );
-        }
-    }
-
-    /**
-     * نمایش منوی پنل
-     */
-    public function showPanelMenu(int $chatId, int $telegramId): void
-    {
-        $message = "🖥️ <b>مدیریت پنل‌ها</b>\n\n";
-
-        $keyboard = [
-            [['text' => '➕ اتصال پنل جدید', 'callback_data' => 'panel:connect']],
-            [['text' => '📋 لیست پنل‌های من', 'callback_data' => 'panel:list']],
-            [['text' => '⬅️ بازگشت', 'callback_data' => 'main_menu']],
-        ];
-
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
-    }
-
-    /**
-     * نمایش لیست پنل‌های کاربر
+     * فهرست پنل‌های کاربر.
+     *
+     * ⚠️ `$userId` باید شناسهٔ داخلی جدول `users` باشد، نه آیدی تلگرام —
+     * وگرنه هیچ ردیفی پیدا نمی‌شود و کاربر همیشه «پنلی ندارد» می‌بیند.
      */
     public function listUserPanels(int $chatId, int $userId): void
     {
-        // TODO: دریافت پنل‌های کاربر از دیتابیس
-        $panels = []; // $this->panels->findByUserId($userId)
+        $panels = $this->panels->listByUser($userId);
 
-        if (empty($panels)) {
-            $message = "📭 <b>پنلی موجود نیست</b>\n\n";
-            $message .= "برای شروع، یک پنل جدید اتصال دهید:\n";
+        if ($panels === []) {
+            $this->bot->sendMessage(
+                $chatId,
+                "📭 <b>هنوز پنلی وصل نکرده‌اید</b>\n\n"
+                . "برای شروع، یک پنل جدید وصل کنید:",
+                [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        [['text' => '➕ اتصال پنل جدید', 'data' => BotApi::encodeData('panel.connect')]],
+                        Keyboard::back(BotApi::encodeData('panel.list'), '🔙 بازگشت'),
+                    ])),
+                ]
+            );
 
-            $keyboard = [
-                [['text' => '➕ اتصال پنل جدید', 'callback_data' => 'panel:connect']],
-                [['text' => '⬅️ بازگشت', 'callback_data' => 'main_menu']],
-            ];
-
-            $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
             return;
         }
 
-        $message = "🖥️ <b>پنل‌های شما</b>\n\n";
+        $lines = ['🖥️ <b>پنل‌های شما</b> (' . Str::faNumber(count($panels)) . ')', ''];
 
         foreach ($panels as $panel) {
-            $status = $panel['status'] === 'active' ? '✅' : '⛔️';
-            $message .= "$status <b>" . Str::escape((string) $panel['panel_name']) . "</b>\n";
-            $message .= "   📍 " . Str::escape((string) $panel['panel_url']) . "\n\n";
+            $label = trim((string) ($panel['label'] ?? ''));
+
+            $lines[] = PanelRepository::statusLabel($panel) . ' <b>'
+                . Str::escape($label !== '' ? $label : (string) $panel['panel_username']) . '</b>';
+
+            if ($label !== '') {
+                $lines[] = '   🆔 ' . Str::escape((string) $panel['panel_username']);
+            }
+
+            $lines[] = '   💾 ' . Str::formatBytes((int) $panel['data_limit'])
+                . ' • 📥 ' . Str::formatBytes((int) $panel['used_traffic']);
+
+            $daysLeft = PanelRepository::daysLeft($panel);
+
+            $lines[] = $daysLeft === null
+                ? '   ⏳ بدون انقضا'
+                : '   📅 ' . Str::faNumber($daysLeft) . ' روز اعتبار';
+
+            $lines[] = '';
         }
 
-        $keyboard = [
-            [['text' => '➕ اتصال جدید', 'callback_data' => 'panel:connect']],
-            [['text' => '⬅️ بازگشت', 'callback_data' => 'main_menu']],
+        $kb = [[['text' => '➕ اتصال پنل جدید', 'data' => BotApi::encodeData('panel.connect')]]];
+        $kb[] = Keyboard::back(BotApi::encodeData('panel.list'), '🔙 بازگشت');
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($kb),
+        ]);
+    }
+
+    // ------------------------------------------------------------------
+    // شروع جریان (از دکمه‌ها)
+    // ------------------------------------------------------------------
+
+    public function startPasswordConnection(int $chatId, int $telegramId): void
+    {
+        $this->beginFlow($chatId, $telegramId, 'password');
+    }
+
+    public function startApiKeyConnection(int $chatId, int $telegramId): void
+    {
+        $this->beginFlow($chatId, $telegramId, 'apikey');
+    }
+
+    private function beginFlow(int $chatId, int $telegramId, string $authMode): void
+    {
+        // ⚠️ کل نشست پاک می‌شود، نه فقط کلیدهای این جریان. اگر نشستِ نیمه‌کارهٔ
+        // دیگری (مثلاً «ویرایش بسته») باقی بماند، پیام بعدیِ کاربر به‌جای این
+        // جریان، آن یکی را ادامه می‌دهد و چیز اشتباهی ذخیره می‌شود.
+        $this->sessions->clear($telegramId);
+
+        $this->sessions->set($telegramId, [
+            'step'      => self::STEP_URL,
+            'auth_mode' => $authMode,
+        ]);
+
+        $this->askBaseUrl($chatId);
+    }
+
+    // ------------------------------------------------------------------
+    // پیام‌های هر مرحله
+    // ------------------------------------------------------------------
+
+    private function askBaseUrl(int $chatId): void
+    {
+        $this->bot->sendMessage(
+            $chatId,
+            "🌐 <b>آدرس پنل پاسارگاد را بفرستید</b>\n\n"
+            . "آدرسی که با آن پنل را باز می‌کنید، همراه <code>https://</code>:\n"
+            . "<code>https://panel.example.com</code>\n\n"
+            . "💡 اگر پنل روی زیرشاخه نصب است همان را کامل بنویسید.\n"
+            . "❌ برای لغو: /cancel"
+        );
+    }
+
+    private function askUsername(int $chatId): void
+    {
+        $this->bot->sendMessage(
+            $chatId,
+            "👤 <b>نام کاربری مدیریتی را بفرستید</b>\n\n"
+            . "همان نام کاربری‌ای که با آن وارد پنل می‌شوید.\n"
+            . "پنل باید به این حساب اجازهٔ مدیریت نماینده‌ها را بدهد.\n\n"
+            . "❌ برای لغو: /cancel"
+        );
+    }
+
+    private function askCredential(int $chatId, bool $isApiKey): void
+    {
+        $label = $isApiKey ? 'کلید API' : 'رمز عبور';
+
+        $this->bot->sendMessage(
+            $chatId,
+            "🔐 <b>$label را بفرستید</b>\n\n"
+            . ($isApiKey
+                ? "کلیدی که پنل در بخش تنظیمات/API در اختیارتان گذاشته است.\n"
+                : "رمز عبور حساب مدیریتی در پنل.\n")
+            . "\n🔒 این مقدار رمزنگاری می‌شود و هیچ‌وقت به‌صورت خام ذخیره یا نمایش داده نمی‌شود.\n"
+            . "❌ برای لغو: /cancel"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // پردازش ورودی‌ها
+    // ------------------------------------------------------------------
+
+    /**
+     * مرحلهٔ ۱ → ۲ (یا مستقیم به ۳، در مسیر کلید API که نام کاربری نمی‌خواهد).
+     *
+     * @param array<string, mixed> $state
+     * @return bool true یعنی مرحله مصرف شد و نشست جلو رفت
+     */
+    public function handleBaseUrl(int $chatId, int $telegramId, string $text, array $state): bool
+    {
+        $url = $this->normaliseBaseUrl($text);
+
+        if ($url === null) {
+            $this->bot->sendMessage(
+                $chatId,
+                "⚠️ <b>آدرس پنل معتبر نیست.</b>\n\n"
+                . "آدرس باید با <code>http://</code> یا <code>https://</code> شروع شود و یک دامنه داشته باشد.\n"
+                . "نمونهٔ درست: <code>https://panel.example.com</code>"
+            );
+
+            return false;   // نشست را نگه می‌داریم تا کاربر دوباره تلاش کند.
+        }
+
+        $state['panel_base_url'] = $url;
+        $state['step']           = ($state['auth_mode'] ?? 'password') === 'apikey'
+            ? self::STEP_CREDENTIAL
+            : self::STEP_USERNAME;
+
+        $this->sessions->set($telegramId, $state);
+
+        if ($state['step'] === self::STEP_USERNAME) {
+            $this->askUsername($chatId);
+        } else {
+            $this->askCredential($chatId, true);
+        }
+
+        return true;
+    }
+
+    /**
+     * مرحلهٔ ۲ → ۳.
+     *
+     * @param array<string, mixed> $state
+     */
+    public function handleUsername(int $chatId, int $telegramId, string $text, array $state): bool
+    {
+        $username = Str::toEnglishDigits(trim($text));
+
+        if (!Str::isValidPanelUsername($username)) {
+            $this->bot->sendMessage(
+                $chatId,
+                "⚠️ <b>نام کاربری نامعتبر است.</b>\n\n"
+                . "فقط حروف انگلیسی، عدد و زیرخط (_) مجاز است."
+            );
+
+            return false;
+        }
+
+        $state['panel_username'] = $username;
+        $state['step']           = self::STEP_CREDENTIAL;
+
+        $this->sessions->set($telegramId, $state);
+
+        $this->askCredential($chatId, ($state['auth_mode'] ?? 'password') === 'apikey');
+
+        return true;
+    }
+
+    /**
+     * مرحلهٔ ۳: تست اتصال و — اگر موفق بود — ثبت پنل.
+     *
+     * @param array<string, mixed> $state
+     * @param array<string, mixed> $user رکورد کاربر جاری
+     */
+    public function handleCredential(int $chatId, int $telegramId, string $text, array $state, array $user): bool
+    {
+        $credential = trim($text);
+
+        if ($credential === '') {
+            $this->bot->sendMessage($chatId, '⚠️ مقدار خالی است. دوباره بفرستید یا /cancel بزنید.');
+
+            return false;
+        }
+
+        $baseUrl = (string) ($state['panel_base_url'] ?? '');
+        $isKey   = ($state['auth_mode'] ?? 'password') === 'apikey';
+        $userId  = (int) ($user['id'] ?? 0);
+
+        if ($baseUrl === '' || $userId <= 0) {
+            $this->sessions->clear($telegramId);
+
+            $this->bot->sendMessage($chatId, '⚠️ جلسهٔ اتصال نامعتبر است. دوباره از منوی «اتصال پنل جدید» شروع کنید.');
+
+            return false;
+        }
+
+        // پیام «در حال تست» جداگانه فرستاده و بعد **حذف** می‌شود (نه ویرایش):
+        // `editMessageText` روی پیامی که همین حالا فرستاده شده با خطای
+        // «message is not modified» برمی‌گردد.
+        $pending = $this->bot->sendMessage($chatId, '⏳ در حال تست اتصال به پنل…');
+
+        try {
+            $client  = new PasarGuardClient($baseUrl);
+            $probe   = $this->probePanel($client, $state, $credential, $isKey);
+
+            if (!$probe['ok']) {
+                $this->clearPending($chatId, $pending);
+
+                $this->bot->sendMessage(
+                    $chatId,
+                    "❌ <b>اتصال برقرار نشد</b>\n\n" . $probe['message'] . "\n\n"
+                    . "💡 آدرس، نام کاربری و رمز را بررسی کنید. اگر پنل گواهی SSL معتبر ندارد، "
+                    . "موقتاً <code>panel.verify_ssl</code> را در تنظیمات خاموش کنید."
+                );
+
+                return false;
+            }
+
+            // در مسیر کلید API نام کاربریِ پنل را نداریم؛ یک شناسهٔ پایدار از
+            // خود کلید می‌سازیم تا ردیف‌های مختلف به هم قاطی نشوند.
+            $username = trim((string) ($state['panel_username'] ?? ''));
+
+            if ($username === '') {
+                $username = 'apikey-' . substr(hash('sha256', $credential), 0, 12);
+            }
+
+            $existing = $this->panels->findByPanelUsername($username);
+
+            // ⚠️ مالکیت را نمی‌رباییم: اگر پنل به حساب دیگری وصل است، رد می‌شود.
+            if ($existing !== null && (int) $existing['user_id'] !== $userId) {
+                $this->clearPending($chatId, $pending);
+
+                $this->bot->sendMessage(
+                    $chatId,
+                    "🔒 <b>این پنل به حساب دیگری وصل است.</b>\n\n"
+                    . "پنل <code>" . Str::escape($username) . "</code> قبلاً توسط کاربر دیگری ثبت شده است."
+                );
+
+                return false;
+            }
+
+            // `upsertFromPanel` خودش رمز را با `Crypto::encrypt` ذخیره می‌کند.
+            //
+            // ⚠️ آدرس اختصاصی این اتصال در `base_url` ذخیره می‌شود (NULL یعنی
+            // «از `panel.base_url` سراسری استفاده کن»). ستون در مهاجرت
+            // `013` اضافه می‌شود؛ اگر روی یک دیتابیس قدیمی هنوز نبود،
+            // `Migrator::repairMissingColumns()` آن را خودش می‌سازد.
+            $panelId = $this->panels->upsertFromPanel(
+                $userId,
+                $username,
+                $credential,
+                $probe['admin'],
+                $existing !== null ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
+                ['base_url' => $baseUrl]
+            );
+
+            $this->clearPending($chatId, $pending);
+
+            // نشست فقط **بعد** از ثبت موفق پاک می‌شود.
+            $this->sessions->clear($telegramId);
+
+            $panel = $this->panels->find($panelId);
+
+            $this->bot->sendMessage(
+                $chatId,
+                ($existing !== null
+                    ? '✅ <b>اتصال پنل به‌روزرسانی شد.</b>'
+                    : '🎉 <b>پنل با موفقیت وصل شد!</b>')
+                . "\n\n"
+                . ($panel !== null ? $this->panelSummary($panel) : ''),
+                [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        [['text' => '📋 فهرست پنل‌ها', 'data' => BotApi::encodeData('panel.list')]],
+                        Keyboard::back(BotApi::encodeData('panel.list'), '🔙 بازگشت'),
+                    ])),
+                ]
+            );
+
+            return true;
+        } catch (PanelException $e) {
+            $this->clearPending($chatId, $pending);
+            Logger::warning('Panel connection failed', ['error' => $e->getMessage(), 'url' => $baseUrl]);
+
+            $this->bot->sendMessage(
+                $chatId,
+                '❌ <b>خطا در اتصال به پنل</b>' . "\n\n" . Str::escape($e->getMessage())
+            );
+
+            return false;
+        } catch (\Throwable $e) {
+            $this->clearPending($chatId, $pending);
+            Logger::error('Panel connection crashed', ['error' => $e->getMessage(), 'url' => $baseUrl]);
+
+            $this->bot->sendMessage(
+                $chatId,
+                "⚠️ <b>خطای غیرمنتظره</b>\n\nاتصال انجام نشد. جزئیات در لاگ سرور ثبت شد."
+            );
+
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // کمکی‌ها
+    // ------------------------------------------------------------------
+
+    /**
+     * تست واقعی اتصال.
+     *
+     * برای مسیر رمز از همان `login()`/`getAdmin()`ای استفاده می‌شود که خود ربات
+     * برای همهٔ عملیات پنل به کار می‌برد، پس رفتارش یکی است. برای کلید API یک
+     * درخواست سبک با هدر `Authorization` زده می‌شود.
+     *
+     * @param array<string, mixed> $state
+     * @return array{ok:bool, message:string, admin:array<string, mixed>}
+     */
+    private function probePanel(
+        PasarGuardClient $client,
+        array $state,
+        string $credential,
+        bool $isApiKey
+    ): array {
+        $username = (string) ($state['panel_username'] ?? '');
+
+        if ($isApiKey) {
+            return $this->probeWithApiKey($client, $credential);
+        }
+
+        return $this->probeWithPassword($client, $username, $credential);
+    }
+
+    /**
+     * @return array{ok:bool, message:string, admin:array<string, mixed>}
+     */
+    private function probeWithPassword(PasarGuardClient $client, string $username, string $credential): array
+    {
+        if ($username === '') {
+            return ['ok' => false, 'message' => 'نام کاربری خالی است.', 'admin' => []];
+        }
+
+        try {
+            // بدون کش: این یک تست یک‌باره است و نباید توکن را نگه دارد.
+            $token = $client->login($username, $credential, false);
+            $client->forgetToken($username);
+
+            if ($token === '') {
+                return ['ok' => false, 'message' => 'پنل توکنی برنگرداند.', 'admin' => []];
+            }
+
+            return [
+                'ok'      => true,
+                'message' => 'اتصال برقرار شد.',
+                'admin'   => $client->getAdmin($username, $username, $credential),
+            ];
+        } catch (PanelException $e) {
+            return [
+                'ok'      => false,
+                'message' => $e->isAuthError()
+                    ? 'نام کاربری یا رمز عبور درست نیست.'
+                    : Str::escape($e->getMessage()),
+                'admin'   => [],
+            ];
+        }
+    }
+
+    /**
+     * @return array{ok:bool, message:string, admin:array<string, mixed>}
+     */
+    private function probeWithApiKey(PasarGuardClient $client, string $apiKey): array
+    {
+        try {
+            $response = $client->request('GET', '/api/admin/me', 'api', $apiKey);
+
+            $data = $response['data'] ?? [];
+
+            return [
+                'ok'      => true,
+                'message' => 'اتصال با کلید API برقرار شد.',
+                'admin'   => is_array($data) ? $data : [],
+            ];
+        } catch (PanelException $e) {
+            return [
+                'ok'      => false,
+                'message' => $e->isAuthError()
+                    ? 'کلید API معتبر نیست یا منقضی شده است.'
+                    : Str::escape($e->getMessage()),
+                'admin'   => [],
+            ];
+        }
+    }
+
+    /**
+     * پاک‌سازی آدرس ورودی.
+     *
+     * چرا این‌قدر سخت‌گیرانه؟ ورودی کاربر مستقیم به `Http` می‌رود، پس باید قبلش
+     * هم معتبر و هم بی‌خطر باشد: فقط http/https، فقط دامنه، و بدون `user:pass`.
+     */
+    private function normaliseBaseUrl(string $text): ?string
+    {
+        $url = rtrim(trim($text), "/ \t\n\r\0\x0B");
+
+        if ($url === '' || strlen($url) > self::MAX_URL_LENGTH) {
+            return null;
+        }
+
+        // اگر کاربر scheme را ننوشت، خودمان اضافه می‌کنیم.
+        if (!preg_match('~^https?://~i', $url)) {
+            $url = 'https://' . $url;
+        }
+
+        $parts = parse_url($url);
+
+        if ($parts === false
+            || empty($parts['host'])
+            || !empty($parts['user'])
+            || !empty($parts['pass'])
+        ) {
+            return null;   // URL با `user:pass` یا بدون میزبان مجاز نیست.
+        }
+
+        if (!in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)) {
+            return null;   // `file://`، `ftp://` و… کنار گذاشته می‌شوند.
+        }
+
+        return $this->isUsableHost((string) $parts['host']) ? $url : null;
+    }
+
+    /**
+     * آیا این میزبان واقعاً یک میزبان قابل استفاده است؟
+     *
+     * چرا لازم است؟ چون بالا `https://` را به ورودی اضافه می‌کنیم، پس هر متن
+     * دلخواهی («نامعتبر»، «سلام») از `parse_url` رد می‌شود و به‌عنوان میزبان جا
+     * می‌افتد؛ بعد `PasarGuardClient` یک درخواست HTTP به همان متن می‌زند.
+     *
+     * پس فقط دو چیز قبول است: یک IP معتبر، یا یک نام دامنهٔ واقعی. دامنهٔ
+     * غیر‌ASCII (مثل «پنل.ایر») هم رد می‌شود چون باید به Punycode تبدیل شود و
+     * `Http` این کار را نمی‌کند.
+     */
+    private function isUsableHost(string $host): bool
+    {
+        if ($host === '' || strlen($host) > 253) {
+            return false;
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return true;
+        }
+
+        // نام دامنه: برچسب‌های الفبا/عدد/خط‌تیره که با خط‌تیره شروع یا تمام
+        // نمی‌شوند، و حداقل یک نقطه (یعنی واقعاً دامنه است، نه یک کلمه).
+        return preg_match(
+            '/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i',
+            $host
+        ) === 1;
+    }
+
+    /**
+     * @param array<string, mixed> $panel
+     */
+    private function panelSummary(array $panel): string
+    {
+        $lines = [
+            '📋 <b>مشخصات اتصال</b>',
+            '───────────────',
+            '👤 نام کاربری: <code>' . Str::escape((string) $panel['panel_username']) . '</code>',
+            '📊 وضعیت: ' . PanelRepository::statusLabel($panel),
+            '🔐 رمز: ذخیره‌شده به‌صورت رمزنگاری‌شده 🔒',
         ];
 
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
+        // آدرس اختصاصی این اتصال؛ NULL یعنی از پیش‌فرض سراسری می‌خواند.
+        $baseUrl = trim((string) ($panel['base_url'] ?? ''));
+
+        $lines[] = '📍 آدرس پنل: ' . ($baseUrl !== ''
+            ? '<code>' . Str::escape($baseUrl) . '</code>'
+            : '<i>پیش‌فرض سراسری (panel.base_url)</i>');
+
+        if (!empty($panel['label'])) {
+            $lines[] = '🏷️ برچسب: ' . Str::escape((string) $panel['label']);
+        }
+
+        if ((int) ($panel['data_limit'] ?? 0) > 0) {
+            $lines[] = '💾 سقف حجم: ' . Str::formatBytes((int) $panel['data_limit']);
+        }
+
+        if ((int) ($panel['used_traffic'] ?? 0) > 0) {
+            $lines[] = '📥 مصرف: ' . Str::formatBytes((int) $panel['used_traffic']);
+        }
+
+        if (!empty($panel['sub_url'])) {
+            $lines[] = '🔗 آدرس کاربر: <code>' . Str::escape((string) $panel['sub_url']) . '</code>';
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * پاک‌کردن پیام «در حال تست».
+     *
+     * @param array<string, mixed> $pending خروجی `sendMessage`
+     */
+    private function clearPending(int $chatId, array $pending): void
+    {
+        $messageId = (int) ($pending['result']['message_id'] ?? 0);
+
+        if ($messageId <= 0) {
+            return;
+        }
+
+        try {
+            $this->bot->deleteMessage($chatId, $messageId);
+        } catch (\Throwable $e) {
+            Logger::debug('Could not delete pending message', ['error' => $e->getMessage()]);
+        }
     }
 }

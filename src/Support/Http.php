@@ -80,7 +80,10 @@ final class Http
         $errNo = curl_errno($curl);
         $err  = curl_error($curl);
         $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
-        curl_close($curl);
+
+        // `curl_close()` از PHP 8.0 بی‌اثر است و از 8.5 **deprecated** شده؛
+        // صدا زدنش یک پیام هشدار چاپ می‌کرد که وسط پاسخ JSON می‌افتاد و آن را
+        // خراب می‌کرد (و `headers already sent` می‌داد). منابع آزادسازی خودکار است.
 
         if ($errNo !== 0) {
             return ['status' => 0, 'body' => '', 'headers' => $responseHeaders, 'error' => $err];

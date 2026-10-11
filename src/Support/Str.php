@@ -196,6 +196,33 @@ final class Str
     }
 
     /**
+     * «۳ روز پیش» — فاصلهٔ زمانی از اکنون.
+     *
+     * چرا جدا از `duration()`؟ چون آن یک **مدت** را می‌گوید («۳ روز و ۵ ساعت»)
+     * ولی اینجا **گذشته** لازم است («۳ روز و ۵ ساعت پیش»). داشبورد مدیریت و
+     * فهرست فعالیت‌ها هر دو به شکل گذشته زمان را نشان می‌دهند.
+     */
+    public static function timeAgo(?int $timestamp): string
+    {
+        if ($timestamp === null || $timestamp <= 0) {
+            return '—';
+        }
+
+        $diff = time() - $timestamp;
+
+        // آینده در عمل یعنی اختلاف ساعت سرور با زمان تلگرام. منفی نشود.
+        if ($diff < 0) {
+            $diff = 0;
+        }
+
+        if ($diff < 60) {
+            return 'لحظاتی پیش';
+        }
+
+        return self::duration($diff) . ' پیش';
+    }
+
+    /**
      * «۳ روز و ۵ ساعت» — مدت زمانی خوانا.
      */
     public static function duration(int $seconds): string

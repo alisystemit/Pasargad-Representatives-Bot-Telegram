@@ -243,6 +243,11 @@ final class Kernel
         return $this->discounts;
     }
 
+    private function userSettings(): UserSettings
+    {
+        return new UserSettings($this->bot, $this->users, $this->settings, $this->panels);
+    }
+
     private function security(): \Pasargad\Store\Security
     {
         if ($this->security === null) {
@@ -1296,67 +1301,42 @@ final class Kernel
 
                 return true;
 
-            // ======== handlers برای اتصال پنل جدید ========
-
-            case 'panel_connect_url':
+            // ======== جریان اتصال پنل جدید (آدرس → نام کاربری → رمز/کلید) ========
+            //
+            // این جریان بر پایهٔ `step` داخل نشست پیش می‌رود. هر مرحله نام
+            // ثابت خودش را دارد (`PanelConnectionManager::STEP_*`) و با ورودی
+            // نامعتبر عوض نمی‌شود تا کاربر بتواند بدون شروع از دوباره، همان
+            // مرحله را تکرار کند.
+            case PanelConnectionManager::STEP_URL:
+            case PanelConnectionManager::STEP_USERNAME:
+            case PanelConnectionManager::STEP_CREDENTIAL:
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
                     $this->bot->sendMessage($chatId, '❌ لغو شد.');
                     return true;
                 }
 
-                $manager = new \Pasargad\Bot\PanelConnectionManager(
-                    $this->bot,
-                    $this->panels,
-                    $this->sessions
-                );
-                $manager->handlePanelUrl($chatId, $telegramId, $text);
-                return true;
-
-            case 'panel_connect_username':
-                if ($update->command() === 'cancel' || $update->command() === 'start') {
-                    $this->sessions->clear($telegramId);
-                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                if ($text === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ مقداری نفرستادید! دوباره بفرستید یا /cancel را بزنید.');
                     return true;
                 }
 
-                $manager = new \Pasargad\Bot\PanelConnectionManager(
-                    $this->bot,
-                    $this->panels,
-                    $this->sessions
-                );
-                $manager->handleUsername($chatId, $telegramId, $text);
-                return true;
+                $manager   = new PanelConnectionManager($this->bot, $this->panels, $this->sessions);
+                $panelStep = (string) ($state['step'] ?? '');
 
-            case 'panel_connect_credential':
-                if ($update->command() === 'cancel' || $update->command() === 'start') {
-                    $this->sessions->clear($telegramId);
-                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
-                    return true;
+                if ($panelStep === PanelConnectionManager::STEP_URL) {
+                    return $manager->handleBaseUrl($chatId, $telegramId, $text, $state);
                 }
 
-                $manager = new \Pasargad\Bot\PanelConnectionManager(
-                    $this->bot,
-                    $this->panels,
-                    $this->sessions
-                );
-                $manager->handleCredentialAndTest($chatId, $telegramId, $text);
-                return true;
-
-            case 'panel_connect_name':
-                if ($update->command() === 'cancel' || $update->command() === 'start') {
-                    $this->sessions->clear($telegramId);
-                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
-                    return true;
+                if ($panelStep === PanelConnectionManager::STEP_USERNAME) {
+                    return $manager->handleUsername($chatId, $telegramId, $text, $state);
                 }
 
-                $manager = new \Pasargad\Bot\PanelConnectionManager(
-                    $this->bot,
-                    $this->panels,
-                    $this->sessions
-                );
-                $manager->handlePanelName($chatId, $telegramId, $text, (int) $user['id']);
-                return true;
+                // ورودی مصرف‌شده ⇒ نشست پاک می‌شود (چه موفق چه ناموفق) تا پیام
+                // بعدی دوباره به‌عنوان رمز تفسیر نشود.
+                $this->sessions->clear($telegramId);
+
+                return $manager->handleCredential($chatId, $telegramId, $text, $state, $user);
 
             default:
                 // نکتهٔ حیاتی: اینجا نباید نشست پاک شود.
@@ -1496,6 +1476,23 @@ final class Kernel
             return;
         }
 
+        // ---------------- تنظیمات کاربر ----------------
+        //
+        // ⚠️ این مسیر قبلاً اصلاً وجود نداشت، با اینکه دکمهٔ «⚙️ تنظیمات» در منوی
+        // اصلی بود. نتیجه‌اش این بود که کلیک روی دکمه فقط «این گزینه در دسترس
+        // نیست» می‌داد و کاربر فکر می‌کرد ربات خراب است.
+        if ($ns === 'settings') {
+            $this->bot->answerCallback($callbackId);
+            $this->userSettings()->showMenu($chatId, $user);
+            return;
+        }
+
+        if ($ns === 'settings.global') {
+            $this->bot->answerCallback($callbackId);
+            $this->userSettings()->showGlobalNote($chatId);
+            return;
+        }
+
         if ($ns === 'channel.recheck') {
             $this->channelGuard()->forget((int) $update->userId());
             $this->handleChannelGate($update, $chatId);
@@ -1530,6 +1527,51 @@ final class Kernel
         if ($ns === 'panel.self') {
             $this->bot->answerCallback($callbackId);
             $this->panelCenter()->startSelfRegister($chatId, (int) $update->userId());
+            return;
+        }
+
+        // ---------------- اتصال پنل جدید ----------------
+        //
+        // این namespaceها عمداً `panel.*` هستند (نه `admin.*`)، چون نمایندهٔ
+        // عادی هم به آن‌ها دسترسی دارد. به همین دلیل اینجا مسیریابی می‌شوند تا
+        // از فیلتر «فقط سوپرادمین»ِ پایینِ همین متد رد شوند.
+        if (str_starts_with($ns, 'panel.connect')) {
+            $this->bot->answerCallback($callbackId);
+
+            $manager    = new PanelConnectionManager($this->bot, $this->panels, $this->sessions);
+            $telegramId = (int) $update->userId();
+
+            // شروع جریان (ساخت نشست + پرسیدن آدرس) داخل خودِ کلاس است تا
+            // Kernel مجبور نباشد ساختار نشست را دستی بازسازی کند — وگرنه هر
+            // دو طرف باید با هم هماهنگ بمانند.
+            switch ($ns) {
+                case 'panel.connect':
+                    $manager->showMenu($chatId);
+                    break;
+
+                case 'panel.connect.password':
+                    $manager->startPasswordConnection($chatId, $telegramId);
+                    break;
+
+                case 'panel.connect.apikey':
+                    $manager->startApiKeyConnection($chatId, $telegramId);
+                    break;
+
+                default:
+                    $this->bot->answerCallback($callbackId, 'این گزینه در دسترس نیست.');
+                    break;
+            }
+
+            return;
+        }
+
+        // فهرست پنل‌های خودِ کاربر (نه پنل‌های کل سامانه در پنل مدیریت).
+        if ($ns === 'panel.mine') {
+            $this->bot->answerCallback($callbackId);
+
+            (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
+                ->listUserPanels($chatId, (int) ($user['id'] ?? 0));
+
             return;
         }
 

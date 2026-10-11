@@ -5,6 +5,7 @@ namespace Pasargad\Bot;
 
 use Pasargad\Support\Config;
 use Pasargad\Support\Str;
+use Pasargad\Store\PackageRepository;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Telegram\BotApi;
 use Pasargad\Telegram\Keyboard;
@@ -59,10 +60,12 @@ final class FullMenu
         $wallet = Str::formatToman((int) ($user['wallet_balance'] ?? 0));
 
         $lines = [
-            '🌟 <b>سلام ' . $name . ' عزیز!</b> 👋',
+            '🏠 <b>منوی اصلی</b>',
+            '',
+            '🌟 سلام ' . $name . ' عزیز! 👋',
             '',
             '┌─ سخت و شکیل ─',
-            '│ 🖥 پنل‌های شما: <b>' . (string) $panelsCount . '</b> عدد',
+            '│ 🖥 پنل‌های شما: <b>' . Str::faNumber($panelsCount) . '</b> عدد',
             '│ 💰 موجودی کیف پول: <b>' . $wallet . '</b>',
             '│ 🏆 امتیاز: ' . Str::faNumber((int) ($user['loyalty_points'] ?? 0)),
             '└────────────',
@@ -70,31 +73,57 @@ final class FullMenu
             'چی انجام بدم؟ 👇',
         ];
 
-        $keyboard = Keyboard::rows([
-            // ردیف اول
-            [
-                ['text' => '🛒 فروشگاه پنل', 'data' => BotApi::encodeData('shop')],
-                ['text' => '👤 حساب من', 'data' => BotApi::encodeData('user.account')],
-            ],
-            // ردیف دوم
-            [
+        $rows = [];
+
+        // ------------------------------------------------------------------
+        // ردیف‌های اول بر اساس وضعیت کاربر عوض می‌شوند.
+        //
+        // کاربری که هنوز پنل ندارد باید دقیقاً همان دو راه‌حل را ببیند که
+        // جلویش می‌ایستد: «خرید کن» یا «از قبل پنل دارم را وصل کن». بدون این
+        // دو دکمه، کاربر تازه هیچ راهی برای شروع ندارد و عملاً ربات برای او
+        // کار نمی‌کند — و این همان باگی بود که گزارش شد.
+        // ------------------------------------------------------------------
+        if ($panelsCount > 0) {
+            $rows[] = [
                 ['text' => '🖥️ پنل‌های من', 'data' => BotApi::encodeData('panel.list')],
-                ['text' => '💰 کیف پول', 'data' => BotApi::encodeData('user.wallet')],
-            ],
-            // ردیف سوم
-            [
-                ['text' => '📦 سفارش‌ها', 'data' => BotApi::encodeData('order.list')],
-                ['text' => '🎫 پشتیبانی', 'data' => BotApi::encodeData('ticket.list')],
-            ],
-            // ردیف چهارم
-            [
-                ['text' => '🧪 تست کانفیگ', 'data' => BotApi::encodeData('panel.test.list')],
-                ['text' => '🎁 دعوت دوستان', 'data' => BotApi::encodeData('referral.my')],
-            ],
-            // ردیف پنجم — دکمهٔ Mini App
-            [['text' => '⚙️ تنظیمات', 'data' => BotApi::encodeData('settings')]],
-            $this->webAppButton(),
-        ]);
+                ['text' => '👤 حساب من', 'data' => BotApi::encodeData('user.account')],
+            ];
+            $rows[] = [
+                ['text' => '🛒 خرید پنل نمایندگی', 'data' => BotApi::encodeData('shop', ['kind' => PackageRepository::KIND_AGENCY])],
+                ['text' => '⚡️ شارژ پنل', 'data' => BotApi::encodeData('shop', ['kind' => PackageRepository::KIND_TOPUP])],
+            ];
+        } else {
+            $rows[] = [[
+                'text' => '🛒 خرید پنل نمایندگی',
+                'data' => BotApi::encodeData('shop', ['kind' => PackageRepository::KIND_AGENCY]),
+            ]];
+            $rows[] = [[
+                'text' => '🔗 من پنل دارم',
+                'data' => BotApi::encodeData('panel.self'),
+            ]];
+        }
+
+        $rows[] = [
+            ['text' => '📦 سفارش‌ها', 'data' => BotApi::encodeData('order.list')],
+            ['text' => '💰 کیف پول', 'data' => BotApi::encodeData('user.wallet')],
+        ];
+        $rows[] = [
+            ['text' => '🧪 تست کانفیگ', 'data' => BotApi::encodeData('panel.test.list')],
+            ['text' => '🎫 پشتیبانی', 'data' => BotApi::encodeData('ticket.list')],
+        ];
+        $rows[] = [
+            ['text' => '🎁 دعوت دوستان', 'data' => BotApi::encodeData('referral.my')],
+            ['text' => '🎟️ کد تخفیف', 'data' => BotApi::encodeData('coupon.apply')],
+        ];
+
+        $rows[] = [['text' => '⚙️ تنظیمات', 'data' => BotApi::encodeData('settings')]];
+
+        // ردیف Mini App (اگر آدرس معتبر باشد خالی برمی‌گردد).
+        foreach ($this->webAppButton() as $webRow) {
+            $rows[] = $webRow;
+        }
+
+        $keyboard = Keyboard::rows($rows);
 
         if ($isAdmin) {
             $keyboard[] = [['text' => '🛠 پنل مدیریت VIP', 'data' => BotApi::encodeData('admin.home')]];

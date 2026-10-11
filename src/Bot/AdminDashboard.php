@@ -8,7 +8,7 @@ use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Str;
-use Pasargad\Telegram\Bot;
+use Pasargad\Telegram\BotApi;
 
 /**
  * Enhanced Admin Dashboard with real-time stats and analytics
@@ -20,13 +20,13 @@ use Pasargad\Telegram\Bot;
  */
 final class AdminDashboard
 {
-    private Bot $bot;
+    private BotApi $bot;
     private UserRepository $users;
     private OrderRepository $orders;
     private PanelRepository $panels;
 
     public function __construct(
-        Bot $bot,
+        BotApi $bot,
         UserRepository $users,
         OrderRepository $orders,
         PanelRepository $panels
@@ -86,7 +86,9 @@ final class AdminDashboard
             ],
         ];
 
-        $this->bot->sendMessage($chatId, $message, keyboard: $keyboard);
+        $this->bot->sendMessage($chatId, $message, [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
     }
 
     /**

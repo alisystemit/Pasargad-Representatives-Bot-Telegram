@@ -131,27 +131,6 @@ final class AdminController
                 $this->runCutoff($chatId, (int) ($data['id'] ?? 0));
                 break;
 
-            // ایجاد اتصال پنل جدید
-            case 'panel:connect':
-                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
-                    ->showCreateConnectionMenu($chatId, (int) $update->userId());
-                break;
-
-            case 'panel:connect:password':
-                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
-                    ->startPasswordConnection($chatId, (int) $update->userId());
-                break;
-
-            case 'panel:connect:apikey':
-                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
-                    ->startApiKeyConnection($chatId, (int) $update->userId());
-                break;
-
-            case 'panel:list':
-                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
-                    ->listUserPanels($chatId, (int) $update->userId());
-                break;
-
             // ---------------- بسته‌ها ----------------
             case 'admin.packages':
                 $this->showPackages($chatId, (int) ($data['page'] ?? 0), false);
@@ -286,7 +265,13 @@ final class AdminController
                 break;
 
             case 'admin.settings.autocard':
+                // فقط صفحهٔ کارت خودکار؛ فراخوانی `showGateways` اینجا یعنی
+                // دو پیام پشت‌سرهم و دو کیبورد که آخری روی اولی می‌افتد.
                 (new PasarguardSettings($this->bot))->autocardSettings($chatId, (string) ($data['step'] ?? null));
+                break;
+
+            // ---------------- درگاه‌های پرداخت ----------------
+            case 'admin.gateways':
                 $this->showGateways($chatId);
                 break;
 
@@ -695,11 +680,25 @@ final class AdminController
         $panels = $this->panels->listAll($perPage, $page * $perPage, $query);
 
         if ($panels === []) {
-            $this->bot->sendMessage($chatId, '🖥️📭 پنلی یافت نشد! 😔', [
-                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                    Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت'),
-                ])),
-            ]);
+            // وقتی هنوز پنلی ثبت نشده، صفحه نباید فقط «یافت نشد» را بگوید؛
+            // کاربر دقیقاً در همین‌جا گیر می‌کند و راه ساخت ندارد. پس دکمهٔ
+            // «اتصال پنل جدید» (که جریان آدرس/نام کاربری/رمز را شروع می‌کند)
+            // مستقیم همین‌جا نمایش داده می‌شود.
+            $this->bot->sendMessage(
+                $chatId,
+                "🖥️ <b>هنوز پنلی ثبت نشده است</b>\n\n"
+                . "برای اینکه ربات بتواند نماینده بسازد، حجم شارژ کند و کانفیگ تست "
+                . "بدهد، باید اول به یک پنل پاسارگاد وصل شود.\n\n"
+                . "👇 با دکمهٔ زیر آدرس پنل، نام کاربری و رمز (یا کلید API) را وارد کنید؛ "
+                . "اتصال همان‌جا تست می‌شود و اگر درست بود ذخیره می‌گردد."
+                . ($query !== '' ? "\n\n💡 جستجوی شما نتیجه‌ای نداشت." : ''),
+                [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        [['text' => '🔌 اتصال پنل جدید', 'data' => BotApi::encodeData('panel.connect')]],
+                        Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت'),
+                    ])),
+                ]
+            );
 
             return;
         }
@@ -748,6 +747,10 @@ final class AdminController
         if ($nav !== []) {
             $keyboard[] = $nav;
         }
+
+        // حتی وقتی پنل وجود دارد، «اتصال پنل جدید» لازم است — ربات به یک پنل
+        // محدود نیست و هر کاربر می‌تواند پنل خودش را وصل کند.
+        $keyboard[] = [['text' => '🔌 اتصال پنل جدید', 'data' => BotApi::encodeData('panel.connect')]];
 
         $keyboard[] = Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت');
 
