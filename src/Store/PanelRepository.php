@@ -309,15 +309,37 @@ final class PanelRepository
     {
         $now = time();
 
+        $apiKey = (string) ($data['api_key'] ?? '');
+        unset($data['api_key']);
+
         return $this->db->insert('panels', array_merge([
             'user_id'        => $userId,
             'panel_username' => trim($panelUsername),
             'panel_password' => $password === '' ? '' : Crypto::encrypt($password),
+            'api_key'        => $apiKey === '' ? '' : Crypto::encrypt($apiKey),
             'panel_status'   => self::STATUS_ACTIVE,
             'source'         => self::SOURCE_BOT,
             'created_at'     => $now,
             'updated_at'     => $now,
         ], $data));
+    }
+
+    /**
+     * نوشتن (یا پاک کردن) کلید API روی یک ردیف.
+     *
+     * رمزنگاری اینجا انجام می‌شود نه در فراخواننده — وگرنه روزی یک `api_key`
+     * خام در دیتابیس می‌نشست. رشتهٔ خالی یعنی «کلیدی نداریم» و روش اصلی به
+     * رمز عبور برمی‌گردد.
+     */
+    public function setApiKey(int $panelId, string $apiKey): void
+    {
+        $apiKey = trim($apiKey);
+
+        $this->db->update('panels', [
+            'api_key'    => $apiKey === '' ? '' : Crypto::encrypt($apiKey),
+            'auth_mode'  => $apiKey === '' ? null : PanelAccess::MODE_API_KEY,
+            'updated_at' => time(),
+        ], ['id' => $panelId]);
     }
 
     /**
@@ -360,6 +382,19 @@ final class PanelRepository
         foreach ($extra as $column => $value) {
             if (!is_string($column) || !in_array($column, $this->columnNames(), true)) {
                 Logger::warning('Ignoring unknown column in panel upsert', ['column' => $column]);
+
+                continue;
+            }
+
+            // کلید API از فراخواننده **خام** می‌آید و اینجا رمزنگاری می‌شود.
+            // اگر رمزنگاری را به فراخواننده می‌سپردیم، یک روز یک `api_key`
+            // خام در دیتابیس می‌نشست — دقیقاً همان اتفاقی که برای رمز عبور
+            // افتاده بود و کلاس را مجبور کرد این الگو را داشته باشد.
+            if ($column === 'api_key') {
+                $key = trim((string) $value);
+
+                $payload['api_key']   = $key === '' ? '' : Crypto::encrypt($key);
+                $payload['auth_mode'] = $key === '' ? null : PanelAccess::MODE_API_KEY;
 
                 continue;
             }

@@ -649,6 +649,18 @@ final class Migrator
         '014_panel_auth_mode' => [
             'ALTER TABLE panels ADD COLUMN auth_mode TEXT',
         ],
+
+        // کلید API از رمز عبور جدا ذخیره می‌شود تا یک ردیف بتواند **هر دو**
+        // را داشته باشد.
+        //
+        // چرا لازم است: کلیدها معمولاً مجوزهای ناقص دارند (مثلاً `admins.update`
+        // ندارند و شارژ پنل با آن‌ها ۴۰۳ می‌دهد). ربات اول با کلید امتحان
+        // می‌کند و فقط اگر کلید ناتوان بود به رمز برمی‌گردد — ولی اگر هر دو
+        // در یک ستون بودند، رمزگشایی‌شان قابل تفکیک نبود.
+        '015_panel_api_key' => [
+            'ALTER TABLE panels ADD COLUMN api_key TEXT',
+            'ALTER TABLE panels ADD COLUMN api_key_fallback INTEGER NOT NULL DEFAULT 0',
+        ],
         ];
     }
 

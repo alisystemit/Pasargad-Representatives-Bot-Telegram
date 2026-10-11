@@ -166,10 +166,19 @@ check(
     'base_url=' . var_export($mine[0]['base_url'] ?? null, true)
 );
 check('نام کاربری از هش کلید ساخته شد', str_starts_with((string) ($mine[0]['panel_username'] ?? ''), 'apikey-'));
+
+// کلید و رمز ستون‌های جدا دارند تا ربات بتواند اول با کلید کار کند و فقط
+// اگر کلید نتوانست، سراغ رمز برود.
 check(
-    'کلید رمزنگاری‌شده ذخیره شد، نه خام',
-    ($mine[0]['panel_password'] ?? '') !== 'pg_key_live_abcd-5678'
-        && ($mine[0]['panel_password'] ?? '') !== ''
+    'کلید در ستون api_key ذخیره شد، نه خام در panel_password',
+    ($mine[0]['api_key'] ?? '') !== ''
+        && ($mine[0]['api_key'] ?? '') !== 'pg_key_live_abcd-5678',
+    'api_key=' . var_export($mine[0]['api_key'] ?? null, true)
+);
+check(
+    'رمزی ثبت نشده چون کاربر فقط کلید داد',
+    ($mine[0]['panel_password'] ?? '') === '',
+    'panel_password=' . var_export($mine[0]['panel_password'] ?? null, true)
 );
 
 $access = new PanelAccess($panels);
@@ -299,9 +308,9 @@ $syncClient->admins['apikey-abc'] = ['id' => 5, 'username' => 'apikey-abc', 'sta
 
 $syncPanels = new PanelRepository();
 $syncOwner  = (int) $users->findByTelegramId($otherTg)['id'];
-$syncId = $syncPanels->create($syncOwner, 'apikey-abc', 'pg_key_zzz', [
+$syncId = $syncPanels->create($syncOwner, 'apikey-abc', '', [
     'base_url'  => 'https://their-own.example.com',
-    'auth_mode' => PanelAccess::MODE_API_KEY,
+    'api_key'   => 'pg_key_zzz',
 ]);
 
 $syncRow = $syncPanels->find($syncId);
@@ -322,6 +331,155 @@ check(
 $after = $syncPanels->find($syncId);
 check('وضعیت پنل به‌روزرسانی شد', (int) $after['synced_at'] > 0, 'synced_at=' . var_export($after['synced_at'], true));
 check('سقف حجم از پنل خوانده و ذخیره شد', (int) $after['data_limit'] === 999);
+
+// ------------------------------------------------------------------
+echo "\n▶ ۶) کلید اول، رمز فقط پشتیبان\n";
+// ------------------------------------------------------------------
+//
+// این همان چیزی است که خواسته شد: کلید API روش اصلی است و رمز فقط وقتی
+// استفاده می‌شود که پنل بگوید کلید این کار را نمی‌تواند.
+
+$fallbackClient = new FakePanelClient();
+$fallbackClient->admins['rep9'] = [
+    'id' => 77, 'username' => 'rep9', 'status' => 'active', 'data_limit' => 500,
+];
+
+// کلید روی این پنل هیچ مجوزی ندارد ⇒ هر درخواستی ۴۰۳ می‌گیرد.
+$fallbackClient->apiKeyForbidden = true;
+
+$fallbackPanels = new PanelRepository();
+$bothId = $fallbackPanels->create($syncOwner, 'rep9', 'secret-password', [
+    'base_url' => 'https://rep9-panel.example.com',
+    'api_key'  => 'pg_key_limited',
+]);
+
+$bothRow    = (array) $fallbackPanels->find($bothId);
+$access2    = new PanelAccess($fallbackPanels);
+$creds2     = $access2->credentialsOf($bothRow);
+
+check('روش اصلی، کلید API است', ($creds2['mode'] ?? '') === PanelAccess::MODE_API_KEY);
+check(
+    'پشتیبان از همان ردیف استخراج شد',
+    ($access2->fallbackOf($bothRow) ?? []) === ['rep9', 'secret-password'],
+    json_encode($access2->fallbackOf($bothRow), JSON_UNESCAPED_UNICODE)
+);
+
+// کلاینت باید از مسیر تزریق‌شده بیاید، وگرنه به شبکهٔ واقعی می‌رود.
+// همان کاری که `PanelSyncer` و `Provisioner` در عمل می‌کنند.
+$bothClient = $access2->clientForPanel($bothRow, $fallbackClient);
+check('کلاینت کلید را دارد', $bothClient !== null && $bothClient->hasStaticToken());
+
+// عملیات **نوشتنی** با کلید ۴۰۳ می‌دهد ⇒ باید خودکار برود سراغ رمز.
+//
+// ⚠️ عمداً از `resetAdminUsage()` استفاده می‌شود، نه `modifyAdmin()`:
+// فیک `modifyAdmin` را خودش بازنویسی کرده و اصلاً از لایهٔ HTTP رد نمی‌شود،
+// پس بازگشت به پشتیبان در آن هرگز اجرا نمی‌شود و تست **سبز می‌ماند در حالی
+// که کد خراب است**. `resetAdminUsage` بازنویسی نشده، پس کل `request()`
+// واقعی اجرا می‌شود.
+$beforeRequests = count($fallbackClient->loggedRequests);
+
+$fallbackClient->resetAdminUsage('rep9', 'rep9', 'secret-password');
+
+check(
+    'درخواست اول با کلید ۴۰۳ خورد',
+    ($fallbackClient->authHeadersSeen[count($fallbackClient->authHeadersSeen) - 2] ?? '') === 'ApiKey',
+    json_encode($fallbackClient->authHeadersSeen)
+);
+check(
+    'درخواست دوم با رمز پشتیبان رفت',
+    ($fallbackClient->authHeadersSeen[count($fallbackClient->authHeadersSeen) - 1] ?? '') === 'Bearer',
+    json_encode($fallbackClient->authHeadersSeen)
+);
+check('دقیقاً دو درخواست رفت (نه حلقهٔ بی‌نهایت)', count($fallbackClient->loggedRequests) === $beforeRequests + 2, json_encode($fallbackClient->loggedRequests));
+check('کلاینت فهمید که باید از پشتیبان استفاده کند', $bothClient->isDowngraded());
+
+// بار دوم نباید دوباره ۴۰۳ بخورد.
+$before2 = count($fallbackClient->loggedRequests);
+$fallbackClient->resetAdminUsage('rep9', 'rep9', 'secret-password');
+
+check(
+    'درخواست دوم مستقیم با رمز رفت (بدون ۴۰۳ تکراری)',
+    count($fallbackClient->loggedRequests) === $before2 + 1,
+    'تعداد درخواست‌ها: ' . count($fallbackClient->loggedRequests)
+);
+check(
+    'و طرح هدر روی Bearer مانده است',
+    ($fallbackClient->authHeadersSeen[count($fallbackClient->authHeadersSeen) - 1] ?? '') === 'Bearer',
+    json_encode($fallbackClient->authHeadersSeen)
+);
+
+// ------------------------------------------------------------------
+echo "\n▶ ۷) کلید کافی است ⇒ رمز اصلاً استفاده نمی‌شود\n";
+// ------------------------------------------------------------------
+
+$okClient = new FakePanelClient();
+$okClient->admins['rep10'] = ['id' => 88, 'username' => 'rep10', 'status' => 'active'];
+
+$okPanels = new PanelRepository();
+$okId = $okPanels->create($syncOwner, 'rep10', 'secret-password', [
+    'base_url' => 'https://rep10-panel.example.com',
+    'api_key'  => 'pg_key_good',
+]);
+
+$okRow  = (array) $okPanels->find($okId);
+$okAcc  = new PanelAccess($okPanels);
+$okCli  = $okAcc->clientForPanel($okRow, $okClient);
+
+$okClient->resetAdminUsage('rep10', 'rep10', 'secret-password');
+
+check('با کلید کار کرد', !$okCli->isDowngraded());
+check(
+    'فقط یک درخواست رفت (کلید کافی بود)',
+    count($okClient->loggedRequests) === 1,
+    json_encode($okClient->loggedRequests)
+);
+check(
+    'هیچ تلاشی با رمز نشد',
+    !in_array('Bearer', $okClient->authHeadersSeen, true),
+    json_encode($okClient->authHeadersSeen)
+);
+
+// ------------------------------------------------------------------
+echo "\n▶ ۸) جریان «کلید + رمز پشتیبان» در ربات\n";
+// ------------------------------------------------------------------
+
+$bothBotClient = new FakePanelClient();
+$bothBotClient->admins['rep11'] = ['id' => 99, 'username' => 'rep11', 'status' => 'active'];
+
+$kernel2 = boot($bothBotClient);
+$kernel2->handle(txt(8804, '/start'));
+
+$kernel2->handle(cb(8804, ['n' => 'panel.connect.keyandpass']));
+$kernel2->handle(txt(8804, 'https://rep11-panel.example.com'));
+$kernel2->handle(txt(8804, 'rep11'));
+$kernel2->handle(txt(8804, 'pg_key_from_user'));
+
+$u4        = (int) $users->findByTelegramId(8804)['id'];
+$partial   = $panels->listByUser($u4);
+
+check('هنوز چیزی ذخیره نشده (رمز پشتیبان نرسیده)', $partial === [], json_encode($partial, JSON_UNESCAPED_UNICODE));
+
+$kernel2->handle(txt(8804, 'the-password'));
+
+$saved = $panels->listByUser($u4);
+
+check('پس از رمز پشتیبان، پنل ذخیره شد', $saved !== [], 'کاربر: ' . $u4);
+check('نام کاربری درست است', ($saved[0]['panel_username'] ?? '') === 'rep11', var_export($saved[0]['panel_username'] ?? null, true));
+check(
+    'کلید ذخیره شد',
+    ($access->apiKeyOf((array) $saved[0]) ?? '') === 'pg_key_from_user',
+    'key=' . var_export($access->apiKeyOf((array) $saved[0]), true)
+);
+check(
+    'رمز پشتیبان هم ذخیره شد',
+    ($panels->plainPassword((array) $saved[0]) ?? '') === 'the-password',
+    var_export($panels->plainPassword((array) $saved[0]), true)
+);
+check(
+    'هر دو جدا رمزنگاری شدند (نه خام)',
+    ($saved[0]['api_key'] ?? '') !== 'pg_key_from_user'
+        && ($saved[0]['panel_password'] ?? '') !== 'the-password'
+);
 
 echo "\n" . str_repeat('─', 62) . "\n";
 echo "نتیجه: {$passed} موفق، {$failed} ناموفق\n";

@@ -70,6 +70,7 @@ final class FakePanelClient extends PasarGuardClient
     public function login(string $username, string $password, bool $useCache = true): string
     {
         $this->loginCalls++;
+        $this->lastAuthUsername = $username;
 
         if ($this->loginError !== '') {
             throw new PanelException($this->loginError, 401);
@@ -79,48 +80,126 @@ final class FakePanelClient extends PasarGuardClient
     }
 
     /**
-     * احراز هویت با کلید API — همتای واقعی `requestWithApiKey()`.
+     * تنها نقطه‌ای که واقعاً به شبکه می‌رود — اینجا بازنویسی می‌شود.
      *
-     * بدون این بازنویسی، تست‌های مسیر «کلید API» به شبکهٔ واقعی می‌رفتند.
-     *
-     * ⚠️ `GET /api/admin` **یک رکورد تنهاست، نه لیست** — عیناً مثل پنل واقعی.
-     * اگر اینجا لیست برگردانیم، مصرف‌کننده‌ها یک `admins` می‌گیرند و فیلدهای
-     * `data_limit`/`status` گم می‌شوند، در حالی که تست سبز می‌ماند.
+     * ⚠️ عمداً `request()` و `requestWithApiKey()` را بازنویسی **نمی‌کنیم**،
+     * چون آن‌ها منطق واقعی را دارند: تشخیص ۴۰۱، تلاش مجدد، و بازگشت به رمز
+     * پشتیبان روی ۴۰۳. اگر آن‌ها را بازنویسی کنیم، آن منطق اصلاً اجرا نمی‌شود
+     * و تست‌ها در حالی سبز می‌مانند که کد خراب است — دقیقاً همان تله‌ای که
+     * بالای همین کلاس نوشته شده.
      *
      * @param array<string, mixed>|null $payload
-     * @return array<string, mixed>
+     * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
      */
-    public function requestWithApiKey(string $method, string $path, string $apiKey, ?array $payload = null): array
+    protected function sendWithBearer(string $method, string $path, string $token, ?array $payload): array
     {
-        $this->loggedRequests[] = ['method' => 'requestWithApiKey', 'path' => $path];
+        $this->loggedRequests[] = ['method' => $method . ' ' . $path, 'path' => $path];
         $this->authHeadersSeen[] = $this->authScheme();
 
+        $ok = fn (array $data): array => [
+            'status' => 200, 'data' => $data, 'raw' => '', 'error' => '',
+        ];
+
+        $fail = fn (int $status, string $detail): array => [
+            'status' => $status, 'data' => ['detail' => $detail], 'raw' => '', 'error' => '',
+        ];
+
+        // کلید با طرح ApiKey، بدون مجوز (حالت واقعیِ کلیدهای ناقص).
+        if ($this->authScheme() === 'ApiKey' && $this->apiKeyForbidden) {
+            return $fail(403, 'Permission denied: ' . $path);
+        }
+
+        if ($this->loginError !== '' && $this->authScheme() === 'Bearer' && str_starts_with($path, '/api/admin/token')) {
+            return $fail(401, $this->loginError);
+        }
+
+        // مسیرهایی که فقط کلاینت واقعی می‌زند و فیک باید پاسخ بدهد.
+        if (str_starts_with($path, '/api/admin-roles')) {
+            return $this->loginError !== ''
+                ? $fail(401, $this->loginError)
+                : $ok(['roles' => array_values($this->roles), 'total' => count($this->roles)]);
+        }
+
+        if ($path === '/api/admin' && $method === 'GET') {
+            return $this->currentAdminResponse($fail);
+        }
+
+        if (str_starts_with($path, '/api/admins')) {
+            return $this->loginError !== ''
+                ? $fail(401, $this->loginError)
+                : $this->listAdmins('', '', $this->queryOf($path));
+        }
+
+        if (str_starts_with($path, '/api/users')) {
+            return $this->listUsers('', '', $this->queryOf($path));
+        }
+
+        return $ok([]);
+    }
+
+    /**
+     * @param  callable(array<string,mixed>): array<string,mixed> $fail
+     * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
+     */
+    private function currentAdminResponse(callable $fail): array
+    {
         if ($this->loginError !== '') {
-            throw new PanelException($this->loginError, 401);
+            return $fail(401, $this->loginError);
         }
 
-        if (trim($apiKey) === '') {
-            throw new PanelException('کلید API خالی است.', 0);
+        if ($this->authScheme() === 'ApiKey') {
+            return [
+                'status' => 200, 'data' => $this->apiKeyOwner(),
+                'raw' => '', 'error' => '',
+            ];
         }
 
-        if ($method === 'GET' && in_array($path, ['/api/admin', '/api/admins/simple'], true)) {
-            return $this->apiKeyOwner();
+        // مسیر رمز: کلاینت واقعی با GET /api/admin هر ادمینی را که *خودش*
+        // هست برمی‌گرداند، پس فیک هم همین را می‌کند.
+        $username = $this->lastAuthUsername;
+
+        if ($username !== '' && isset($this->admins[$username])) {
+            return ['status' => 200, 'data' => $this->admins[$username], 'raw' => '', 'error' => ''];
         }
 
-        return ['admins' => array_values($this->admins), 'total' => count($this->admins)];
+        $first = reset($this->admins);
+
+        return is_array($first)
+            ? ['status' => 200, 'data' => $first, 'raw' => '', 'error' => '']
+            : $fail(404, 'Admin not found');
+    }
+
+    /** نام کاربری‌ای که آخرین بار برای احراز هویت استفاده شد. */
+    public string $lastAuthUsername = '';
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function queryOf(string $path): array
+    {
+        $query = [];
+
+        if (str_contains($path, '?')) {
+            parse_str((string) substr($path, strpos($path, '?') + 1), $query);
+        }
+
+        return $query;
     }
 
     /**
      * ادمینی که کلید API به او تعلق دارد.
      *
+     * روی پنل واقعی، `GET /api/admin` با کلید، ادمینِ متناظر با همان کلید را
+     * برمی‌گرداند (کلید به یک حساب وصل است).
+     *
      * @return array<string, mixed>
      */
-    private function apiKeyOwner(): array
+    public function apiKeyOwner(): array
     {
         $username = $this->apiKeyUsername;
 
         if ($username === '') {
-            $first = reset($this->admins);
+            $first    = reset($this->admins);
             $username = is_array($first) ? (string) ($first['username'] ?? '') : '';
         }
 
@@ -135,6 +214,18 @@ final class FakePanelClient extends PasarGuardClient
 
     /** نام ادمینی که کلید API به او تعلق دارد (خالی = اولین ادمین). */
     public string $apiKeyUsername = '';
+
+    /**
+     * اگر true باشد، کلید API برای **هر** عملیاتی ۴۰۳ می‌گیرد.
+     *
+     * برای شبیه‌سازی دقیق کلیدهای واقعیِ ناقص‌مجوز لازم است — روی پنل
+     * واقعی اندازه گرفته شد که کلید می‌تواند بخواند و بسازد ولی
+     * `admins.update` را ندارد، پس شارژ پنل ۴۰۳ می‌دهد.
+     *
+     * مسیر رمز (نام کاربری + رمز) در این حالت همچنان کار می‌کند، چون برای
+     * رمز چنین محدودیتی وجود ندارد.
+     */
+    public bool $apiKeyForbidden = false;
 
     /** @var array<int, string> طرح هدری که هر درخواست با آن رفته */
     public array $authHeadersSeen = [];

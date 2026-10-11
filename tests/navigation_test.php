@@ -232,8 +232,8 @@ foreach ($entries as $where => [$entry, $button]) {
     );
 
     check(
-        "«{$where}» → هر دو روش ورود دارد",
-        str_contains($shown, 'رمز عبور') && str_contains($shown, 'کلید API'),
+        "«{$where}» → کلید و رمز هر دو پیشنهاد شده‌اند",
+        str_contains($shown, 'کلید API') && str_contains($shown, 'رمز'),
         $shown
     );
 }

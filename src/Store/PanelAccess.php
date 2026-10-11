@@ -6,29 +6,33 @@ namespace Pasargad\Store;
 
 use Pasargad\Panel\PanelException;
 use Pasargad\Panel\PasarGuardClient;
+use Pasargad\Support\Config;
+use Pasargad\Support\Crypto;
 use Pasargad\Support\Logger;
 
 /**
  * احراز هویت با پنلی که **کاربر** وصل کرده است.
  *
- * ## چرا این کلاس لازم است
+ * ## ترتیب اولویت
  *
- * خرید «پنل نمایندگی» قبلاً همیشه با اکانت owner سراسریِ `config.php` انجام
- * می‌شد، روی `panel.base_url`. یعنی پنلی که کاربر وصل کرده **هیچ نقشی در
- * ساخت نداشت** — حتی اگر روی دامنهٔ خودش نصب بوده باشد.
+ * **کلید API اول، رمز عبور فقط پشتیبان.** این تصادفی نیست:
  *
- * این کلاس یک منبع واحد برای پاسخ به این پرسش است: «برای این ردیف
- * `panels` با چه آدرسی و با چه روش احراز هویتی باید با پنل حرف بزنم؟»
- * همهٔ مسیرها (ساخت پنل نمایندگی، همگام‌سازی، آمار) باید از همین جا
- * بخوانند، وگرنه دوباره سه نسخهٔ متفاوت از همین منطق نوشته می‌شود — که
- * دقیقاً همان اتفاقی است که افتاد.
+ * - کلید، کاربر را مجبور نمی‌کند رمز مدیریتی‌اش را به ربات بدهد. (با
+ *   `panel.self` قبلاً مجبور بود.)
+ * - ولی کلیدها معمولاً مجوز ناقص دارند. اندازه‌گیری روی یک کلید واقعی:
+ *   `admins.create` و `users.read` مجاز بود، اما `admins.update` و
+ *   `admin_roles.read` نبود — یعنی **شارژ و تمدید پنل** با کلید ۴۰۳ می‌دهد.
  *
- * ## چرا `auth_mode` لازم است
+ * پس حذف کامل رمز به قیمت از کار افتادن شارژ تمام می‌شود، و حذف کامل کلید
+ * یعنی کاربر باید رمز مدیریتی‌اش را لو بدهد. راه‌حل: اول با کلید امتحان
+ * کن، و **فقط اگر پنل گفت «دسترسی نداری»** همان یک عملیات را با رمز تکرار
+ * کن. این منطق در `PasarGuardClient::retryWithFallback()` است، پس همهٔ
+ * مسیرها (ساخت، شارژ، آمار، قطع دسترسی) یک‌باره درست می‌شوند.
  *
- * پنلی که با **کلید API** وصل شده، با رمز عبور کار نمی‌کند: `login()`
- * یک `POST /api/admin/token` با grant_type=password می‌فرستد و پنل آن را
- * رد می‌کند. بدون دانستن اینکه هر ردیف با چه روشی وصل شده، هر عملیاتی روی
- * آن پنل شکست می‌خورد.
+ * ## چرا `api_key` ستون جدا دارد
+ *
+ * اگر کلید و رمز در یک ستون بودند، رمزگشایی‌شان قابل تفکیک نبود. حالا هر
+ * دو جدا رمزنگاری می‌شوند و یک ردیف می‌تواند هر دو را داشته باشد.
  */
 final class PanelAccess
 {
@@ -43,12 +47,42 @@ final class PanelAccess
     }
 
     /**
-     * این پنل با کدام روش وصل شده؟
+     * کلید API رمزگشایی‌شدهٔ این ردیف (یا رشتهٔ خالی).
+     */
+    public function apiKeyOf(array $panel): string
+    {
+        $encrypted = (string) ($panel['api_key'] ?? '');
+
+        if ($encrypted === '') {
+            return '';
+        }
+
+        try {
+            return Crypto::decrypt($encrypted);
+        } catch (\Throwable $e) {
+            Logger::error('Cannot decrypt panel api key', [
+                'panel_id' => $panel['id'] ?? null,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return '';
+        }
+    }
+
+    /**
+     * این پنل با کدام روش **اول** حرف می‌زند؟
      *
-     * `NULL` در ستون یعنی ردیف قدیمی است که فقط رمز عبور دارد.
+     * اولویت با کلید API است — ولی اگر ردیف قدیمی باشد که فقط رمز دارد،
+     * همان رمز است.
+     *
+     * @param array<string, mixed> $panel
      */
     public static function modeOf(array $panel): string
     {
+        if (trim((string) ($panel['api_key'] ?? '')) !== '') {
+            return self::MODE_API_KEY;
+        }
+
         $mode = strtolower(trim((string) ($panel['auth_mode'] ?? '')));
 
         return $mode === self::MODE_API_KEY ? self::MODE_API_KEY : self::MODE_PASSWORD;
@@ -60,6 +94,18 @@ final class PanelAccess
     }
 
     /**
+     * آدرس پنل این ردیف (خالی یعنی «از `panel.base_url` سراسری»).
+     */
+    public function baseUrlOf(array $panel): string
+    {
+        $baseUrl = rtrim(trim((string) ($panel['base_url'] ?? '')), '/');
+
+        return $baseUrl !== ''
+            ? $baseUrl
+            : rtrim(trim((string) Config::str('panel.base_url', '')), '/');
+    }
+
+    /**
      * اطلاعات لازم برای حرف زدن با پنل یک ردیف `panels`.
      *
      * @param  array<string, mixed> $panel
@@ -68,18 +114,16 @@ final class PanelAccess
      */
     public function credentialsOf(array $panel): ?array
     {
-        $credential = $this->panels->plainPassword($panel);
+        $apiKey = $this->apiKeyOf($panel);
+        $mode   = self::modeOf($panel);
+
+        $credential = $mode === self::MODE_API_KEY ? $apiKey : $this->panels->plainPassword($panel);
 
         if ($credential === '') {
             return null;
         }
 
-        // آدرس خالی یعنی «پنل پیش‌فرض سراسری» — رفتار قدیمی حفظ می‌شود.
-        $baseUrl = rtrim(trim((string) ($panel['base_url'] ?? '')), '/');
-
-        if ($baseUrl === '') {
-            $baseUrl = rtrim(trim((string) \Pasargad\Support\Config::str('panel.base_url', '')), '/');
-        }
+        $baseUrl = $this->baseUrlOf($panel);
 
         if ($baseUrl === '') {
             return null;
@@ -90,8 +134,28 @@ final class PanelAccess
             // در مسیر کلید API نام کاربری معنی ندارد؛ خودِ کلید نقش را دارد.
             'username'   => trim((string) ($panel['panel_username'] ?? '')),
             'credential' => $credential,
-            'mode'       => self::modeOf($panel),
+            'mode'       => $mode,
         ];
+    }
+
+    /**
+     * اطلاعات پشتیبان (رمز عبور) — فقط اگر ردیف **هم کلید دارد و هم رمز**.
+     *
+     * برای ردیفی که فقط رمز دارد، `null` است چون اصلاً پشتیبانی در کار نیست.
+     *
+     * @param  array<string, mixed> $panel
+     * @return array{0:string, 1:string}|null [username, password]
+     */
+    public function fallbackOf(array $panel): ?array
+    {
+        if (!self::isApiKey($panel)) {
+            return null;
+        }
+
+        $password = $this->panels->plainPassword($panel);
+        $username = trim((string) ($panel['panel_username'] ?? ''));
+
+        return ($username !== '' && $password !== '') ? [$username, $password] : null;
     }
 
     /**
@@ -108,10 +172,32 @@ final class PanelAccess
             return null;
         }
 
-        $client = new PasarGuardClient($credentials['base_url']);
+        return $this->applyCredentials(new PasarGuardClient($credentials['base_url']), $panel, $credentials);
+    }
 
+    /**
+     * نشاندن اطلاعات (کلید اول، رمز پشتیبان) روی یک کلاینت آماده.
+     *
+     * جدا شده تا `clientForPanel()` همین قاعده را برای کلاینت تزریق‌شده هم
+     * اجرا کند — وگرنه کلاینت تست/وبهوک بدون کلید کار می‌کرد و با ردیفِ
+     * کلیددار ۴۰۳ می‌خورد.
+     *
+     * @param array{base_url:string, username:string, credential:string, mode:string} $credentials
+     */
+    private function applyCredentials(
+        PasarGuardClient $client,
+        array $panel,
+        array $credentials
+    ): PasarGuardClient {
         if ($credentials['mode'] === self::MODE_API_KEY) {
             $client->useStaticToken($credentials['credential']);
+        }
+
+        // رمز پشتیبان فقط وقتی لازم است که کلید ناتوان شود (۴۰۳).
+        $fallback = $this->fallbackOf($panel);
+
+        if ($fallback !== null) {
+            $client->withFallbackCredential($fallback[0], $fallback[1]);
         }
 
         return $client;
@@ -141,6 +227,7 @@ final class PanelAccess
         }
 
         $client = $injected ?? new PasarGuardClient($credentials['base_url']);
+        $client = $this->applyCredentials($client, $panel, $credentials);
 
         if ($credentials['mode'] === self::MODE_API_KEY) {
             return $client->getAdminWithApiKey($credentials['credential']);
@@ -209,23 +296,17 @@ final class PanelAccess
      */
     public function clientForPanel(array $panelRow, ?PasarGuardClient $injected = null): ?PasarGuardClient
     {
-        if ($injected !== null) {
-            // کلاینت تزریق‌شده روی ردیفِ کلیددار هم باید با همان طرح احراز
-            // هویت کار کند، وگرنه `login()` با نام کاربری «api» و کلید به‌عنوان
-            // رمز زده می‌شود و همیشه ۴۰۱ می‌گیرد.
-            $credential = $this->credentialsOf($panelRow);
+        if ($injected === null) {
+            return $this->clientFor($panelRow);
+        }
 
-            if ($credential !== null
-                && $credential['mode'] === self::MODE_API_KEY
-                && !$injected->hasStaticToken()
-            ) {
-                $injected->useStaticToken($credential['credential']);
-            }
+        $credentials = $this->credentialsOf($panelRow);
 
+        if ($credentials === null) {
             return $injected;
         }
 
-        return $this->clientFor($panelRow);
+        return $this->applyCredentials($injected, $panelRow, $credentials);
     }
 
     /**

@@ -1357,6 +1357,7 @@ final class Kernel
             case PanelConnectionManager::STEP_URL:
             case PanelConnectionManager::STEP_USERNAME:
             case PanelConnectionManager::STEP_CREDENTIAL:
+            case PanelConnectionManager::STEP_PASSWORD:
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
                     $this->bot->sendMessage($chatId, '❌ لغو شد.');
@@ -1377,6 +1378,12 @@ final class Kernel
 
                 if ($panelStep === PanelConnectionManager::STEP_USERNAME) {
                     return $manager->handleUsername($chatId, $telegramId, $text, $state);
+                }
+
+                // مرحلهٔ رمزِ پشتیبان در مسیر «کلید + رمز»: خودش نشست را پاک
+                // نمی‌کند چون ممکن است مرحله را تکرار کند (رمز خالی).
+                if ($panelStep === PanelConnectionManager::STEP_PASSWORD) {
+                    return $manager->handleFallbackPassword($chatId, $telegramId, $text, $state, $user);
                 }
 
                 // ورودی مصرف‌شده ⇒ نشست پاک می‌شود (چه موفق چه ناموفق) تا پیام
@@ -1602,6 +1609,10 @@ final class Kernel
 
                 case 'panel.connect.apikey':
                     $manager->startApiKeyConnection($chatId, $telegramId);
+                    break;
+
+                case 'panel.connect.keyandpass':
+                    $manager->startKeyAndPasswordConnection($chatId, $telegramId);
                     break;
 
                 default:

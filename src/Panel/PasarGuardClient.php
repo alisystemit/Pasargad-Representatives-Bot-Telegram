@@ -107,6 +107,21 @@ class PasarGuardClient
      */
     private string $authScheme = 'Bearer';
 
+    /**
+     * اطلاعات پشتیبان برای وقتی کلید API اجازهٔ عملیات را ندارد.
+     *
+     * @var array{0:string, 1:string}|null [username, password]
+     */
+    private ?array $fallbackCredential = null;
+
+    /**
+     * آیا کلید اصلی قبلاً یک‌بار ۴۰۳ داده و به پشتیبان رفته‌ایم؟
+     *
+     * برای این است که در یک درخواستِ وبهوک، ده‌ها عملیات هر کدام دوباره ۴۰۳
+     * نگیرند: یک‌بار امتحان، بعد مستقیم می‌رویم سراغ چیزی که جواب می‌دهد.
+     */
+    private bool $downgraded = false;
+
     public function __construct(?string $baseUrl = null)
     {
         $this->baseUrl   = rtrim($baseUrl ?? Config::str('panel.base_url', 'https://us.api-system.top'), '/');
@@ -337,6 +352,49 @@ class PasarGuardClient
     public function authScheme(): string
     {
         return $this->authScheme;
+    }
+
+    /**
+     * تعیینِ اطلاعات پشتیبان برای عملیات‌هایی که کلید API اجازه‌شان را ندارد.
+     *
+     * ## چرا این لازم است
+     *
+     * کلیدهای API معمولاً مجوزهای ناقص دارند. اندازه‌گیری روی کلید واقعی:
+     *
+     *     admins.read / admins.create / users.read   → مجاز
+     *     admin_roles.read / admins.update           → ۴۰۳
+     *
+     * یعنی با کلید می‌شود پنل نمایندگی ساخت، ولی **شارژ و تمدید** (که
+     * `PUT /api/admin/{username}` است) ۴۰۳ می‌دهد. اگر رمز را کلاً حذف
+     * کنیم، کاربر پول می‌دهد و حجمش اضافه نمی‌شود.
+     *
+     * پس: اول با کلید امتحان می‌شود؛ اگر پنل گفت «دسترسی نداری»، **فقط
+     * همان یک عملیات** با رمز تکرار می‌شود. بقیهٔ درخواست از آن به بعد
+     * مستقیم با رمز می‌روند تا دوباره ۴۰۳ نگیریم.
+     *
+     * این «بازگشت» فقط روی **۴۰۳** انجام می‌شود، نه روی هر خطایی: ۴۰۱ یعنی
+     * راز اشتباه است و با راز دیگر هم درست نمی‌شود، و ۴۰۰/۴۲۲ هم ربطی به
+     * احراز هویت ندارند.
+     *
+     * @param string $username نام کاربری (برای مسیر رمز)
+     * @param string $password رمز عبور
+     */
+    public function withFallbackCredential(string $username, string $password): void
+    {
+        $username = trim($username);
+        $password = trim($password);
+
+        if ($username !== '' && $password !== '') {
+            $this->fallbackCredential = [$username, $password];
+        }
+    }
+
+    /**
+     * آیا کلید اصلی ناتوان شد و به پشتیبان رفته‌ایم؟
+     */
+    public function isDowngraded(): bool
+    {
+        return $this->downgraded;
     }
 
     /**
@@ -882,6 +940,15 @@ class PasarGuardClient
             $response = $this->send($method, $path, $username, $password, $payload);
         }
 
+        // ۴۰۳ یعنی «کلید معتبر است ولی این کار را نمی‌تواند» — نه راز اشتباه.
+        // اگر رمز پشتیبان داریم، فقط همین یک عملیات را با آن تکرار می‌کنیم.
+        if ($response['status'] === 403
+            && !$this->downgraded
+            && $this->fallbackCredential !== null
+        ) {
+            $response = $this->retryWithFallback($method, $path, $payload, $response);
+        }
+
         if ($response['error'] !== '' || $response['status'] === 0) {
             Logger::error('Panel request failed', [
                 'method'   => $method,
@@ -953,9 +1020,24 @@ class PasarGuardClient
         // وگرنه فراخوانی مستقیم `requestWithApiKey()` روی کلاینتی که با
         // `new PasarGuardClient(...)` ساخته شده، کلید را با طرح `Bearer`
         // می‌فرستاد و همیشه ۴۰۱ می‌گرفت — یعنی همین باگ، دوباره.
+        $savedScheme  = $this->authScheme;
         $this->authScheme = self::SCHEME_API_KEY;
 
         $response = $this->sendWithBearer($method, $path, $apiKey, $payload);
+
+        // ۴۰۳ یعنی کلید معتبر است ولی این کار را نمی‌تواند. اگر رمز پشتیبان
+        // داریم، همین یک عملیات را با رمز تکرار می‌کنیم — وگرنه کاربری که
+        // فقط کلید وصل کرده و کلیدش مجوز ندارد، هیچ راهی برای شارژ ندارد.
+        if ($response['status'] === 403
+            && !$this->downgraded
+            && $this->fallbackCredential !== null
+        ) {
+            $this->authScheme = self::SCHEME_BEARER;
+
+            $response = $this->retryWithFallback($method, $path, $payload, $response);
+        }
+
+        $this->authScheme = $this->downgraded ? self::SCHEME_BEARER : $savedScheme;
 
         if ($response['error'] !== '' || $response['status'] === 0) {
             Logger::error('Panel API-key request failed', [
@@ -1043,6 +1125,51 @@ class PasarGuardClient
     }
 
     /**
+     * تکرار یک عملیات با اطلاعات پشتیبان، پس از ۴۰۳ کلید اصلی.
+     *
+     * اگر رمز پشتیبان هم جواب نداد، وضعیت قبلی **برگردانده** می‌شود تا خطای
+     * اصلی (permission denied) گم نشود — چون خطای پشتیبان ممکن است ۴۰۱ باشد و
+     * گزارش «کلید نامعتبر است» برای عیب‌یابی بدتر است.
+     *
+     * اگر پشتیبان **موفق** شد، کلاینت برای ادامهٔ همین درخواست روی پشتیبان
+     * می‌ماند: نباید برای هر عملیات بعدی دوباره ۴۰۳ بخوریم.
+     *
+     * @param  array<string, mixed>|null $payload
+     * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
+     */
+    private function retryWithFallback(string $method, string $path, ?array $payload, array $primary): array
+    {
+        [$fallbackUser, $fallbackPass] = (array) $this->fallbackCredential;
+
+        Logger::info('API key lacks permission, retrying with stored credentials', [
+            'method' => $method,
+            'path'   => $path,
+        ]);
+
+        $savedScheme  = $this->authScheme;
+        $savedToken   = $this->staticToken;
+
+        $this->authScheme = self::SCHEME_BEARER;
+        $this->staticToken = '';
+
+        try {
+            $response = $this->send($method, $path, $fallbackUser, $fallbackPass, $payload);
+        } finally {
+            // پشتیبان جواب نداد ⇒ برمی‌گردیم به کلید تا خطای اصلی حفظ شود.
+            if (($response['status'] ?? 0) >= 400 || ($response['error'] ?? '') !== '') {
+                $this->authScheme = $savedScheme;
+                $this->staticToken = $savedToken;
+
+                return $primary;
+            }
+
+            $this->downgraded = true;
+        }
+
+        return $response;
+    }
+
+    /**
      * @param array<string, mixed>|null $payload
      * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
      */
@@ -1066,14 +1193,19 @@ class PasarGuardClient
      *
      * مسیر مشترک `send()` و `requestWithApiKey()` است تا هر دو دقیقاً یک
      * رفتار داشته باشند: همان هدرها، همان timeout، همان لاگ، همان تفسیر
-     * خطا.
+     * خطا، و همان منطق بازگشت به پشتیبان.
      *
      * نام متد «Bearer» تاریخی است؛ طرحِ واقعی از `$authScheme` می‌آید.
+     *
+     * `protected` است (نه `private`) تا کلاینت ساختگیِ تست‌ها بتواند **همین
+     * نقطه** را بازنویسی کند. اگر تست‌ها به‌جای این، `request()` یا
+     * `requestWithApiKey()` را بازنویسی کنند، منطق واقعی ۴۰۱/۴۰۳ و بازگشت به
+     * پشتیبان اصلاً اجرا نمی‌شود و تست سبز می‌ماند در حالی که کد خراب است.
      *
      * @param array<string, mixed>|null $payload
      * @return array{status:int, data:array<string, mixed>|null, raw:string, error:string}
      */
-    private function sendWithBearer(string $method, string $path, string $token, ?array $payload): array
+    protected function sendWithBearer(string $method, string $path, string $token, ?array $payload): array
     {
         $url      = $this->baseUrl . $path;
 
