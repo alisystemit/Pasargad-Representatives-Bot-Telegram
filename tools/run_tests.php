@@ -29,6 +29,7 @@ $suites = [
     ['نوع‌های حل‌نشده',        $root . '/tests/types_test.php',     false],
     ['تلاش دوبارهٔ وبهوک',     $root . '/tests/webhook_reliability_test.php', false],
     ['سفر مشتری و ادمین',    $root . '/tests/customer_journey_test.php', false],
+    ['همکاری در فروش و کیف پول', $root . '/tests/referral_wallet_test.php', false],
     ['لایهٔ همگام‌سازی پنل',   $root . '/tests/panel_sync_manager_test.php', false],
     ['مایگریشن',               $root . '/tests/migrator_test.php',   false],
     ['پنل متصل و کلید API',     $root . '/tests/panel_access_test.php', false],

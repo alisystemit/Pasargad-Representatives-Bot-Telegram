@@ -64,6 +64,14 @@ use Pasargad\Telegram\BotApi;
  */
 final class Api
 {
+    /**
+     * میان‌برِ خوانا به ثابتِ مشترک با ربات.
+     *
+     * تعریفِ اصلی در `PaymentService::METHOD_WALLET` است؛ دو رشتهٔ جدا یعنی
+     * کیف پول در مینی‌اپ کار کند و در ربات کار نکند (یا برعکس).
+     */
+    private const METHOD_WALLET = PaymentService::METHOD_WALLET;
+
     private UserRepository $users;
     private PanelRepository $panels;
     private OrderRepository $orders;
@@ -612,7 +620,11 @@ final class Api
                 'open'   => $this->countOpenTickets($tickets),
                 'recent' => array_map([View::class, 'ticket'], $tickets),
             ],
-            'referral' => $this->discounts->referralSummary($this->userId()),
+            // ⭐️ `referralStats` و نه `referralSummary`: این خط در **هر بار باز شدن اپ**
+            // اجرا می‌شود و فقط به شمارش‌ها نیاز دارد. `referralSummary()` فهرستِ کامل
+            // (تا ۲۰۰ ردیف با نام و مجموعه خرید) را برمی‌گرداند که در این پاسخ
+            // هیچ استفاده‌ای نمی‌شود — فقط چند ده کیلوبایت JSON اضافه در هر بارگذاری.
+            'referral' => $this->discounts->referralStats($this->userId()),
             'app' => [
                 'bot_username'  => Config::str('bot_username', ''),
                 'support_link'  => Config::str('notifications.support_link', ''),
@@ -1591,10 +1603,29 @@ final class Api
             }
         }
 
+        // ⭐️ کیف پول هم یک روش پرداخت است. مبلغ و موجودی اینجا می‌آید تا کلاینت
+        // بتواند دکمهٔ پرداخت را با موجودیِ واقعی نشان دهد — وگرنه کاربر با
+        // موجودی صفر هم دکمهٔ کیف پول می‌دید و بعد خطا می‌گرفت.
+        $balance   = $this->users->walletBalance($this->userId());
+        $price     = (int) ($order['price_toman'] ?? 0);
+        $payable   = in_array((string) $order['status'], [
+            OrderRepository::STATUS_CREATED,
+            OrderRepository::STATUS_AWAITING_PAYMENT,
+        ], true);
+
         return [
             'order' => View::orderDetail($order, ['invoice_url' => $invoiceUrl]),
             'panel' => $panel,
             'gateways' => $this->gateways(),
+            'wallet' => [
+                'balance' => $balance,
+                'balance_text' => Str::formatToman($balance),
+                'method'  => self::METHOD_WALLET,
+                // فقط وقتی پیشنهاد شود که واقعاً پوشش دهد: موجودیِ نیمه،
+                // پرداختِ کیف پول نیست (یا کل یا هیچ).
+                'can_pay' => $payable && $price > 0 && $balance >= $price,
+                'partial' => $payable && $price > 0 && $balance > 0 && $balance < $price,
+            ],
             'provision_logs' => array_map(
                 static fn (array $log): array => [
                     'id'      => (int) $log['id'],
@@ -1620,6 +1651,13 @@ final class Api
             return ['ok' => false, 'message' => 'این سفارش در حساب شما نیست.'];
         }
 
+        // ⭐️ کیف پول درستی همان مسیری است که ربات دارد: جدا از درگاه‌ها.
+        // اگر به PaymentService فرستاده شود دنبالِ درگاهی به نام `wallet` می‌گردد
+        // و کاربر پیام خطای مبهم می‌بیند.
+        if ($method === self::METHOD_WALLET) {
+            return $this->payWithWallet($order);
+        }
+
         $result = $this->payments->startPayment($order, $method, $this->telegramId);
 
         if (!($result['ok'] ?? false)) {
@@ -1638,6 +1676,88 @@ final class Api
             'amount'       => (int) ($result['amount_toman'] ?? (int) $fresh['price_toman']),
             'amount_text'  => Str::formatToman((int) ($result['amount_toman'] ?? (int) $fresh['price_toman'])),
             'order'        => View::orderDetail($fresh),
+        ];
+    }
+
+    /**
+     * پرداخت از موجودیِ کیف پول.
+     *
+     * ⚠️ کیف پول یا **کل** مبلغ را پوشش می‌دهد یا هیچ — همان قاعدهٔ ربات.
+     * ترکیب «بخشی از کیف پول + بخشی از درگاه» یعنی دو منبع پرداخت برای یک
+     * سفارش؛ اگر درگاه خطا بدهد موجودی رفته ولی بسته اجرا نشده است.
+     *
+     * @param array<string, mixed> $order
+     * @return array<string, mixed>
+     */
+    private function payWithWallet(array $order): array
+    {
+        $price  = (int) $order['price_toman'];
+        $status = (string) $order['status'];
+
+        // بررسی وضعیت: شناسهٔ سفارش از کلاینت می‌آید و قابل جعل است.
+        if ($status !== OrderRepository::STATUS_CREATED
+            && $status !== OrderRepository::STATUS_AWAITING_PAYMENT
+        ) {
+            return ['ok' => false, 'message' => 'این سفارش قابل پرداخت نیست.'];
+        }
+
+        if ($price < 1) {
+            return ['ok' => false, 'message' => 'مبلغ سفارش نامعتبر است.'];
+        }
+
+        $spend = $this->users->spendWallet(
+            $this->userId(),
+            $price,
+            'پرداخت سفارش ' . (string) $order['code']
+        );
+
+        if (!$spend['ok']) {
+            // موجودی کم نشد ⇒ مشتری می‌تواند روش دیگری را انتخاب کند.
+            return [
+                'ok'      => false,
+                'message' => 'موجودی کیف پول کافی نیست. مبلغ سفارش '
+                    . Str::formatToman($price) . ' و موجودی شما '
+                    . Str::formatToman((int) $spend['balance']) . ' است.',
+                'balance' => (int) $spend['balance'],
+                'balance_text' => Str::formatToman((int) $spend['balance']),
+                'order'   => View::orderDetail($order),
+            ];
+        }
+
+        $paid = $this->orders->markPaid(
+            (int) $order['id'],
+            self::METHOD_WALLET,
+            (string) $order['code']
+        );
+
+        if (!$paid) {
+            // ⚠️ موجودی کم شد ولی سفارش پرداخت‌شده نشد ⇒ پول گم می‌شود.
+            $this->users->adjustWallet(
+                $this->userId(),
+                $price,
+                'بازگشت موجودی — پرداخت کیف پول ثبت نشد',
+                0,
+                'manual'
+            );
+
+            return [
+                'ok'      => false,
+                'message' => 'پرداخت ثبت نشد و موجودی کیف پول شما دست‌نخورده برگشت.',
+            ];
+        }
+
+        $this->users->refreshOrderStats($this->userId());
+
+        $fresh  = $this->orders->find((int) $order['id']) ?? $order;
+        $result = $this->provisioner->provision($fresh);
+
+        return [
+            'ok'        => true,
+            'message'   => (($result['ok'] ?? false) ? 'پرداخت از کیف پول انجام شد. 🎉 ' : 'پرداخت از کیف پول انجام شد. ⏳ ')
+                . $this->stripEmoji((string) ($result['message'] ?? '')),
+            'balance'   => (int) $spend['balance'],
+            'balance_text' => Str::formatToman((int) $spend['balance']),
+            'order'     => View::orderDetail($fresh),
         ];
     }
 
@@ -1950,16 +2070,34 @@ final class Api
 
         $invited = [];
 
-        foreach ($this->discounts->referrals()->listByReferrer($this->userId(), 25) as $row) {
+        // ⚠️ از `listDetailed()` استفاده می‌شود نه `listByReferrer()`: بدون
+        // ستون‌های `is_paid`/`orders_total` کاربر فقط می‌بیند چند نفر را آورده،
+        // ولی نمی‌بیند کدام‌یک واقعاً خرید کرده — یعنی نمی‌تواند بفهمد چرا پاداشی
+        // نگرفته یا چه کسی را باید بیشتر پیگیری کند.
+        foreach (array_slice(is_array($summary['list'] ?? null) ? $summary['list'] : [], 0, 25) as $row) {
+            $isPaid = !empty($row['is_paid']);
+
             $invited[] = [
-                'name'    => trim((string) ($row['first_name'] ?? '')) !== ''
+                'id'          => (int) ($row['id'] ?? 0),
+                'name'        => trim((string) ($row['first_name'] ?? '')) !== ''
                     ? Str::truncate((string) $row['first_name'], 40)
                     : 'کاربر',
                 'telegram_id' => (int) ($row['telegram_id'] ?? 0),
                 'bonus'   => (int) ($row['bonus_toman'] ?? 0),
                 'bonus_text' => Str::formatToman((int) ($row['bonus_toman'] ?? 0)),
-                'rewarded' => $row['rewarded_at'] !== null,
-                'rewarded_text' => $row['rewarded_at'] === null ? 'در انتظار خرید' : Str::date((int) $row['rewarded_at']),
+                'is_paid'     => $isPaid,
+                // ⭐️ این دو فقط وقتی معنا دارند که خریدی انجام شده باشد؛
+                // کلاینت نباید برای کسی که نخریده «۰ خرید» نشان دهد چون با
+                // «ثبت‌نام کرده ولی نخریده» اشتباه گرفته می‌شود.
+                'orders_count' => $isPaid ? (int) ($row['orders_count'] ?? 0) : null,
+                'orders_total' => $isPaid ? (int) ($row['orders_total'] ?? 0) : null,
+                'orders_total_text' => $isPaid
+                    ? Str::formatToman((int) ($row['orders_total'] ?? 0))
+                    : null,
+                'rewarded' => !empty($row['reward_given']),
+                'rewarded_text' => !empty($row['reward_given'])
+                    ? Str::date((int) $row['rewarded_at'])
+                    : ($isPaid ? 'در انتظار کرون بعدی' : 'در انتظار خرید'),
                 'at'      => (int) $row['created_at'],
             ];
         }
@@ -1969,8 +2107,17 @@ final class Api
         return [
             'code'          => $summary['code'],
             'link'          => $link,
+            'share_url'     => $link !== ''
+                ? 'https://t.me/share/url?url=' . rawurlencode($link)
+                    . '&text=' . rawurlencode('با این ربات فروش پنل نمایندگی بگیر! 🎁')
+                : '',
             'invited'       => (int) $summary['invited'],
+            'paid'          => (int) ($summary['paid'] ?? 0),
             'rewarded'      => (int) $summary['rewarded'],
+            'earned'        => (int) ($summary['earned'] ?? 0),
+            'earned_text'   => Str::formatToman((int) ($summary['earned'] ?? 0)),
+            'wallet'        => $this->users->walletBalance($this->userId()),
+            'wallet_text'   => Str::formatToman($this->users->walletBalance($this->userId())),
             'bonus_each'    => (int) $summary['bonus_each'],
             'bonus_each_text' => Str::formatToman((int) $summary['bonus_each']),
             'discount_percent' => max(0, min(100, $this->settings->int(Settings::REFERRAL_DISCOUNT, 10))),

@@ -29,6 +29,21 @@ final class PaymentService
      */
     public const IPN_AMOUNT_TOLERANCE = 0.02;
 
+    /**
+     * نامِ روش پرداختِ «کیف پول خودِ ربات».
+     *
+     * ⭐️ این یک **درگاه نیست** — هیچ سرویس بیرونی پشتش نیست — ولی از دید
+     * کاربر یک «روش پرداخت» است و باید در صفحهٔ انتخاب روش کنار بقیه بیاید.
+     *
+     * اینجا تعریف شده نه در `Kernel`/`Api`، چون هر دو لایه (ربات و مینی‌اپ) از
+     * آن استفاده می‌کنند و باید دقیقاً یکی باشند. اگر یکی `wallet` و دیگری
+     * `wallet_balance` بگوید، پرداخت کیف پول به درگاه می‌رود یا برعکس.
+     *
+     * عمداً بی‌شباهت به هر نام درگاهی است تا روزی درگاهی با همین نام اضافه
+     * شد، تداخل نکند.
+     */
+    public const METHOD_WALLET = 'wallet_balance';
+
     private OrderRepository $orders;
     private Provisioner $provisioner;
     private Settings $settings;

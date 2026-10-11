@@ -502,6 +502,15 @@ final class Kernel
 
     /**
      * مراحل نشستی که ورودی متنی آزاد مصرف می‌کنند.
+     /**
+     * میان‌برِ خوانا به ثابتِ مشترک.
+     *
+     * تعریفِ اصلی در `PaymentService::METHOD_WALLET` است چون مینی‌اپ هم از آن
+     * استفاده می‌کند؛ دو رشتهٔ جدا یعنی دو رفتارِ متفاوت در دو لایه.
+     */
+    private const METHOD_WALLET = PaymentService::METHOD_WALLET;
+
+    /**
      *
      * @var array<int, string>
      */
@@ -1654,6 +1663,19 @@ final class Kernel
             return;
         }
 
+        // فهرست و جزئیاتِ دعوت‌شده‌ها — بخشِ «همکاری در فروش».
+        if ($ns === 'referral.list') {
+            $this->bot->answerCallback($callbackId);
+            $this->showReferralList($chatId, $user);
+            return;
+        }
+
+        if ($ns === 'referral.one') {
+            $this->bot->answerCallback($callbackId);
+            $this->showReferralOne($chatId, $user, (int) ($data['id'] ?? 0));
+            return;
+        }
+
         // ---------------- پشتیبانی ----------------
         if ($ns === 'ticket.new') {
             $this->bot->answerCallback($callbackId);
@@ -1947,7 +1969,41 @@ final class Kernel
 
         if ($ns === 'pay') {
             $this->bot->answerCallback($callbackId);
-            $this->startPayment($chatId, $user, (int) ($data['id'] ?? 0), (string) ($data['m'] ?? ''));
+
+            $method = (string) ($data['m'] ?? '');
+            $orderId = (int) ($data['id'] ?? 0);
+
+            // ⭐️ کیف پول یک «درگاه» نیست؛ هیچ سرویس بیرونی ای در کار نیست.
+            // پس **قبل** از رسیدن به PaymentService جدا شود — وگرنه دنبالِ
+            // درگاهی به نام `wallet_balance` می‌گردد و کاربر خطای مبهم می‌بیند.
+            if ($method === self::METHOD_WALLET) {
+                $order = $this->orders->findForUser($orderId, (int) $user['id']);
+
+                if ($order === null) {
+                    $this->bot->sendMessage($chatId, Text::notFound());
+                    return;
+                }
+
+                $this->payWithWallet($chatId, $user, $order);
+                return;
+            }
+
+            $this->startPayment($chatId, $user, $orderId, $method);
+            return;
+        }
+
+        // «روش‌های دیگر» — برگشت به صفحهٔ انتخاب روش پرداخت بدون از دست دادن
+        // سفارش (کاربر پولش را از دست نداده، فقط باید راه دیگری انتخاب کند).
+        if ($ns === 'pay.again') {
+            $this->bot->answerCallback($callbackId);
+            $order = $this->orders->findForUser((int) ($data['id'] ?? 0), (int) $user['id']);
+
+            if ($order === null) {
+                $this->bot->sendMessage($chatId, Text::notFound());
+                return;
+            }
+
+            $this->showPaymentMethods($chatId, $order, []);
             return;
         }
 
@@ -2626,41 +2682,192 @@ final class Kernel
 
         $summary = $this->discounts()->referralSummary((int) $user['id']);
         $percent = max(0, min(100, (int) $this->settings->int(Settings::REFERRAL_DISCOUNT, 10)));
-        $botName = Config::str('bot_username', '');
+        $botName = ltrim(Config::str('bot_username', ''), '@');
+        $balance = $this->users->walletBalance((int) $user['id']);
+
+        $inviteLink = $botName !== ''
+            ? 'https://t.me/' . $botName . '?start=' . $summary['code']
+            : '';
 
         $lines = [
-            '🎁✨ <b>دعوت دوست به ربات</b>',
+            '🤝✨ <b>همکاری در فروش</b>',
             '',
-            '🔗 کد شما: <code>' . Str::escape($summary['code']) . '</code>',
+            'دوستانتان را دعوت کنید؛ هر خریدِ موفقشان کیف پول شما را پر می‌کند.',
+            '',
+            '🔗 <b>کد شما:</b> <code>' . Str::escape((string) $summary['code']) . '</code>',
         ];
 
-        if ($botName !== '') {
-            $lines[] = '';
-            $lines[] = '📣 لینک دعوت:';
-            $lines[] = '<code>' . Str::escape('https://t.me/' . $botName . '?start=' . $summary['code']) . '</code>';
+        if ($inviteLink !== '') {
+            $lines[] = '<code>' . Str::escape($inviteLink) . '</code>';
         }
 
         $lines[] = '';
-        $lines[] = '👥 دعوت‌شده‌ها: <b>' . Str::faNumber($summary['invited']) . '</b>';
-        $lines[] = '✅ پاداش داده‌شده: <b>' . Str::faNumber($summary['rewarded']) . '</b>';
+        $lines[] = '📊 <b>آمار شما</b>';
+        $lines[] = '👥 دعوت‌شده‌ها: <b>' . Str::faNumber((int) $summary['invited']) . '</b>';
+
+        if ((int) $summary['invited'] > 0) {
+            $lines[] = '🛒 خرید کرده‌اند: <b>' . Str::faNumber((int) $summary['paid']) . '</b>';
+        }
+
+        $lines[] = '🎁 پاداش گرفته‌اید: <b>' . Str::faNumber((int) $summary['rewarded']) . '</b>';
+        $lines[] = '💰 مجموع درآمد شما: <b>' . Str::formatToman((int) $summary['earned']) . '</b>';
+        $lines[] = '👛 موجودی کیف پول: <b>' . Str::formatToman($balance) . '</b>';
+
         $lines[] = '';
         $lines[] = '🎉 دوست شما با این کد <b>' . Str::faNumber($percent) . '٪</b> تخفیف می‌گیرد.';
-        $lines[] = '💰 شما به ازای هر خرید موفق او <b>' . Str::formatToman($summary['bonus_each'])
-            . '</b> پاداش می‌گیرید (به کیف پولتان اضافه می‌شود).';
+        $lines[] = '💰 به ازای هر خریدِ موفقِ او <b>' . Str::formatToman((int) $summary['bonus_each'])
+            . '</b> به کیف پول شما اضافه می‌شود.';
 
-        // پاداش اسلات (bonus slate) — پاداش اضافی برای دعوت‌های موفق
-        $db = \Pasargad\Support\Db::instance();
-        $slateCount = $db->count('SELECT COUNT(*) FROM referrals WHERE referrer_user_id = ? AND slate_bonus_toman > 0', [(int) $user['id']]);
+        $keyboard = [];
 
-        if ($slateCount > 0) {
+        if ($inviteLink !== '') {
+            // دکمهٔ اشتراک‌گذاریِ خودِ تلگرام: کاربر می‌تواند لینک را در هر
+            // گفتگویی بفرستد. بدون این، مجبور است لینک را کپی کند — که در عمل
+            // یعنی یک مانع اضافه بین «خواندم پیام» و «فرستادم».
+            $keyboard[] = [[
+                'text' => '📤 دعوت دوستان',
+                'url'  => 'https://t.me/share/url?url=' . rawurlencode($inviteLink)
+                    . '&text=' . rawurlencode('با این ربات فروش پنل نمایندگی بگیر! 🎁'),
+            ]];
+        }
+
+        $list = is_array($summary['list'] ?? null) ? $summary['list'] : [];
+
+        if ($list !== []) {
+            $keyboard[] = [[
+                'text' => '👥 دعوت‌شده‌های من',
+                'data' => BotApi::encodeData('referral.list'),
+            ]];
+        }
+
+        $keyboard[] = [['text' => '👛 کیف پول من', 'data' => BotApi::encodeData('user.wallet')]];
+        $keyboard[] = Keyboard::back('menu');
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows($keyboard)),
+        ]);
+    }
+
+    /**
+     * فهرست دعوت‌شده‌ها با وضعیت خریدِ هرکدام.
+     *
+     * این صفحه چیزی است که «همکاری در فروش» را از یک عددِ بی‌استفاده به ابزارِ
+     * واقعی تبدیل می‌کند: کاربر می‌بیند چه کسی ثبت‌نام کرده، چه کسی خرید کرده
+     * و کجا پاداش گرفته.
+     */
+    private function showReferralList(int $chatId, array $user): void
+    {
+        if (!$this->flags->isReferralEnabled()) {
+            $this->bot->sendMessage($chatId, '🎁 سیستم معرفی موقتاً غیرفعال است. 😴');
+            return;
+        }
+
+        $summary = $this->discounts()->referralSummary((int) $user['id']);
+        $list    = is_array($summary['list'] ?? null) ? $summary['list'] : [];
+
+        if ($list === []) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '👥 <b>هنوز کسی را دعوت نکرده‌اید</b>',
+                '',
+                'لینک دعوت را برای دوستانتان بفرستید. هر خریدِ موفقشان به کیف',
+                'پول شما اضافه می‌شود. 🎁',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    Keyboard::back(BotApi::encodeData('referral.my'), '🔙 بازگشت'),
+                ])),
+            ]);
+
+            return;
+        }
+
+        $lines    = ['👥 <b>دعوت‌شده‌های من</b>', ''];
+        $keyboard = [];
+
+        foreach (array_slice($list, 0, 20) as $row) {
+            $name = trim((string) ($row['first_name'] ?? ''));
+
+            if ($name === '') {
+                $name = 'کاربر #' . (int) ($row['telegram_id'] ?? 0);
+            }
+
+            $lines[] = '• <b>' . Str::escape($name) . '</b>';
+
+            if (!empty($row['is_paid'])) {
+                $lines[] = '   🛒 خرید کرده — ' . Str::formatToman((int) ($row['orders_total'] ?? 0));
+            } else {
+                // ⭐️ این پیامِ «هنوز نخریده» عمداً صریح است: بدون آن کاربر
+                // نمی‌داند چرا پاداشی نگرفته و فکر می‌کند سیستم خراب است.
+                $lines[] = '   ⏳ هنوز خرید نکرده';
+            }
+
+            if (!empty($row['reward_given'])) {
+                $lines[] = '   🎁 پاداش ' . Str::formatToman((int) ($row['bonus_toman'] ?? 0)) . ' گرفته شد';
+            } elseif (!empty($row['is_paid'])) {
+                $lines[] = '   ⏳ پاداش در کرون بعدی داده می‌شود';
+            }
+
+            $keyboard[] = [[
+                'text' => (empty($row['is_paid']) ? '⏳ ' : '✅ ') . Str::truncate($name, 24),
+                'data' => BotApi::encodeData('referral.one', ['id' => (int) $row['id']]),
+            ]];
+        }
+
+        if (count($list) > 20) {
             $lines[] = '';
-            $lines[] = '💎 پاداش اسلات: <b>' . Str::faNumber($slateCount) . '</b> دعوت موفق';
+            $lines[] = '… و ' . Str::faNumber(count($list) - 20) . ' نفر دیگر';
+        }
+
+        $keyboard[] = Keyboard::back(BotApi::encodeData('referral.my'), '🔙 بازگشت');
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows($keyboard)),
+        ]);
+    }
+
+    /**
+     * جزئیاتِ یک دعوت.
+     *
+     * ⚠️ مالکیت بررسی می‌شود: شناسهٔ دعوت داخل `callback_data` است و هر کاربری
+     * می‌تواند عدد دلخواه بفرستد. بدون این بررسی، هرکسی می‌توانست آمارِ دعوتِ
+     * دیگران را ببیند.
+     */
+    private function showReferralOne(int $chatId, array $user, int $referralId): void
+    {
+        $row = $this->discounts()->referrals()->findById($referralId);
+
+        if ($row === null || (int) $row['referrer_user_id'] !== (int) $user['id']) {
+            $this->bot->sendMessage($chatId, Text::notFound());
+            return;
+        }
+
+        $name = trim((string) ($row['first_name'] ?? ''));
+
+        if ($name === '') {
+            $name = 'کاربر #' . (int) ($row['telegram_id'] ?? 0);
+        }
+
+        $lines = [
+            '👤 <b>' . Str::escape($name) . '</b>',
+            '',
+            '📅 تاریخ دعوت: ' . Str::date((int) $row['created_at']),
+            '🎁 پاداش هر خرید: ' . Str::formatToman((int) ($row['bonus_toman'] ?? 0)),
+        ];
+
+        if ($row['rewarded_at'] !== null) {
+            $lines[] = '✅ پاداش داده شده در ' . Str::date((int) $row['rewarded_at']);
+        } else {
+            $lines[] = '⏳ هنوز پاداشی داده نشده (بعد از اولین خریدِ موفق)';
+        }
+
+        $slate = (int) ($row['slate_bonus_toman'] ?? 0);
+
+        if ($slate > 0) {
+            $lines[] = '💎 پاداش اسلات: ' . Str::formatToman($slate);
         }
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
             'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                [['text' => '👛 کیف پول من', 'data' => BotApi::encodeData('user.wallet')]],
-                Keyboard::back('menu'),
+                Keyboard::back(BotApi::encodeData('referral.list'), '🔙 بازگشت به فهرست'),
             ])),
         ]);
     }
@@ -2996,8 +3203,17 @@ final class Kernel
     private function showPaymentMethods(int $chatId, array $order, array $discount): void
     {
         $gateways = $this->payments->activeGateways();
+        $balance  = $this->users->walletBalance((int) $order['user_id']);
+        $price    = (int) $order['price_toman'];
 
-        if ($gateways === []) {
+        // ⭐️ کیف پول هم یک «روش پرداخت» است.
+        //
+        // بدون این، پاداشِ معرفی عملاً بی‌فایده بود: به کیف پول می‌رفت، هیچ‌جا
+        // نمایش داده نمی‌شد و هرگز خرج نمی‌شد — یعنی کاربر برای هر دوستی که
+        // می‌آورد پاداش می‌گرفت و نمی‌توانست از آن استفاده کند.
+        $walletCovers = $price > 0 && $balance >= $price;
+
+        if ($gateways === [] && !$walletCovers) {
             $this->bot->sendMessage($chatId, '⚠️💳 هیچ روش پرداختی فعال نیست! 😔 با پشتیبانی تماس بگیرید. 📞🙏');
             return;
         }
@@ -3008,6 +3224,13 @@ final class Kernel
             $keyboard[] = [[
                 'text' => $gateway->title(),
                 'data' => BotApi::encodeData('pay', ['id' => (int) $order['id'], 'm' => $gateway->name()]),
+            ]];
+        }
+
+        if ($balance > 0) {
+            $keyboard[] = [[
+                'text' => '👛 کیف پول (' . Str::formatToman($balance) . ')',
+                'data' => BotApi::encodeData('pay', ['id' => (int) $order['id'], 'm' => self::METHOD_WALLET]),
             ]];
         }
 
@@ -3029,11 +3252,134 @@ final class Kernel
         }
 
         $lines[] = '';
-        $lines[] = '💵 <b>مبلغ قابل پرداخت: ' . Str::formatToman((int) $order['price_toman']) . '</b>';
+        $lines[] = '💵 <b>مبلغ قابل پرداخت: ' . Str::formatToman($price) . '</b>';
+
+        if ($walletCovers) {
+            $lines[] = '';
+            $lines[] = '👛 موجودی کیف پول شما <b>' . Str::formatToman($balance)
+                . '</b> است و کل این سفارش را پوشش می‌دهد — بدون نیاز به پرداخت بیرونی!';
+        } elseif ($balance > 0) {
+            $lines[] = '👛 موجودی کیف پول: <b>' . Str::formatToman($balance) . '</b>'
+                . ' — ' . Str::formatToman($price - $balance) . ' کم می‌آورد.';
+        }
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
             'reply_markup' => $this->bot->buildMarkup($keyboard),
         ]);
+    }
+
+    /**
+     * پرداخت از موجودیِ کیف پول.
+     *
+     * ⚠️ **کیف پول یا کل مبلغ را پوشش می‌دهد یا هیچ.**
+     *
+     * عمداً پول را نصفه کم نمی‌کنیم و باقی را از درگاه می‌گیریم: آن ترکیب در
+     * عمل یعنی یک سفارش با **دو منبع پرداخت**. اگر درگاه بعداً خطا بدهد،
+     * موجودی رفته ولی بسته اجرا نشده — و بازگرداندنِ موجودی پیچیده و مستعد خطا
+     * می‌شود. یکی از دو، نه هر دو.
+     */
+    private function payWithWallet(int $chatId, array $user, array $order): void
+    {
+        $price  = (int) $order['price_toman'];
+        $status = (string) $order['status'];
+
+        // ⚠️ `callback_data` قابل جعل است: کاربر می‌تواند `pay` را با شناسهٔ
+        // یک سفارشِ بستهٔ خودش بفرستد. بدون این بررسی، موجودی کیف پولش کم
+        // می‌شد و بعد `markPaid` false برمی‌گرداند و ما پول را برمی‌گرداندیم —
+        // یعنی یک رفت‌وبرگشت بی‌دلیل در دیتابیس برای هر کلیک.
+        if ($status !== OrderRepository::STATUS_CREATED
+            && $status !== OrderRepository::STATUS_AWAITING_PAYMENT
+        ) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                'ℹ️ این سفارش قابل پرداخت نیست.',
+                '',
+                'وضعیت فعلی: <b>' . Str::escape($status) . '</b>',
+                '',
+                'اگر فکر می‌کنید پرداخت کرده‌اید، از بخش «سفارش‌های من» پیگیری کنید.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup([
+                    [[
+                        'text' => '🧾 سفارش‌های من',
+                        'data' => BotApi::encodeData('order.list', ['page' => 0]),
+                    ]],
+                    Keyboard::back('menu'),
+                ]),
+            ]);
+
+            return;
+        }
+
+        if ($price < 1) {
+            $this->bot->sendMessage($chatId, '⚠️ مبلغ سفارش نامعتبر است.');
+            return;
+        }
+
+        $spend = $this->users->spendWallet(
+            (int) $user['id'],
+            $price,
+            'پرداخت سفارش ' . (string) $order['code']
+        );
+
+        if (!$spend['ok']) {
+            // موجودی نرسید ⇒ هیچ اتفاقی نیفتاده. مشتری می‌تواند روش دیگری
+            // انتخاب کند و بابت این تلاش چیزی از دست نداده.
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '👛 <b>موجودی کیف پول کافی نیست</b>',
+                '',
+                'موجودی شما: <b>' . Str::formatToman((int) $spend['balance']) . '</b>',
+                'مبلغ سفارش: <b>' . Str::formatToman($price) . '</b>',
+                '',
+                'لطفاً با روش پرداخت دیگری ادامه دهید.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup([
+                    [[
+                        'text' => '💳 روش‌های دیگر',
+                        'data' => BotApi::encodeData('pay.again', ['id' => (int) $order['id']]),
+                    ]],
+                    Keyboard::back('menu'),
+                ]),
+            ]);
+
+            return;
+        }
+
+        $paid = $this->orders->markPaid((int) $order['id'], self::METHOD_WALLET, (string) $order['code']);
+
+        if (!$paid) {
+            // ⚠️ موجودی کم شد ولی سفارش پرداخت‌شده علامت نخورد ⇒ پول گم شده.
+            // این تنها جایی است که چنین خطری وجود دارد، پس صریح برمی‌گردانیم.
+            $this->users->adjustWallet(
+                (int) $user['id'],
+                $price,
+                'بازگشت موجودی — پرداخت کیف پول ثبت نشد',
+                0,
+                'manual'
+            );
+
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '⚠️ <b>پرداخت ثبت نشد</b>',
+                '',
+                'موجودی کیف پول شما دست‌نخورده برگشت. لطفاً دوباره تلاش کنید یا با',
+                'پشتیبانی تماس بگیرید.',
+            ]));
+
+            return;
+        }
+
+        $this->users->refreshOrderStats((int) $user['id']);
+
+        $fresh  = $this->orders->find((int) $order['id']);
+        $result = $fresh === null
+            ? ['ok' => false, 'message' => 'سفارش یافت نشد.']
+            : $this->provisioner->provision($fresh);
+
+        $this->bot->sendMessage(
+            $chatId,
+            (($result['ok'] ?? false) ? '🎉 ' : '⏳ ')
+            . 'پرداخت از کیف پول انجام شد! ✅\n\n'
+            . Str::escape((string) ($result['message'] ?? ''))
+            . "\n\n👛 موجودی باقی‌مانده: <b>" . Str::formatToman((int) $spend['balance']) . '</b>'
+        );
     }
 
     private function startPayment(int $chatId, array $user, int $orderId, string $method): void

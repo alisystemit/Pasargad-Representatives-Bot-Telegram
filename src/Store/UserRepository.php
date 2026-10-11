@@ -366,6 +366,65 @@ final class UserRepository
     }
 
     /**
+     * برداشت از کیف پول، **فقط اگر موجودی کافی باشد**.
+     *
+     * ⭐️ چرا این متد جدا از `adjustWallet()` است و نباید با آن جایگزین شود:
+     *
+     * `adjustWallet()` منفی نمی‌شود؛ اگر موجودی کم باشد، تا صفر کم می‌کند. برای
+     * **شارژ** که درست است، ولی برای **پرداختِ سفارش** فاجعه: مشتری موجودیِ
+     * ۵۰ هزار تومانی دارد، سفارش ۹۰۰ هزار تومانی می‌خرد، و کیف پولش خالی
+     * می‌شود در حالی که سفارش هم بی‌صدا «پرداخت‌شده» علامت می‌خورد.
+     *
+     * اینجا شرطِ موجودی در خودِ `UPDATE` است (compare-and-swap)، پس دو درخواستِ
+     * همزمان نمی‌توانند موجودی را دوبار خرج کنند.
+     *
+     * @return array{ok:bool, message:string, balance:int, shortfall:int}
+     */
+    public function spendWallet(int $userId, int $amount, string $note = ''): array
+    {
+        if ($amount <= 0) {
+            return ['ok' => true, 'message' => '', 'balance' => $this->walletBalance($userId), 'shortfall' => 0];
+        }
+
+        $deducted = false;
+        $before   = $this->walletBalance($userId);
+
+        $this->db->transaction(function () use ($userId, $amount, $note, &$deducted): void {
+            // ⭐️ شرطِ `wallet_balance >= amount` داخل خودِ UPDATE است، پس دو
+            // درخواستِ همزمان نمی‌توانند موجودی را دوبار خرج کنند.
+            //
+            // `rowCount()` تنها راهِ قابل‌اعتمادِ تشخیص موفقیت است؛ بررسیِ
+            // «آیا تراکنشی با این مبلغ ثبت شده» غلط بود چون یک خرجِ *قبلی* با
+            // همان مبلغ، کسرِ *ناموفق* فعلی را موفق نشان می‌داد.
+            $deducted = $this->db->run(
+                'UPDATE users SET wallet_balance = wallet_balance - :a, updated_at = :t
+                  WHERE id = :id AND wallet_balance >= :a',
+                ['a' => $amount, 't' => time(), 'id' => $userId]
+            )->rowCount() > 0;
+
+            if (!$deducted) {
+                return;
+            }
+
+            $this->db->insert('wallet_txns', [
+                'user_id'    => $userId,
+                'amount'     => -$amount,
+                'kind'       => 'wallet_pay',
+                'note'       => Str::truncate($note !== '' ? $note : 'پرداخت از کیف پول', 300),
+                'admin_id'   => null,
+                'created_at' => time(),
+            ]);
+        });
+
+        return [
+            'ok'        => $deducted,
+            'message'    => $deducted ? '' : 'موجودی کیف پول کافی نیست.',
+            'balance'    => $this->walletBalance($userId),
+            'shortfall'  => $deducted ? 0 : max(0, $amount - $before),
+        ];
+    }
+
+    /**
      * @return array<int, array<string, mixed>>
      */
     public function walletHistory(int $userId, int $limit = 15): array

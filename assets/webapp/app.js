@@ -940,11 +940,23 @@ views.order = async (root, args) => {
         `<button class="btn btn-ghost" data-pay="${esc(g.name)}" type="button">${esc(g.title)}</button>`
     ).join('');
 
+    // ⭐️ کیف پول فقط وقتی دکمه‌اش نمایش داده می‌شود که کل مبلغ را پوشش دهد.
+    // اگر موجودی نیمه باشد، دکمه را نشان نمی‌دهیم چون کیف پول یا کل مبلغ را
+    // می‌پردازد یا هیچ — حالتِ «نیمه‌پرداخت» در این سیستم وجود ندارد.
+    const w = d.wallet || {};
+    const walletBtn = w.can_pay
+        ? `<button class="btn btn-primary" data-pay="${esc(w.method)}" type="button">👛 پرداخت از کیف پول (${esc(w.balance_text)})</button>`
+        : '';
+
     const actions = [];
     if (o.actions.includes('check')) actions.push('<button class="btn btn-ghost" data-act="check" type="button">🔄 بررسی وضعیت</button>');
-    if (o.actions.includes('pay') && gateways) {
+    if (o.actions.includes('pay') && (gateways || walletBtn)) {
         actions.push('<div class="divider"></div><div class="tiny mb-8">💳 روش پرداخت:</div>'
-            + `<div class="btn-row">${gateways}</div>`);
+            + `<div class="btn-row">${walletBtn}${gateways}</div>`);
+        // موجودیِ نیمه: کاربر باید بفهمد چرا دکمهٔ کیف پول نیست.
+        if (w.partial) {
+            actions.push(`<div class="hint">موجودی کیف پول شما ${esc(w.balance_text)} است و کل مبلغ سفارش را پوشش نمی‌دهد.</div>`);
+        }
     }
     if (o.actions.includes('receipt')) actions.push('<button class="btn btn-ghost" data-act="receipt" type="button">📸 ارسال رسید</button>');
     if (o.invoice_url) actions.push(`<a class="btn btn-ghost" href="${esc(o.invoice_url)}" target="_blank" rel="noopener">🧾 فاکتور قابل چاپ</a>`);
@@ -1198,16 +1210,37 @@ views.referral = async (root) => {
 
     const d = await api('referral');
 
+    // ⚠️ `share_url` از سرور می‌آید نه اینکه اینجا ساخته شود: سرور لینکِ
+    // درست (دایرکت یا `?start=`) را بر اساس دامنهٔ عمومی تصمیم می‌گیرد.
+    // ساختنش اینجا یعنی نسخهٔ کهنهٔ لینک.
+    const shareHref = d.share_url || (d.link
+        ? 'https://t.me/share/url?url=' + encodeURIComponent(d.link)
+            + '&text=' + encodeURIComponent('با این ربات فروش پنل نمایندگی بگیر! 🎁')
+        : '');
+
     root.innerHTML = `
         <section class="hero">
-            <div class="hero-name">🎁 دعوت دوستان</div>
-            <div class="hero-sub">دوستان شما ${fa(d.discount_percent)}٪ تخفیف می‌گیرند، شما ${esc(d.bonus_each_text)} پاداش می‌گیرید.</div>
+            <div class="hero-name">🤝 همکاری در فروش</div>
+            <div class="hero-sub">دوستان شما ${fa(d.discount_percent)}٪ تخفیف می‌گیرند، شما ${esc(d.bonus_each_text)} به کیف پولتان می‌گیرید.</div>
             <div class="hero-stats">
                 <div class="hero-stat"><b>${fa(d.invited)}</b><span>دعوت‌شده</span></div>
+                <div class="hero-stat"><b>${fa(d.paid || 0)}</b><span>خرید کرده</span></div>
                 <div class="hero-stat"><b>${fa(d.rewarded)}</b><span>پاداش‌گرفته</span></div>
-                <div class="hero-stat"><b>${fa(d.level2_bonus)}</b><span>پاداش سطح ۲</span></div>
             </div>
         </section>
+
+        ${d.earned > 0 ? `
+            <section class="card">
+                <div class="card-title mb-8">💰 درآمد شما از دعوت‌ها</div>
+                <div class="kv">
+                    ${kv('درآمد کل', '<b>' + esc(d.earned_text) + '</b>')}
+                    ${kv('موجودی کیف پول', '<b>' + esc(d.wallet_text) + '</b>')}
+                </div>
+                <div class="hint">موجودی کیف پول را می‌توانید در صفحهٔ پرداختِ سفارش، به‌عنوان روش پرداخت استفاده کنید.</div>
+                <div class="btn-row mt-12">
+                    <button class="btn btn-ghost" data-go="wallet" type="button">👛 کیف پول من</button>
+                </div>
+            </section>` : ''}
 
         <section class="card">
             <div class="card-title mb-8">🔗 لینک اختصاصی شما</div>
@@ -1215,23 +1248,35 @@ views.referral = async (root) => {
                 <span>${esc(d.link || d.code)}</span> 📋
             </button>
             <div class="hint">با لمس، لینک کپی می‌شود.</div>
-            ${d.invited ? `
+            ${shareHref ? `
                 <div class="btn-row mt-12">
-                    <a class="btn btn-ghost" href="https://t.me/share/url?url=${encodeURIComponent(d.link)}&text=${encodeURIComponent('با این لینک عضو شو و تخفیف بگیر!')}" target="_blank" rel="noopener">📤 اشتراک‌گذاری</a>
+                    <a class="btn btn-ghost" href="${esc(shareHref)}" target="_blank" rel="noopener">📤 دعوت دوستان</a>
                 </div>` : ''}
         </section>
 
         ${d.items.length ? `
             <div class="section-title"><span>👥 دعوت‌شده‌ها</span></div>
             <div class="list">
-                ${d.items.map(i => `<div class="item">
-                    <div class="item-ico">${i.rewarded ? '✅' : '⏳'}</div>
-                    <div class="item-main">
-                        <div class="item-title">${esc(i.name)}</div>
-                        <div class="item-sub">${esc(i.rewarded_text)}${i.rewarded ? ' • ' + esc(i.bonus_text) : ''}</div>
-                    </div>
-                    ${pill(i.rewarded ? 'ok' : 'warn', i.rewarded ? 'پاداش داده شد' : 'در انتظار')}
-                </div>`).join('')}
+                ${d.items.map(i => {
+                    // سه حالتِ متمایز، نه دو: «ثبت‌نام کرده ولی نخریده» با
+                    // «خرید کرده ولی پاداشش هنوز نرسیده» برای کاربر یکی نیست.
+                    const ico = i.rewarded ? '✅' : (i.is_paid ? '🛒' : '⏳');
+                    const sub = i.is_paid
+                        ? (i.orders_count > 0 ? fa(i.orders_count) + ' خرید • ' : '') + esc(i.orders_total_text || '')
+                          + (i.rewarded ? ' • 🎁 ' + esc(i.bonus_text) : ' • ' + esc(i.rewarded_text))
+                        : 'هنوز خرید نکرده';
+                    const tone = i.rewarded ? 'ok' : (i.is_paid ? 'info' : 'warn');
+                    const label = i.rewarded ? 'پاداش داده شد' : (i.is_paid ? 'در انتظار پاداش' : 'ثبت‌نام شد');
+
+                    return `<div class="item">
+                        <div class="item-ico">${ico}</div>
+                        <div class="item-main">
+                            <div class="item-title">${esc(i.name)}</div>
+                            <div class="item-sub">${sub}</div>
+                        </div>
+                        ${pill(tone, label)}
+                    </div>`;
+                }).join('')}
             </div>` : ''}
 
         <section class="card">

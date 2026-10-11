@@ -214,20 +214,63 @@ final class DiscountService
      */
     public function referralSummary(int $userId): array
     {
-        $rows = $this->referrals->listByReferrer($userId, 200);
+        $rows = $this->referrals->listDetailed($userId, 200);
+
         $rewarded = 0;
+        $paid     = 0;
+        $earned   = 0;
 
         foreach ($rows as $row) {
-            if ($row['rewarded_at'] !== null) {
+            if (!empty($row['reward_given'])) {
                 $rewarded++;
+                $earned += (int) ($row['bonus_toman'] ?? 0) + (int) ($row['slate_bonus_toman'] ?? 0);
+            }
+
+            if (!empty($row['is_paid'])) {
+                $paid++;
             }
         }
 
         return [
             'code'       => ReferralRepository::codeFor($userId),
             'invited'    => count($rows),
+            // «خرید کرده» یعنی واقعاً پول داده — نه اینکه فقط ثبت‌نام کرده.
+            'paid'       => $paid,
             'rewarded'   => $rewarded,
             'bonus_each' => max(0, (int) $this->settings->int(Settings::REFERRAL_BONUS, 50000)),
+            // مجموع پاداشِ پرداخت‌شده؛ باید با موجودی کیف پول بخواند.
+            'earned'     => $earned,
+            'list'       => $rows,
+        ];
+    }
+
+    /**
+     * آمارِ معرفی **بدون فهرست** — یک کوئری، صفر ردیف.
+     *
+     * چرا جدا از `referralSummary()`: آن یکی فهرستِ کامل (تا ۲۰۰ ردیف) را برمی‌گرداند
+     * چون صفحهٔ «همکاری در فروش» به آن نیاز دارد. ولی `bootstrap` مینی‌اپ در **هر
+     * بار باز شدن اپ** صدا زده می‌شود و فقط به سه عدد نیاز دارد — پس فرستادنِ
+     * فهرست یعنی چند ده کیلوبایت JSON اضافه روی هر بارگذاری، برای چیزی که
+     * کلاینت نمی‌خواند.
+     *
+     * ⭐️ همان شمارش‌ها، بدون بارگذاری ردیف‌ها.
+     *
+     * @return array{code:string, invited:int, paid:int, rewarded:int, bonus_each:int, earned:int}
+     */
+    public function referralStats(int $userId): array
+    {
+        $row = $this->referrals->statsFor($userId);
+
+        $invited  = (int) ($row['invited'] ?? 0);
+        $rewarded = (int) ($row['rewarded'] ?? 0);
+
+        return [
+            'code'       => ReferralRepository::codeFor($userId),
+            'invited'    => $invited,
+            'paid'       => (int) ($row['paid'] ?? 0),
+            'rewarded'   => $rewarded,
+            'bonus_each' => max(0, (int) $this->settings->int(Settings::REFERRAL_BONUS, 50000)),
+            'earned'     => (int) ($row['earned'] ?? 0),
         ];
     }
 
