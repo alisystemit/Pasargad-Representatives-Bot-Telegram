@@ -133,8 +133,13 @@ final class AdminDashboard
             $message .= "📭 فعالیتی در دسترس نیست";
         } else {
             foreach ($activities as $activity) {
-                $time = Str::timeAgo((int) $activity['created_at']);
-                $message .= "• " . $activity['action'] . " - $time\n";
+                // ⚠️ قبلاً از ستون `action` می‌خواند که اصلاً در جدول
+                // `orders` وجود ندارد؛ با هشدار undefined index خالی می‌شد.
+                $age    = Str::timeAgo((int) ($activity['created_at'] ?? time()));
+                $title  = Str::escape((string) ($activity['package_title'] ?? '—'));
+                $status = Str::escape((string) ($activity['status'] ?? '—'));
+
+                $message .= "• {$title} — {$status} ({$age})\n";
             }
         }
 

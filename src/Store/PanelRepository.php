@@ -218,6 +218,65 @@ final class PanelRepository
         return $this->db->count('SELECT COUNT(*) FROM panels');
     }
 
+    // ------------------------------------------------------------------
+    //  ⬇️ آمار کلی  (برای AdminDashboard)
+    // ------------------------------------------------------------------
+
+    public function count(): int
+    {
+        return $this->db->count('SELECT COUNT(*) FROM panels');
+    }
+
+    /**
+     * تعداد پنل‌ها با یک وضعیت مشخص.
+     *
+     * وضعیت نمی‌تواند پارامتر SQL باشد، ولی اینجا مقدار ثابت داخل کد است،
+     * نه ورودی کاربر — پس خطری ندارد.
+     */
+    public function countByStatus(string $status): int
+    {
+        return $this->db->count('SELECT COUNT(*) FROM panels WHERE panel_status = ?', [$status]);
+    }
+
+    /**
+     * وضعیت همگام‌سازی همهٔ پنل‌ها برای صفحهٔ «وضعیت پنل‌ها».
+     *
+     * «موفق» یعنی `stats_at` در ۲۴ ساعت گذشته پر شده؛ `is_dead` هم پرچم
+     * پایش است، نه نتیجهٔ آخرین همگام‌سازی — پس هر دو جدا حساب می‌شوند.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getAllWithSyncStatus(int $limit = 100): array
+    {
+        $since = time() - 86400;
+
+        $rows = $this->db->all(
+            'SELECT id, panel_username, stats_at, is_dead, monitor_status, monitor_last_check
+             FROM panels
+             ORDER BY COALESCE(stats_at, 0) ASC
+             LIMIT ?',
+            [max(1, min(500, $limit))]
+        );
+
+        $out = [];
+
+        foreach ($rows as $row) {
+            $statsAt = (int) ($row['stats_at'] ?? 0);
+
+            $out[] = [
+                'id'                  => (int) $row['id'],
+                'panel_username'      => (string) $row['panel_username'],
+                'last_sync_at'        => $statsAt > 0 ? $statsAt : null,
+                'last_sync_success'   => $statsAt >= $since,
+                'is_dead'             => (int) ($row['is_dead'] ?? 0) === 1,
+                'monitor_status'      => (string) ($row['monitor_status'] ?? 'unknown'),
+                'monitor_last_check'  => (int) ($row['monitor_last_check'] ?? 0),
+            ];
+        }
+
+        return $out;
+    }
+
     /**
      * آیا کاربر حداقل یک پنل دارد؟ (یعنی «نماینده» است)
      */

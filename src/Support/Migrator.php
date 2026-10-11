@@ -632,6 +632,15 @@ final class Migrator
             "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('admin_daily_report', '0', 0)",
             "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('admin_weekly_report', '0', 0)",
         ],
+
+        // `UserProfile` از قبل نوشته شده بود و این ستون‌ها را می‌خواند، ولی
+        // هیچ‌کدام در اسکیما نبود؛ یعنی آن کلاس با یک خطای SQL می‌مرد.
+        '013_user_profile' => [
+            'ALTER TABLE users ADD COLUMN email TEXT',
+            'ALTER TABLE users ADD COLUMN phone TEXT',
+            'ALTER TABLE users ADD COLUMN notifications_enabled INTEGER NOT NULL DEFAULT 1',
+            'ALTER TABLE users ADD COLUMN digest_emails INTEGER NOT NULL DEFAULT 0',
+        ],
         ];
     }
 
@@ -853,8 +862,18 @@ final class Migrator
             try {
                 $this->db->transaction(function () use ($name, $statements): void {
                     foreach ($statements as $sql) {
+                        // «ADD COLUMN» ذاتاً تکرارپذیر نیست و روی ستون موجود
+                        // با خطای SQLite می‌شکند. آن را خودمان رد می‌کنیم تا
+                        // اجرای مهاجریشن به وضعیت جدول `migrations` وابسته
+                        // نباشد — وگرنه هر بار که آن جدول از رابطهٔ همگامی
+                        // خارج شود، کل ربات با «duplicate column» می‌میرد.
+                        if ($this->columnAlreadyExists($sql)) {
+                            continue;
+                        }
+
                         $this->db->pdo()->exec($sql);
                     }
+
                     $this->db->insert('migrations', [
                         'name'       => $name,
                         'applied_at' => time(),
@@ -880,6 +899,41 @@ final class Migrator
         }
 
         return $ran;
+    }
+
+    /**
+     * آیا این دستور یک `ADD COLUMN` است که ستونش از قبل در جدول هست؟
+     *
+     * اگر دستور اصلاً `ADD COLUMN` نباشد، `false` برمی‌گردد تا مثل قبل اجرا
+     * شود — این تابع فقط برای رد کردنِ دستورات تکراری است، نه تغییر رفتار.
+     */
+    private function columnAlreadyExists(string $sql): bool
+    {
+        $pattern = '/^\s*ALTER\s+TABLE\s+["\'`]?(\w+)["\'`]?\s+ADD\s+COLUMN\s+["\'`]?(\w+)["\'`]?/i';
+
+        if (preg_match($pattern, $sql, $m) !== 1) {
+            return false;
+        }
+
+        $table = $m[1];
+
+        // جدول هنوز ساخته نشده؟ بعداً در همان تراکنش ساخته می‌شود.
+        if (!$this->db->tableExists($table)) {
+            return false;
+        }
+
+        foreach ($this->db->all('PRAGMA table_info(' . $table . ')') as $column) {
+            if (strcasecmp((string) $column['name'], $m[2]) === 0) {
+                Logger::info('Migration column already present, skipping', [
+                    'table'  => $table,
+                    'column' => $m[2],
+                ]);
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

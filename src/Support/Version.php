@@ -31,7 +31,7 @@ final class Version
      *
      * قالب پیشنهادی: `<تاریخ>-<۶ کاراکتر اول هش کامیت>`.
      */
-    public const STAMP = '2026-10-11-ab4c422';
+    public const STAMP = '2026-10-11-c7e9b13';
 
     /** آیا این پروسه مُهر را چاپ کرده است؟ */
     private static bool $stamped = false;

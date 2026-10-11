@@ -417,4 +417,53 @@ final class UserRepository
 
         return true;
     }
+
+    // ------------------------------------------------------------------
+    //  ⬇️ پروفایل و آمار کلی  (برای UserProfile و AdminDashboard)
+    // ------------------------------------------------------------------
+
+    /**
+     * ستون‌هایی که `updateField()` اجازهٔ نوشتن روی آن‌ها را می‌دهد.
+     *
+     * نام ستون نمی‌تواند از کاربر بیاید (SQLite پارامتر برای ستون ندارد)، پس
+     * هر فیلد باید از این فهرست رد شود؛ وگرنه یک فراخوانی مثل
+     * `updateField($id, $_GET['f'], …)` راه تزریق SQL می‌شد.
+     *
+     * @var array<int, string>
+     */
+    private const WRITABLE_PROFILE_FIELDS = [
+        'first_name',
+        'language_code',
+        'email',
+        'phone',
+        'notifications_enabled',
+        'digest_emails',
+    ];
+
+    /**
+     * نوشتن یک ستون از پروفایل کاربر.
+     *
+     * @return bool آیا واقعاً چیزی نوشته شد؟
+     */
+    public function updateField(int $userId, string $field, mixed $value): bool
+    {
+        if (!in_array($field, self::WRITABLE_PROFILE_FIELDS, true)) {
+            return false;
+        }
+
+        return $this->db->update('users', [$field => $value], ['id' => $userId]) > 0;
+    }
+
+    public function count(): int
+    {
+        return $this->db->count('SELECT COUNT(*) FROM users');
+    }
+
+    /**
+     * چند کاربر از این لحظه به بعد ساخته شده‌اند (برای آمار «امروز/این ماه»).
+     */
+    public function countCreatedAfter(int $timestamp): int
+    {
+        return $this->db->count('SELECT COUNT(*) FROM users WHERE created_at >= ?', [$timestamp]);
+    }
 }

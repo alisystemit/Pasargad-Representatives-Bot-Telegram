@@ -333,6 +333,147 @@ check(
     $testOut
 );
 
+// ------------------------------------------------------------------
+echo "\n▶ ۷) پروفایل کاربر (UserProfile)\n";
+// ------------------------------------------------------------------
+//
+// این کلاس کامل بود ولی هیچ مسیری نداشت و هر ۸ دکمه‌اش مرده بود. نکتهٔ
+// مهم این تست‌ها این است که فقط «پیامی نفرست» را چک نمی‌کنند؛ اگر یکی
+// از متدهای ریپازیتوری که `UserProfile` صدا می‌زند وجود نداشته باشد، خطای
+// PHP می‌خورد و به این پیام «خطایی رخ داد» تبدیل می‌شود — پس تست شکست
+// می‌خورد. یعنی این تست‌ها عملاً تضمین می‌کنند که اسکیما و متدها هم هستند.
+
+$mustNotError = static function (string $label, string $output): void {
+    check($label, !str_contains($output, 'خطایی رخ داد'), $output);
+};
+
+$bot->reset();
+$kernel->handle(cb(TG, ['n' => 'profile:menu']));
+
+$profileMenu = json_encode(end($bot->sent)['keyboard'] ?? [], JSON_UNESCAPED_UNICODE);
+
+check('صفحهٔ پروفایل باز می‌شود', str_contains($bot->allText(), 'پروفایل شما'), $bot->allText());
+$mustNotError('پروفایل بدون خطای PHP رندر شد', $bot->allText());
+
+foreach ([
+    'profile:edit_name'    => 'نام',
+    'profile:language'     => 'زبان',
+    'profile:contact'      => 'تماس',
+    'profile:change_password' => 'رمز',
+] as $ns => $needle) {
+    $bot->reset();
+    $kernel->handle(cb(TG, ['n' => $ns]));
+    $out = $bot->allText();
+
+    check("«{$ns}» صفحه‌ای نشان می‌دهد", !str_contains($out, 'در دسترس نیست') && $out !== '', $out);
+    $mustNotError("«{$ns}» بدون خطای PHP", $out);
+}
+
+foreach (['profile:lang_fa' => 'فارسی', 'profile:lang_en' => 'English'] as $ns => $langName) {
+    $bot->reset();
+    $kernel->handle(cb(TG, ['n' => $ns]));
+    $out = $bot->allText();
+
+    check("«{$ns}» زبان را عوض می‌کند", str_contains($out, $langName), $out);
+}
+
+$bot->reset();
+$kernel->handle(cb(TG, ['n' => 'profile:edit_email']));
+$kernel->handle(txt(TG, 'test@example.com'));
+$mustNotError('ایمیل ذخیره می‌شود', $bot->allText());
+
+check(
+    'ایمیل واقعاً در دیتابیس ذخیره شد',
+    (string) (new UserRepository())->findByTelegramId(TG)['email'] === 'test@example.com',
+    (string) ((new UserRepository())->findByTelegramId(TG)['email'] ?? 'NULL')
+);
+
+$bot->reset();
+$kernel->handle(cb(TG, ['n' => 'profile:edit_phone']));
+$kernel->handle(txt(TG, '+98912345678'));
+$mustNotError('تلفن ذخیره می‌شود', $bot->allText());
+
+check(
+    'تلفن واقعاً در دیتابیس ذخیره شد',
+    (string) (new UserRepository())->findByTelegramId(TG)['phone'] === '+98912345678',
+    (string) ((new UserRepository())->findByTelegramId(TG)['phone'] ?? 'NULL')
+);
+
+$bot->reset();
+$kernel->handle(cb(TG, ['n' => 'profile:edit_name']));
+$kernel->handle(txt(TG, 'رضا محمدی'));
+$mustNotError('نام ذخیره می‌شود', $bot->allText());
+
+check(
+    'نام واقعاً در دیتابیس ذخیره شد',
+    (string) (new UserRepository())->findByTelegramId(TG)['first_name'] === 'رضا محمدی',
+    (string) ((new UserRepository())->findByTelegramId(TG)['first_name'] ?? 'NULL')
+);
+
+$bot->reset();
+$kernel->handle(cb(TG, ['n' => 'main_menu']));
+check('دکمهٔ «بازگشت» به منوی اصلی کار می‌کند', $bot->allText() !== '', $bot->allText());
+
+// ------------------------------------------------------------------
+echo "\n▶ ۸) داشبورد آماری مدیر (AdminDashboard)\n";
+// ------------------------------------------------------------------
+
+$bot->reset();
+$kernel->handle(cb(ADM, ['n' => 'admin:dashboard']));
+
+$dash = $bot->allText();
+
+check('داشبورد باز می‌شود', str_contains($dash, 'داشبورد مدیریتی'), $dash);
+$mustNotError('داشبورد بدون خطای PHP رندر شد', $dash);
+
+check(
+    'آمار واقعی خوانده می‌شود (نه صفر ساختگی)',
+    str_contains($dash, 'درآمد') && str_contains($dash, 'پنل‌ها'),
+    $dash
+);
+
+foreach ([
+    'admin:chart'       => 'درآمد ۷ روز اخیر',
+    'admin:activity'    => 'فعالیت‌های اخیر',
+    'admin:reconcile'   => 'تسویه حساب',
+    'admin:sync_status' => 'وضعیت همگام‌سازی',
+] as $ns => $needle) {
+    $bot->reset();
+    $kernel->handle(cb(ADM, ['n' => $ns]));
+    $out = $bot->allText();
+
+    check("«{$ns}» صفحه‌ای نشان می‌دهد", str_contains($out, $needle), $out);
+    $mustNotError("«{$ns}» بدون خطای PHP", $out);
+}
+
+// ------------------------------------------------------------------
+echo "\n▶ ۹) دکمه‌های باقی‌ماندهٔ FullMenu\n";
+// ------------------------------------------------------------------
+
+foreach ([
+    'wallet.deposit'        => 'کیف پول',
+    'setting.language'      => 'زبان',
+    'setting.notifications' => 'اعلان',
+    'setting.payment'       => 'پرداخت',
+] as $ns => $needle) {
+    $bot->reset();
+    $kernel->handle(cb(TG, ['n' => $ns]));
+    $out = $bot->allText();
+
+    check("«{$ns}» صفحه‌ای نشان می‌دهد", !str_contains($out, 'در دسترس نیست') && str_contains($out, $needle), $out);
+    $mustNotError("«{$ns}» بدون خطای PHP", $out);
+}
+
+$bot->reset();
+$kernel->handle(cb(TG, ['n' => 'setting.notifications.toggle', 'c' => 'notifications_enabled']));
+$mustNotError('تغییر وضعیت اعلان کار می‌کند', $bot->allText());
+
+check(
+    'اعلان واقعاً خاموش شد',
+    (int) (new UserRepository())->findByTelegramId(TG)['notifications_enabled'] === 0,
+    (string) ((new UserRepository())->findByTelegramId(TG)['notifications_enabled'] ?? 'NULL')
+);
+
 echo "\n" . str_repeat('─', 62) . "\n";
 echo "نتیجه: {$passed} موفق، {$failed} ناموفق\n";
 echo str_repeat('─', 62) . "\n";

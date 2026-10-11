@@ -615,4 +615,131 @@ final class OrderRepository
 
         return $out;
     }
+
+    // ------------------------------------------------------------------
+    //  ⬇️ آمار تجمیعی  (برای AdminDashboard)
+    // ------------------------------------------------------------------
+
+    /**
+     * ستون‌هایی که جمع بستنشان مجاز است.
+     *
+     * مثل `updateField`، نام ستون نمی‌تواند پارامتری شود؛ پس از فهرست
+     * بسته رد می‌شود.
+     *
+     * @var array<int, string>
+     */
+    private const SUMMABLE_FIELDS = [
+        'price_toman',
+        'discount_toman',
+        'revenue_share_toman',
+        'original_price_toman',
+    ];
+
+    public function count(): int
+    {
+        return $this->db->count('SELECT COUNT(*) FROM orders');
+    }
+
+    public function countCreatedAfter(int $timestamp): int
+    {
+        return $this->db->count('SELECT COUNT(*) FROM orders WHERE created_at >= ?', [$timestamp]);
+    }
+
+    /**
+     * جمع یک ستون عددی. فیلد ناشناخته به‌جای خطای SQL، صفر برمی‌گرداند.
+     */
+    public function sumByField(string $field): int
+    {
+        if (!in_array($field, self::SUMMABLE_FIELDS, true)) {
+            return 0;
+        }
+
+        return (int) ($this->db->value("SELECT COALESCE(SUM({$field}), 0) FROM orders") ?? 0);
+    }
+
+    public function sumByFieldAfter(string $field, int $timestamp): int
+    {
+        if (!in_array($field, self::SUMMABLE_FIELDS, true)) {
+            return 0;
+        }
+
+        return (int) ($this->db->value(
+            "SELECT COALESCE(SUM({$field}), 0) FROM orders WHERE created_at >= ?",
+            [$timestamp]
+        ) ?? 0);
+    }
+
+    /**
+     * بازهٔ نیم‌باز: `$from` شامل، `$to` غیر شامل — تا بازه‌ها هم‌پوشانی نداشته باشند.
+     */
+    public function sumByFieldBetween(string $field, int $from, int $to): int
+    {
+        if (!in_array($field, self::SUMMABLE_FIELDS, true)) {
+            return 0;
+        }
+
+        return (int) ($this->db->value(
+            "SELECT COALESCE(SUM({$field}), 0) FROM orders WHERE created_at >= ? AND created_at < ?",
+            [$from, $to]
+        ) ?? 0);
+    }
+
+    /**
+     * تعداد سفارش به تفکیک وضعیت.
+     *
+     * @return array<string, int>
+     */
+    public function countByStatus(): array
+    {
+        $rows = $this->db->all('SELECT status, COUNT(*) AS n FROM orders GROUP BY status');
+
+        $out = [];
+        foreach ($rows as $row) {
+            $out[(string) $row['status']] = (int) $row['n'];
+        }
+
+        return $out;
+    }
+
+    public function sumByStatus(string $status): int
+    {
+        return (int) ($this->db->value(
+            'SELECT COALESCE(SUM(price_toman), 0) FROM orders WHERE status = ?',
+            [$status]
+        ) ?? 0);
+    }
+
+    /**
+     * پولی که واقعاً از درگاه برگشته — یعنی سفارش‌هایی که `paid_at` دارند.
+     *
+     * مبنای مقایسه با `sumByStatus('applied')` است تا اختلاف تسویه معلوم شود.
+     */
+    public function sumPaidByGateway(): int
+    {
+        return (int) ($this->db->value(
+            'SELECT COALESCE(SUM(price_toman), 0) FROM orders WHERE paid_at IS NOT NULL'
+        ) ?? 0);
+    }
+
+    /**
+     * آخرین سفارش‌ها برای «فعالیت‌های اخیر».
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function fetchRecent(int $limit = 10): array
+    {
+        $rows = $this->db->all(
+            'SELECT * FROM orders ORDER BY id DESC LIMIT ?',
+            [max(1, min(50, $limit))]
+        );
+
+        $out = [];
+
+        foreach ($rows as $row) {
+            $row['created_at'] = (int) $row['created_at'];
+            $out[] = $row;
+        }
+
+        return $out;
+    }
 }

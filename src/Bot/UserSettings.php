@@ -91,6 +91,8 @@ final class UserSettings
             [['text' => '➕ اتصال پنل جدید (آدرس + رمز یا کلید API)', 'data' => BotApi::encodeData('panel.connect')]],
             [['text' => '🎟️ کد تخفیف من', 'data' => BotApi::encodeData('coupon.apply')]],
             [['text' => '👤 حساب من', 'data' => BotApi::encodeData('user.account')]],
+            [['text' => '🪪 پروفایل من (نام، زبان، تماس)', 'data' => BotApi::encodeData('profile.menu')]],
+            [['text' => '🔔 تنظیمات اعلان', 'data' => BotApi::encodeData('setting.notifications')]],
             [['text' => '🔐 تنظیمات مدیریتی', 'data' => BotApi::encodeData('settings.global')]],
             [['text' => '📜 قوانین', 'data' => BotApi::encodeData('rules')]],
             [['text' => '❓ راهنما', 'data' => BotApi::encodeData('help')]],

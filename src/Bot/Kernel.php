@@ -177,6 +177,22 @@ final class Kernel
         return $this->adminController;
     }
 
+    /**
+     * پروفایل کاربر — نمایش و ویرایش نام، زبان و اطلاعات تماس.
+     */
+    private function userProfile(): UserProfile
+    {
+        return new UserProfile($this->bot, $this->users);
+    }
+
+    /**
+     * داشبورد آماری مدیر (کاربران، سفارش‌ها، درآمد، تسویه).
+     */
+    private function adminDashboard(): AdminDashboard
+    {
+        return new AdminDashboard($this->bot, $this->users, $this->orders, $this->panels);
+    }
+
     private function panelClient(): \Pasargad\Panel\PasarGuardClient
     {
         if ($this->panel === null) {
@@ -1164,6 +1180,26 @@ final class Kernel
                 $this->bot->sendMessage($chatId, '✅ رمز عبور Owner ذخیره و رمزشده شد.');
                 return true;
 
+            // ---------------- ورودی‌های متنی پروفایل ----------------
+            //
+            // این قدم‌ها از دکمه‌های `profile:*` ساخته می‌شوند و پیام بعدی
+            // کاربر را به `UserProfile` می‌دهند.
+
+            case 'profile_name':
+                $this->sessions->clear($telegramId);
+                $this->userProfile()->handleNameChange($chatId, $telegramId, $text);
+                return true;
+
+            case 'profile_email':
+                $this->sessions->clear($telegramId);
+                $this->userProfile()->handleEmailChange($chatId, $telegramId, $text);
+                return true;
+
+            case 'profile_phone':
+                $this->sessions->clear($telegramId);
+                $this->userProfile()->handlePhoneChange($chatId, $telegramId, $text);
+                return true;
+
             case 'admin_rep_role':
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
@@ -1747,6 +1783,155 @@ final class Kernel
             return;
         }
 
+        // ---------------- پروفایل کاربر ----------------
+        //
+        // `UserProfile` کامل نوشته شده بود ولی هیچ مسیری به آن نبود، پس همهٔ
+        // دکمه‌های `profile:*` به «این گزینه در دسترس نیست» می‌رسیدند.
+        // توجه: دکمه‌های این کلاس `data` خام دارند (نه JSON)، پس `$ns` از
+        // همان رشتهٔ خام پر می‌شود.
+
+        if ($ns === 'profile:menu') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showMenu($chatId, (int) $update->userId());
+            return;
+        }
+
+        if ($ns === 'profile:edit_name') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showEditName($chatId, (int) $update->userId());
+            $this->sessions->set((int) $update->userId(), ['step' => 'profile_name']);
+            return;
+        }
+
+        if ($ns === 'profile:change_password') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showChangePassword($chatId, (int) $update->userId());
+            return;
+        }
+
+        if ($ns === 'profile:language') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showLanguageSelection($chatId);
+            return;
+        }
+
+        if ($ns === 'profile:lang_fa' || $ns === 'profile:lang_en') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->handleLanguageChange(
+                $chatId,
+                (int) $update->userId(),
+                $ns === 'profile:lang_fa' ? 'fa' : 'en'
+            );
+            return;
+        }
+
+        if ($ns === 'profile:contact') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showContactEditor($chatId, (int) $update->userId());
+            return;
+        }
+
+        if ($ns === 'profile:edit_email') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showEditEmail($chatId);
+            $this->sessions->set((int) $update->userId(), ['step' => 'profile_email']);
+            return;
+        }
+
+        if ($ns === 'profile:edit_phone') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showEditPhone($chatId);
+            $this->sessions->set((int) $update->userId(), ['step' => 'profile_phone']);
+            return;
+        }
+
+        // ---------------- داشبورد مدیریتی ----------------
+        //
+        // `AdminDashboard` هم کامل بود و هم بی‌مسیر. دکمه‌هایش `admin:` دارند
+        // (با دونقطه) پس زیر شرط `str_starts_with($ns, 'admin.')` نمی‌افتند و
+        // باید اینجا و قبل از آن شرط بررسی شوند.
+
+        if ($ns === 'admin:dashboard') {
+            $this->bot->answerCallback($callbackId);
+            $this->adminDashboard()->showDashboard($chatId);
+            return;
+        }
+
+        if ($isAdmin && $ns === 'admin:chart') {
+            $this->bot->answerCallback($callbackId);
+            $this->adminDashboard()->showRevenueChart($chatId);
+            return;
+        }
+
+        if ($isAdmin && $ns === 'admin:activity') {
+            $this->bot->answerCallback($callbackId);
+            $this->adminDashboard()->showActivityLog($chatId);
+            return;
+        }
+
+        if ($isAdmin && $ns === 'admin:reconcile') {
+            $this->bot->answerCallback($callbackId);
+            $this->adminDashboard()->showReconciliation($chatId);
+            return;
+        }
+
+        if ($isAdmin && $ns === 'admin:sync_status') {
+            $this->bot->answerCallback($callbackId);
+            $this->adminDashboard()->showSyncStatus($chatId);
+            return;
+        }
+
+        // `UserProfile` و `AdminDashboard` هر دو «بازگشت» را با همین نام می‌فرستند.
+        if ($ns === 'main_menu') {
+            $this->bot->answerCallback($callbackId);
+            $this->showMainMenu($chatId, $user, $isAdmin);
+            return;
+        }
+
+        // ---------------- دکمه‌های باقی‌ماندهٔ FullMenu ----------------
+        //
+        // `FullMenu` هشت متد دارد که هیچ‌جا صدا زده نمی‌شوند؛ چهارتای
+        // اول هر کدام یک namespace بدون مسیر می‌فرستاد. به صفحه‌های
+        // موجود وصل شدند تا دکمه‌هایشان هم کار کنند.
+
+        if ($ns === 'wallet.deposit') {
+            $this->bot->answerCallback($callbackId);
+            $this->showWallet($chatId, $user);
+            return;
+        }
+
+        if ($ns === 'setting.language') {
+            $this->bot->answerCallback($callbackId);
+            $this->userProfile()->showLanguageSelection($chatId);
+            return;
+        }
+
+        if ($ns === 'setting.notifications') {
+            $this->bot->answerCallback($callbackId);
+            $this->showNotificationSettings($chatId, $user);
+            return;
+        }
+
+        if ($ns === 'setting.payment') {
+            $this->bot->answerCallback($callbackId);
+            $this->showPaymentInfo($chatId);
+            return;
+        }
+
+        if ($ns === 'setting.notifications.toggle') {
+            $this->bot->answerCallback($callbackId);
+
+            $fresh  = $this->users->findById((int) $user['id']) ?? $user;
+            $column = ($data['c'] ?? 'notifications_enabled') === 'digest_emails'
+                ? 'digest_emails'
+                : 'notifications_enabled';
+            $current = (int) ($fresh[$column] ?? 0);
+            $this->users->updateField((int) $fresh['id'], $column, $current === 1 ? 0 : 1);
+
+            $this->showNotificationSettings($chatId, $user);
+            return;
+        }
+
         // ---------------- فروشگاه ----------------
         if ($ns === 'shop') {
             $this->bot->answerCallback($callbackId);
@@ -1969,6 +2154,70 @@ final class Kernel
                     ['text' => '💳📊 تاریخچه پرداخت‌ها', 'data' => BotApi::encodeData('user.payments')],
                 ],
                 Keyboard::back('menu', '🔙 بازگشت به منوی اصلی 🏠'),
+            ])),
+        ]);
+    }
+
+    /**
+     * 🔔 تنظیم اعلان‌ها.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function showNotificationSettings(int $chatId, array $user): void
+    {
+        $fresh = $this->users->findById((int) $user['id']) ?? $user;
+
+        $on  = (int) ($fresh['notifications_enabled'] ?? 1) === 1;
+        $dig = (int) ($fresh['digest_emails'] ?? 0) === 1;
+
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '🔔 <b>تنظیمات اعلان</b>',
+            '',
+            '• اعلان‌های ربات: ' . ($on ? '✅ روشن' : '❌ خاموش'),
+            '• دیجیتال وقت: ' . ($dig ? '✅ روشن' : '❌ خاموش'),
+            '',
+            'اعلان‌های مربوط به انقضای حجم، پایان اعتبار و سفارش‌ها ارسال می‌شوند '
+                . 'و با خاموش کردنشان دیگر نرسند.',
+        ]), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                [[
+                    'text' => ($on ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها'),
+                    'data' => BotApi::encodeData('setting.notifications.toggle', ['c' => 'notifications_enabled']),
+                ]],
+                [[
+                    'text' => ($dig ? '📭 خاموش کردن دیجیتال وقت' : '📬 روشن کردن دیجیتال وقت'),
+                    'data' => BotApi::encodeData('setting.notifications.toggle', ['c' => 'digest_emails']),
+                ]],
+                [['text' => '👤 پروفایل من', 'data' => BotApi::encodeData('profile.menu')]],
+                Keyboard::back('settings', '⬅️ بازگشت به تنظیمات'),
+            ])),
+        ]);
+    }
+
+    /**
+     * 💳 روش‌های پرداختی که فروشگاه پشتیبانی می‌کند.
+     *
+     * اسمش `showPaymentInfo` است چون `showPaymentMethods()` از قبل برای
+     * صفحهٔ پرداختِ یک سفارش خاص وجود دارد.
+     */
+    private function showPaymentInfo(int $chatId): void
+    {
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '💳 <b>روش‌های پرداخت</b>',
+            '',
+            'پرداخت از داخل ربات انجام می‌شود:',
+            '۱) بسته را از فروشگاه انتخاب کنید',
+            '۲) دکمهٔ پرداخت را بزنید',
+            '۳) مبلغ را کارت‌به‌کارت یا از درگاه بپردازید',
+            '',
+            '📸 رسید را به ربات بفرستید تا سفارش بررسی و اجرا شود.',
+            '',
+            '💡 اگر کیف پولتان شارژ باشد، مبلغ مستقیم از آن کسر می‌شود.',
+        ]), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                [['text' => '🛒 رفتن به فروشگاه', 'data' => BotApi::encodeData('shop', ['kind' => PackageRepository::KIND_AGENCY])]],
+                [['text' => '💰 کیف پول من', 'data' => BotApi::encodeData('user.wallet')]],
+                Keyboard::back('settings', '⬅️ بازگشت به تنظیمات'),
             ])),
         ]);
     }

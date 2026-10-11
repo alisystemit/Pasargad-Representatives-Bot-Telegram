@@ -613,6 +613,9 @@ final class AdminController
             ],
             [
                 ['text' => '💰 داشبورد درآمد', 'data' => BotApi::encodeData('admin.revenue')],
+                ['text' => '📊 نمودار و تسویه', 'data' => BotApi::encodeData('admin:dashboard')],
+            ],
+            [
                 ['text' => '📋 لاگ حسابرسی', 'data' => BotApi::encodeData('admin.audit_log')],
             ],
             [

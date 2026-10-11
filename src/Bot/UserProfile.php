@@ -42,7 +42,7 @@ final class UserProfile
 
         $name = Str::escape((string) ($user['first_name'] ?? 'کاربر'));
         $username = !empty($user['username']) ? '@' . Str::escape((string) $user['username']) : '—';
-        $language = $this->getLanguageName((string) ($user['language'] ?? 'fa'));
+        $language = $this->getLanguageName((string) ($user['language_code'] ?? 'fa'));
 
         $message = MessageFormatter::info('👤 پروفایل شما', [
             'نام' => $name,
@@ -166,7 +166,7 @@ final class UserProfile
                 return;
             }
 
-            $this->users->updateField((int) $user['id'], 'language', $lang);
+            $this->users->updateField((int) $user['id'], 'language_code', $lang);
 
             $langName = $this->getLanguageName($lang);
             $this->bot->sendMessage(
@@ -359,7 +359,7 @@ final class UserProfile
         }
 
         return MessageFormatter::info('⚙️ ترجیحات شما', [
-            'زبان' => $this->getLanguageName((string) ($user['language'] ?? 'fa')),
+            'زبان' => $this->getLanguageName((string) ($user['language_code'] ?? 'fa')),
             'اعلان‌ها' => ($user['notifications_enabled'] ?? 1) ? '✅ فعال' : '❌ غیرفعال',
             'دیجیتال وقت' => ($user['digest_emails'] ?? 0) ? '✅ فعال' : '❌ غیرفعال',
         ]);
