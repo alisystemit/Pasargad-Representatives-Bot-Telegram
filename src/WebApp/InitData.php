@@ -70,13 +70,20 @@ final class InitData
             return $none;
         }
 
-        $token = $botToken ?? Config::str('bot_token', '');
+        // ⚠️ حتماً `trim` — و **همان مقدارِ trim‌شده** باید داخل HMAC هم استفاده شود.
+//
+// قبلاً فقط برای مقایسه با placeholder trim می‌شد ولی خودِ `$token` بدون
+// trim به HMAC می‌رفت. یک فاصله یا خط‌جدید انتهایی در `config.php` (که روی
+// ویندوز/لارگون با ادیتورهای متنی خیلی پیش می‌آید) باعث می‌شد امضا **همیشه**
+// نادرست شود و کل مینی‌اپ خطای «امضای دادهٔ ورودی نامعتبر است» بدهد —
+// در حالی که توکن کاملاً درست بود.
+$token = trim($botToken ?? Config::str('bot_token', ''));
 
-        if (in_array(trim($token), self::PLACEHOLDER_TOKENS, true)) {
-            Logger::error('initData rejected: bot_token is not configured');
+if (in_array($token, self::PLACEHOLDER_TOKENS, true)) {
+    Logger::error('initData rejected: bot_token is not configured');
 
-            return ['message' => 'سرویس موقتاً در دسترس نیست.'] + $none;
-        }
+    return ['message' => 'سرویس موقتاً در دسترس نیست.'] + $none;
+}
 
         $pairs = self::pairs($raw);
 
@@ -107,9 +114,17 @@ final class InitData
         $expect = hash_hmac('sha256', $checkString, $secret);
 
         if (!hash_equals($expect, strtolower($hash))) {
+            // پیام عمداً کلی است (چیزی به کاربر لو نمی‌دهد)، ولی **لاگ**
+            // جزئیات لازم را می‌نویسد تا از سرور بشود علت را تشخیص داد:
+            // معمولاً یعنی توکنِ کانفیگ با توکنِ همین ربات یکی نیست.
             Logger::warning('initData signature mismatch', [
-                'ip'    => $_SERVER['REMOTE_ADDR'] ?? '',
-                'keys'  => array_keys($pairs),
+                'ip'      => $_SERVER['REMOTE_ADDR'] ?? '',
+                'keys'    => array_keys($pairs),
+                'reason'  => 'hash mismatch — check that bot_token in config.php '
+                    . 'belongs to the same bot that opened the Mini App '
+                    . '(a trailing space/newline in config.php causes this too)',
+                'got'     => strtolower($hash),
+                'expect'  => $expect,
             ]);
 
             return ['message' => 'امضای دادهٔ ورودی نامعتبر است.'] + $none;

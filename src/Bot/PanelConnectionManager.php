@@ -63,14 +63,25 @@ final class PanelConnectionManager
     private PanelRepository $panels;
     private SessionStore $sessions;
 
+    /**
+     * کلاینت تستیِ تزریق‌شده (فقط تست‌ها).
+     *
+     * در محیط واقعی `null` است و کلاینتِ مخصوصِ همان آدرس پنل ساخته می‌شود،
+     * چون آدرس هر اتصال می‌تواند فرق کند. تست‌ها یک کلاینت قلابی می‌دهند تا
+     * بدون شبکه بتوانند کل جریان را بسنجند.
+     */
+    private ?PasarGuardClient $injectedClient;
+
     public function __construct(
         BotApi $bot,
         PanelRepository $panels,
-        SessionStore $sessions
+        SessionStore $sessions,
+        ?PasarGuardClient $injectedClient = null
     ) {
-        $this->bot      = $bot;
-        $this->panels   = $panels;
-        $this->sessions = $sessions;
+        $this->bot            = $bot;
+        $this->panels         = $panels;
+        $this->sessions       = $sessions;
+        $this->injectedClient = $injectedClient;
     }
 
     // ------------------------------------------------------------------
@@ -335,7 +346,7 @@ final class PanelConnectionManager
         $pending = $this->bot->sendMessage($chatId, '⏳ در حال تست اتصال به پنل…');
 
         try {
-            $client  = new PasarGuardClient($baseUrl);
+            $client  = $this->injectedClient ?? new PasarGuardClient($baseUrl);
             $probe   = $this->probePanel($client, $state, $credential, $isKey);
 
             if (!$probe['ok']) {

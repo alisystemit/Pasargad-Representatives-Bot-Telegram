@@ -29,7 +29,7 @@ class BotApi
 
     public function __construct(?string $token = null)
     {
-        $this->token   = $token ?? Config::str('bot_token', '');
+        $this->token   = trim($token ?? Config::str('bot_token', ''));
         $this->timeout = Config::int('http_timeout', 30);
 
         // پایهٔ سفارشی فقط وقتی تنظیم شده باشد. برای سرور Bot API خودی یا

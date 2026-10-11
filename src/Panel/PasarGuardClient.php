@@ -17,9 +17,17 @@ use Pasargad\Support\Logger;
  */
 class PasarGuardClient
 {
-    private string $baseUrl;
-    private bool $verifySsl;
-    private int $timeout;
+    /**
+     * ⚠️ این سه `protected` هستند نه `private`.
+     *
+     * کلاینت ساختگیِ تست‌ها (`FakePanelClient`) سازندهٔ والد را صدا نمی‌زند
+     * (چون به شبکه نیاز دارد)، پس باید خودش این مقادیر را مقداردهی کند. اگر
+     * `private` بمانند، هر کدی که بخواهد بخواندشان با «must not be accessed
+     * before initialization» می‌میرد و کل تست‌ها می‌شکنند.
+     */
+    protected string $baseUrl;
+    protected bool $verifySsl;
+    protected int $timeout;
 
     /**
      * مهلت پایان این درخواست وبهوک (زمان پایان بر حسب Unix time).

@@ -58,7 +58,13 @@ final class FakePanelClient extends PasarGuardClient
 
     public function __construct()
     {
-        // از فراخوانی سازندهٔ والد پرهیز می‌کنیم چون به شبکه نیاز دارد.
+        // سازندهٔ والد را صدا نمی‌زنیم چون به شبکه نیاز دارد؛ ولی properties
+        // والد (مثل `$baseUrl`) **typed** هستند و اگر مقدار نگیرند، هر کدی که
+        // بخواهد بخواندشان با «must not be accessed before initialization» می‌میرد.
+        // پس همان مقدارهای پیش‌فرض والد را دستی می‌گذاریم (بدون هیچ شبکه‌ای).
+        $this->baseUrl   = Config::str('panel.base_url', 'https://us.api-system.top');
+        $this->verifySsl = true;
+        $this->timeout   = 5;
     }
 
     public function login(string $username, string $password, bool $useCache = true): string

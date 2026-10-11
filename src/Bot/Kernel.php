@@ -51,6 +51,16 @@ final class Kernel
     private FeatureFlags $flags;
     private PanelRepository $panels;
     private ?\Pasargad\Panel\PasarGuardClient $panel = null;
+
+    /**
+     * کلاینتی که **از بیرون** تزریق شده (فقط تست‌ها).
+     *
+     * چ جدا از `$panel` نگه می‌داریم؟ چون `panelClient()` خودش `$panel` را از
+     * کانفیگ می‌سازد و پر می‌کند. اگر تشخیص تزریق را از روی `$panel` بگیریم،
+     * یک فراخوانیِ زودهنگام در محیط واقعی باعث می‌شود فکر کنیم کلاینت تستی
+     * تزریق شده و آدرسِ پنلی را که کاربر داده نادیده بگیریم.
+     */
+    private ?\Pasargad\Panel\PasarGuardClient $injectedPanel = null;
     private ?PanelCenter $panelCenter = null;
     private ?ChannelGuard $channelGuard = null;
     private ?AdminController $adminController = null;
@@ -84,6 +94,7 @@ final class Kernel
         $this->sessions    = $sessions ?? new SessionStore();
         $this->flags       = $flags ?? new FeatureFlags($this->settings);
         $this->panel       = $panel;
+        $this->injectedPanel = $panel;
         $this->panels      = $panels ?? new PanelRepository();
         $this->provisioner = $provisioner ?? new Provisioner($panel, $this->orders, $this->users, $this->settings, $this->panels);
         $this->payments    = $payments ?? new PaymentService($this->orders, $this->provisioner, $this->settings, $this->flags);
@@ -1321,7 +1332,7 @@ final class Kernel
                     return true;
                 }
 
-                $manager   = new PanelConnectionManager($this->bot, $this->panels, $this->sessions);
+                $manager   = new PanelConnectionManager($this->bot, $this->panels, $this->sessions, $this->injectedPanel);
                 $panelStep = (string) ($state['step'] ?? '');
 
                 if ($panelStep === PanelConnectionManager::STEP_URL) {
@@ -1538,7 +1549,7 @@ final class Kernel
         if (str_starts_with($ns, 'panel.connect')) {
             $this->bot->answerCallback($callbackId);
 
-            $manager    = new PanelConnectionManager($this->bot, $this->panels, $this->sessions);
+            $manager    = new PanelConnectionManager($this->bot, $this->panels, $this->sessions, $this->injectedPanel);
             $telegramId = (int) $update->userId();
 
             // شروع جریان (ساخت نشست + پرسیدن آدرس) داخل خودِ کلاس است تا
@@ -1569,7 +1580,7 @@ final class Kernel
         if ($ns === 'panel.mine') {
             $this->bot->answerCallback($callbackId);
 
-            (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
+            (new PanelConnectionManager($this->bot, $this->panels, $this->sessions, $this->injectedPanel))
                 ->listUserPanels($chatId, (int) ($user['id'] ?? 0));
 
             return;
