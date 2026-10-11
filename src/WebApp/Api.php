@@ -189,6 +189,15 @@ final class Api
      */
     public function authenticate(array $init): array
     {
+        // بررسی امضای تلگرام (حفاظت از جعل‌سازی داده)
+        if (!$this->verifyTelegramData($init)) {
+            Logger::warning('Invalid Telegram data signature', [
+                'hash' => $init['hash'] ?? 'missing',
+                'data_keys' => array_keys($init),
+            ]);
+            return ['ok' => false, 'message' => 'امضای داده ورودی نامعتبر است.'];
+        }
+
         $user = (array) ($init['user'] ?? []);
 
         $telegramId = (int) ($user['id'] ?? 0);
@@ -231,6 +240,55 @@ final class Api
         }
 
         return ['ok' => true, 'message' => ''];
+    }
+
+    /**
+     * بررسی امضای داده‌های تلگرام (WebApp initData)
+     * این متد اطمینان می‌دهد که داده از تلگرام جعل نشده است
+     */
+    private function verifyTelegramData(array $init): bool
+    {
+        $hash = $init['hash'] ?? '';
+        if (empty($hash)) {
+            return false;
+        }
+
+        $botToken = \Pasargad\Support\Config::str('telegram.bot_token', '');
+        if (empty($botToken)) {
+            Logger::error('Telegram bot token not configured');
+            return false;
+        }
+
+        // ساخت checkString از تمام داده‌های به جز hash
+        $data = $init;
+        unset($data['hash']);
+
+        // مرتب‌سازی الفبایی
+        ksort($data);
+
+        // ایجاد string برای تأیید
+        $checkString = '';
+        foreach ($data as $key => $value) {
+            if (is_string($value)) {
+                $checkString .= $key . '=' . $value . "\n";
+            } elseif (is_array($value)) {
+                $checkString .= $key . '=' . json_encode($value, JSON_UNESCAPED_UNICODE) . "\n";
+            } else {
+                $checkString .= $key . '=' . $value . "\n";
+            }
+        }
+
+        // حذف آخرین newline
+        $checkString = rtrim($checkString, "\n");
+
+        // تولید secret key از bot token
+        $secretKey = hash_hmac('sha256', 'WebAppData', $botToken, true);
+
+        // محاسبه hash
+        $computedHash = hash_hmac('sha256', $checkString, $secretKey);
+
+        // مقایسه محفوظ برای جلوگیری از timing attack
+        return hash_equals($computedHash, $hash);
     }
 
     /**

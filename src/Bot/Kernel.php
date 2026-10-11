@@ -1296,6 +1296,68 @@ final class Kernel
 
                 return true;
 
+            // ======== handlers برای اتصال پنل جدید ========
+
+            case 'panel_connect_url':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $manager = new \Pasargad\Bot\PanelConnectionManager(
+                    $this->bot,
+                    $this->panels,
+                    $this->sessions
+                );
+                $manager->handlePanelUrl($chatId, $telegramId, $text);
+                return true;
+
+            case 'panel_connect_username':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $manager = new \Pasargad\Bot\PanelConnectionManager(
+                    $this->bot,
+                    $this->panels,
+                    $this->sessions
+                );
+                $manager->handleUsername($chatId, $telegramId, $text);
+                return true;
+
+            case 'panel_connect_credential':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $manager = new \Pasargad\Bot\PanelConnectionManager(
+                    $this->bot,
+                    $this->panels,
+                    $this->sessions
+                );
+                $manager->handleCredentialAndTest($chatId, $telegramId, $text);
+                return true;
+
+            case 'panel_connect_name':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $manager = new \Pasargad\Bot\PanelConnectionManager(
+                    $this->bot,
+                    $this->panels,
+                    $this->sessions
+                );
+                $manager->handlePanelName($chatId, $telegramId, $text, (int) $user['id']);
+                return true;
+
             default:
                 // نکتهٔ حیاتی: اینجا نباید نشست پاک شود.
                 //

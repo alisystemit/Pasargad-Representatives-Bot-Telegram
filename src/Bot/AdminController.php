@@ -131,6 +131,27 @@ final class AdminController
                 $this->runCutoff($chatId, (int) ($data['id'] ?? 0));
                 break;
 
+            // ایجاد اتصال پنل جدید
+            case 'panel:connect':
+                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
+                    ->showCreateConnectionMenu($chatId, (int) $update->userId());
+                break;
+
+            case 'panel:connect:password':
+                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
+                    ->startPasswordConnection($chatId, (int) $update->userId());
+                break;
+
+            case 'panel:connect:apikey':
+                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
+                    ->startApiKeyConnection($chatId, (int) $update->userId());
+                break;
+
+            case 'panel:list':
+                (new PanelConnectionManager($this->bot, $this->panels, $this->sessions))
+                    ->listUserPanels($chatId, (int) $update->userId());
+                break;
+
             // ---------------- بسته‌ها ----------------
             case 'admin.packages':
                 $this->showPackages($chatId, (int) ($data['page'] ?? 0), false);
@@ -266,7 +287,6 @@ final class AdminController
 
             case 'admin.settings.autocard':
                 (new PasarguardSettings($this->bot))->autocardSettings($chatId, (string) ($data['step'] ?? null));
-                break;
                 $this->showGateways($chatId);
                 break;
 
