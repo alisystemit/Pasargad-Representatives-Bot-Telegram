@@ -269,24 +269,42 @@ final class AgencyService
      *
      * از کاراکترهای مبهم (0/O، 1/l/I) پرهیز می‌شود چون نماینده این رمز را
      * می‌خواند، کپی می‌کند و داخل فرم پنل دستی تایپ می‌کند.
+     *
+     * ⚠️ **سیاست رمز پنل رعایت می‌شود، و این تصادفی نیست.**
+     *
+     * نسخهٔ قبلی فقط *یک* حرف بزرگ تضمین می‌کرد (یکی از هر دسته). ولی پنل
+     * با پیام «Password must contain at least 2 uppercase letters» رد می‌کرد —
+     * یعنی **هر خرید پنل نمایندگی با ۴۲۲ شکست می‌خورد** و کاربر پول داده ولی
+     * چیزی گیرش نمی‌آمد. این با آزمون زنده کشف شد، نه با حدس.
+     *
+     * پس اینجا حاشیهٔ اطمینان گذاشته شده: دو حرف بزرگ، دو رقم، و یک نویسه.
      */
     public function generatePassword(int $length = 14): string
     {
-        $length = max(8, min($length, 32));
+        $length = max(12, min($length, 32));
 
-        // حروف کوچک + بزرگ + عدد، بدون نویسه‌های مبهم
         $sets = [
+            // حروف کوچک
             'abcdefghijkmnopqrstuvwxyz',
+            // حروف بزرگ
             'ABCDEFGHJKLMNPQRSTUVWXYZ',
+            // ارقام
             '23456789',
+            // نویسه‌ها
+            '!@#$%&*?-_',
         ];
 
-        $all = implode('', $sets);
-        $out = '';
+        // تعداد تضمینی هر دسته — ۲ برای حروف بزرگ و ارقام چون پنل حداقل ۲
+        // حرف بزرگ می‌خواهد و برای ارقام هم سخت‌گیر است.
+        $minimum = [1, 2, 2, 1];
 
-        // تضمین حداقل یک کاراکتر از هر دسته
-        foreach ($sets as $set) {
-            $out .= $set[random_int(0, strlen($set) - 1)];
+        $all  = implode('', $sets);
+        $out  = '';
+
+        foreach ($sets as $index => $set) {
+            for ($i = 0; $i < $minimum[$index]; $i++) {
+                $out .= $set[random_int(0, strlen($set) - 1)];
+            }
         }
 
         while (mb_strlen($out) < $length) {

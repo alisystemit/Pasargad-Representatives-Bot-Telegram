@@ -562,6 +562,25 @@ public function modifyUser(string $targetUsername, array $payload, string $usern
             throw new PanelException('role_id is required', 422);
         }
 
+        // سیاست رمز پنل واقعی (که با آزمون زنده کشف شد): دست‌کم ۲ حرف بزرگ.
+        //
+        // این بازرسی عمداً سخت‌گیر است. نسخهٔ قبلی `generatePassword()` فقط یک
+        // حرف بزرگ تضمین می‌کرد و روی پنل واقعی همهٔ خریدهای «پنل نمایندگی»
+        // با ۴۲۲ می‌افتادند — ولی چون فیک این قاعده را نداشت، تست‌ها سبز
+        // می‌ماندند. دقیقاً همان نوع باگی که این فایل جلویش را می‌گیرد.
+        $password = (string) ($payload['password'] ?? '');
+
+        if (preg_match_all('/[A-Z]/', $password) < 2) {
+            throw new PanelException(
+                'Value error, Password must contain at least 2 uppercase letters',
+                422
+            );
+        }
+
+        if (preg_match_all('/\d/', $password) < 2) {
+            throw new PanelException('Value error, Password must contain at least 2 digits', 422);
+        }
+
         // پنل واقعی روی نام کاربری تکراری خطای ۴۰۹ می‌دهد.
         if (isset($this->admins[$target])) {
             throw new PanelException('admin already exists', 409);
