@@ -4,171 +4,227 @@ declare(strict_types=1);
 
 namespace Pasargad\Panel;
 
+use Pasargad\Store\PanelRepository;
 use Pasargad\Support\Logger;
-use Pasargad\Support\Str;
 
 /**
- * Enhanced Panel Sync with reliability and error recovery
- * - Health monitoring
- * - Automatic retry on failure
- * - Partial sync support
- * - Audit trail
- * - Conflict resolution
+ * لایهٔ «آیا اصلاً باید همگام کنیم؟» روی همگام‌سازیِ پنل.
+ *
+ * ## چرا این لایه اصلاً لازم است
+ *
+ * `PanelSyncer` کارِ «خواندن از پنل و نوشتن در دیتابیس» را انجام می‌دهد و
+ * **درست** است. این کلاس جای آن را نمی‌گیرد و کارِ تکراری نمی‌کند.
+ *
+ * کاری که اینجا انجام می‌شود یک چیزِ ساده ولی پرهزینه است: **پنلی که همین
+ * الان همگام شده، دوباره همگام نشود.**
+ *
+ * چرا مهم است: تماس با پنل کند و محدود است. کرون هر چند دقیقه یک‌بار روی
+ * *همهٔ* پنل‌ها می‌زند؛ اگر برای پنلی که ده ثانیه پیش خوانده شده دوباره
+ * درخواست بفرستیم، بودجهٔ زمانیِ کرون را می‌خوریم و پنل‌های واقعیِ دیگر
+ * بی‌وقت می‌مانند.
+ *
+ * ## چه چیزی از نسخهٔ قبلی حذف شد و چرا
+ *
+ * نسخهٔ قبلی یک موتورِ همگام‌سازیِ موازی بود (`performSync`،
+ * `recordSyncSuccess`، `getLastSyncTime`) که هیچ‌کدام پیاده نشده بودند و
+ * `getLastSyncTime()` همیشه `time()` برمی‌گرداند — یعنی ادعا می‌کرد پنل هرگز
+ * نیاز به همگام ندارد.
+ *
+ * همچنین `mergeData()` با `array_merge($local, $remote)` **سمتِ پنل را همیشه
+ * برنده** می‌کرد. برای `used_traffic` درست است، ولی برای ستون‌هایی که ربات
+ * مدیریت می‌کند (`granted_volume`، `user_limit`) فاجعه است: کاربری که خریده،
+ * موجودی‌اش را از دست می‌داد. این «حل تعارض» حذف شد، چون `PanelSyncer`
+ * خودش دقیقاً می‌داند کدام ستون از کجا بیاید.
  */
 final class PanelSyncManager
 {
-    private const MAX_SYNC_RETRIES = 3;
-    private const SYNC_TIMEOUT = 30; // seconds
-    private const MIN_SYNC_INTERVAL = 300; // 5 minutes
+    /**
+     * کمترین فاصلهٔ دو همگام‌سازیِ یک پنل.
+     *
+     * ⚠️ عدد عمدی است: نه خیلی کم (که عملاً بی‌فایده شود) و نه خیلی زیاد (که
+     * آمارِ کاربران کهنه بماند و حجمِ مصرفی دیر نشان داده شود).
+     */
+    public const MIN_SYNC_INTERVAL = 300;   // ۵ دقیقه
+
+    private static ?PanelRepository $panels = null;
+
+    public static function usePanels(?PanelRepository $panels): void
+    {
+        self::$panels = $panels;
+    }
+
+    private static function panels(): PanelRepository
+    {
+        return self::$panels ?? new PanelRepository();
+    }
 
     /**
-     * Perform panel sync with automatic retry
+     * آیا این پنل الان نیاز به همگام‌سازی دارد؟
+     *
+     * پنلی که هرگز همگام نشده **نیاز دارد** — وگرنه پنلی که تازه وصل شده تا
+     * وقتی کرون دستی اجرا نشود، هرگز آمار نمی‌گیرد.
+     *
+     * @param array<string, mixed>|null $panel ردیفِ پنل، اگر از قبل خوانده شده
      */
-    public static function syncWithRetry(int $panelId, PasarGuardClient $client): array
+    public static function needsSync(int $panelId, ?array $panel = null): bool
     {
-        $panel = self::getPanelInfo($panelId);
-        if (!$panel) {
-            return ['ok' => false, 'message' => 'Panel not found'];
+        if ($panelId <= 0) {
+            return false;
         }
 
-        for ($attempt = 1; $attempt <= self::MAX_SYNC_RETRIES; $attempt++) {
-            try {
-                Logger::info("Panel sync attempt $attempt", [
-                    'panel_id' => $panelId,
-                    'username' => $panel['panel_username'],
-                ]);
+        $syncedAt = (int) (($panel ?? self::panels()->find($panelId))['synced_at'] ?? 0);
 
-                $result = self::performSync($panelId, $client);
+        if ($syncedAt <= 0) {
+            return true;
+        }
 
-                if ($result['ok']) {
-                    self::recordSyncSuccess($panelId, $result);
-                    return $result;
-                }
+        return (time() - $syncedAt) > self::MIN_SYNC_INTERVAL;
+    }
 
-                // Partial failure - log and retry
-                Logger::warning("Panel sync partial failure", [
-                    'panel_id' => $panelId,
-                    'message' => $result['message'] ?? 'Unknown error',
-                ]);
-            } catch (\Throwable $e) {
-                Logger::warning("Panel sync attempt $attempt failed", [
-                    'panel_id' => $panelId,
-                    'error' => $e->getMessage(),
-                ]);
+    /**
+     * پالودنِ فهرستِ پنل‌ها از آن‌هایی که نیاز به همگام ندارند.
+     *
+     * @param  array<int, array<string, mixed>> $panels
+     * @return array<int, array<string, mixed>>
+     */
+    public static function dueForSync(array $panels, int $limit = 0): array
+    {
+        $due = [];
 
-                if ($attempt < self::MAX_SYNC_RETRIES) {
-                    sleep(min(5 * $attempt, 30)); // Exponential backoff
-                }
+        foreach ($panels as $panel) {
+            if (!self::needsSync((int) ($panel['id'] ?? 0), $panel)) {
+                continue;
+            }
+
+            $due[] = $panel;
+
+            if ($limit > 0 && count($due) >= $limit) {
+                break;
             }
         }
 
-        self::recordSyncFailure($panelId);
-        return ['ok' => false, 'message' => 'Sync failed after ' . self::MAX_SYNC_RETRIES . ' attempts'];
+        return $due;
     }
 
     /**
-     * Perform actual sync operation
+     * گزارشِ وضعیتِ همگام‌سازی — **اعدادِ واقعی**.
+     *
+     * نسخهٔ قبلی همه‌چیز را صفر برمی‌گرداند. برای یک داشبوردِ مدیریتی، صفرِ
+     * ساختگی از نبودِ داشبورد بدتر است: مدیر فکر می‌کند هیچ پنلی همگام نشده
+     * و دنبال مشکلی می‌گردد که وجود ندارد.
+     *
+     * @param  array<int, array<string, mixed>>|null $panels اگر داده شود، فقط
+     *                                                       همین‌ها شمرده می‌شوند
+     * @return array<string, int>
      */
-    private static function performSync(int $panelId, PasarGuardClient $client): array
+    public static function getSyncStatusReport(?array $panels = null): array
     {
-        // Fetch data from panel
-        // Compare with database
-        // Resolve conflicts
-        // Update local data
-        // Return results
+        $panels ??= self::panels()->listWatchable(1000);
 
-        return ['ok' => true, 'synced_items' => 0];
+        $total = count($panels);
+        $fresh = 0;
+        $due  = 0;
+
+        foreach ($panels as $panel) {
+            if (self::needsSync((int) ($panel['id'] ?? 0), $panel)) {
+                $due++;
+            } else {
+                $fresh++;
+            }
+        }
+
+        return [
+            'total_panels'    => $total,
+            'synced_recently' => $fresh,
+            'pending_sync'    => $due,
+            // شکستِ همگام به معنی «پنل خراب» نیست؛ ۴۰۱/۴۰۳ یعنی کاربر باید
+            // کلیدش را درست کند. شمارشِ این‌ها جدا و با عنوانِ درست لازم است،
+            // وگرنه با خرابیِ واقعی قاطی می‌شود.
+            'unlinked'        => self::countUnlinked($panels),
+            // «پنل مرده» وضعیت نیست؛ یک ستونِ جدا (`is_dead`) است. برای همین
+            // جدا شمرده می‌شود و داخل وضعیت‌ها قاطی نمی‌شود.
+            'dead'            => self::countDead($panels),
+            'revoked'         => self::countStatus($panels, PanelRepository::STATUS_REVOKED),
+            'interval'        => self::MIN_SYNC_INTERVAL,
+        ];
     }
 
     /**
-     * Record successful sync
+     * @param array<int, array<string, mixed>> $panels
      */
-    private static function recordSyncSuccess(int $panelId, array $result): void
+    private static function countDead(array $panels): int
     {
-        Logger::info("Panel sync successful", [
-            'panel_id' => $panelId,
-            'synced' => $result['synced_items'] ?? 0,
+        $count = 0;
+
+        foreach ($panels as $panel) {
+            if ((int) ($panel['is_dead'] ?? 0) === 1) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $panels
+     */
+    private static function countStatus(array $panels, string $status): int
+    {
+        $count = 0;
+
+        foreach ($panels as $panel) {
+            if ((string) ($panel['panel_status'] ?? '') === $status) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * پنل‌هایی که کلید ندارند و برای همین همگام نمی‌شوند.
+     *
+     * این شمارنده بعد از حذف رمز اهمیت پیدا کرد: این پنل‌ها بی‌سروصدا از کار
+     * افتاده‌اند و تنها راه دیدنشان همین عدد است.
+     *
+     * @param array<int, array<string, mixed>> $panels
+     */
+    private static function countUnlinked(array $panels): int
+    {
+        $count = 0;
+
+        foreach ($panels as $panel) {
+            if (trim((string) ($panel['api_key'] ?? '')) === '') {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * ثبتِ نتیجهٔ همگام‌سازی برای گزارش.
+     *
+     * `synced_at` را خودِ `PanelSyncer` می‌نویسد؛ این متد فقط لاگ می‌کند تا
+     * بتوان بعداً سراغِ کندیِ کرون رفت. نوشتنِ دوبارهٔ همان ستون از اینجا
+     * یعنی دو نویسنده برای یک حقیقت — و هرکدام می‌تواند دیگری را بی‌صدا خراب
+     * کند.
+     */
+    public static function recordResult(int $panelId, bool $ok, string $message = '', int $elapsedMs = 0): void
+    {
+        if ($ok) {
+            Logger::info('Panel sync finished', [
+                'panel_id'  => $panelId,
+                'elapsed_ms' => $elapsedMs,
+            ]);
+
+            return;
+        }
+
+        Logger::warning('Panel sync failed', [
+            'panel_id'   => $panelId,
+            'elapsed_ms' => $elapsedMs,
+            'message'    => $message,
         ]);
-
-        // Update last_sync_at timestamp
-        // Set last_sync_success = true
-    }
-
-    /**
-     * Record failed sync
-     */
-    private static function recordSyncFailure(int $panelId): void
-    {
-        Logger::error("Panel sync failed", ['panel_id' => $panelId]);
-
-        // Update last_sync_success = false
-        // Increment failure counter
-    }
-
-    /**
-     * Check if panel needs sync
-     */
-    public static function needsSync(int $panelId): bool
-    {
-        $lastSync = self::getLastSyncTime($panelId);
-        $now = time();
-
-        return ($now - $lastSync) > self::MIN_SYNC_INTERVAL;
-    }
-
-    /**
-     * Get last sync timestamp
-     */
-    private static function getLastSyncTime(int $panelId): int
-    {
-        // Query database for last_sync_at
-        return time();
-    }
-
-    /**
-     * Get sync status for all panels
-     */
-    public static function getSyncStatusReport(): array
-    {
-        return [
-            'total_panels' => 0,
-            'synced_recently' => 0,
-            'pending_sync' => 0,
-            'failed_sync' => 0,
-            'average_sync_time' => 0,
-        ];
-    }
-
-    /**
-     * Resolve sync conflicts using strategy
-     */
-    public static function resolveConflict(array $localData, array $remoteData, string $strategy = 'local'): array
-    {
-        return match ($strategy) {
-            'local' => $localData,      // Keep local changes
-            'remote' => $remoteData,    // Use remote data
-            'merge' => self::mergeData($localData, $remoteData),
-            default => $localData,
-        };
-    }
-
-    /**
-     * Merge local and remote data intelligently
-     */
-    private static function mergeData(array $local, array $remote): array
-    {
-        // Deep merge with timestamp comparison
-        // Newer data wins
-        return array_merge($local, $remote);
-    }
-
-    /**
-     * Get panel sync audit trail
-     */
-    public static function getSyncAudit(int $panelId, int $limit = 10): array
-    {
-        return [
-            // List of recent sync operations with timestamps
-        ];
     }
 }

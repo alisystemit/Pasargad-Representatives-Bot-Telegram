@@ -661,6 +661,58 @@ final class Migrator
             'ALTER TABLE panels ADD COLUMN api_key TEXT',
             'ALTER TABLE panels ADD COLUMN api_key_fallback INTEGER NOT NULL DEFAULT 0',
         ],
+
+        // ------------------------------------------------------------------
+        // سلامتِ واقعیِ درگاه‌های پرداخت.
+        //
+        // چرا لازم است: نسخهٔ قبلیِ `PaymentGatewayOptimizer` یک health-check
+        // نوشته بود که همیشه `true` برمی‌گرداند و آمارش هم عدد ساختگی بود
+        // (۹۵٪ موفقیت، ۱۰٬۰۰۰ تراکنش). اگر به ادمین نشان داده می‌شد، دروغ
+        // می‌گفت؛ اگر به مسیر پول وصل می‌شد، خرابیِ واقعیِ درگاه را نامرئی
+        // می‌کرد.
+        //
+        // این جدول به‌جای «پروب زدن به درگاه»، نتیجهٔ **تلاش‌های واقعیِ پرداخت**
+        // را نگه می‌دارد. پروبِ فعال برای درگاه پرداخت یعنی درخواست ساختگیِ پول
+        // و خطر سوءاستفاده — پس سنجهٔ درست، همان چیزی است که واقعاً دیده‌ایم.
+        // ------------------------------------------------------------------
+        '016_gateway_health' => [
+            'CREATE TABLE IF NOT EXISTS gateway_health (
+                gateway      TEXT PRIMARY KEY,
+                healthy      INTEGER NOT NULL DEFAULT 1,
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                successes    INTEGER NOT NULL DEFAULT 0,
+                failures     INTEGER NOT NULL DEFAULT 0,
+                total_ms     INTEGER NOT NULL DEFAULT 0,
+                last_error   TEXT,
+                checked_at   INTEGER NOT NULL DEFAULT 0,
+                updated_at   INTEGER NOT NULL DEFAULT 0
+            )',
+        ],
+
+        // ------------------------------------------------------------------
+        // صندوقِ مرده برای وبهوک‌هایی که پردازششان نیمه‌کاره ماند.
+        //
+        // چرا لازم است: تلگرام وبهوک را فقط **یک‌بار** تحویل می‌دهد. اگر پردازش
+        // (مثلاً اعمال بسته روی پنل) وسط کار بمیرد، آن آپدیت برای همیشه از
+        // دست می‌رود — نه خطایی به کاربر می‌رسد، نه تکراری. مشتری پول داده و
+        // ربات هیچ‌وقت خبردار نمی‌شود.
+        //
+        // `version` نگه داشته شده تا اگر روزی پردازشِ تازه‌ای برای یک رویدادِ
+        // قدیمی نوشته شد، آن رویداد دوباره اجرا نشود.
+        // ------------------------------------------------------------------
+        '017_webhook_dead_letters' => [
+            'CREATE TABLE IF NOT EXISTS webhook_dead_letters (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id    TEXT NOT NULL UNIQUE,
+                method      TEXT NOT NULL,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                last_error  TEXT,
+                payload     TEXT,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            )',
+            'CREATE INDEX IF NOT EXISTS idx_dead_letters_attempts ON webhook_dead_letters (attempts)',
+        ],
         ];
     }
 

@@ -160,11 +160,46 @@ final class PaymentService
             return ['ok' => false, 'message' => 'مبلغ سفارش نامعتبر است! 😔❌'];
         }
 
+        // ------------------------------------------------------------------
+        // سنجش سلامتِ درگاه بر پایهٔ همین تلاشِ واقعی.
+        //
+        // قبل و بعد از `start()` زمان گرفته می‌شود تا میانگین پاسخ هم واقعی
+        // باشد. مهم‌تر: نتیجهٔ ناموفق ثبت می‌شود تا اگر درگاه خراب شد، به
+        // کاربر گفته شود روش دیگری را انتخاب کند — و مدیر در داشبورد ببیند.
+        //
+        // ⚠️ پرداختِ موفق و ناموفق هر دو ثبت می‌شوند؛ ولی «پرداختی که درگاه
+        // ساخته ولی انتقالش به دیتابیس شکست خورده» نباید ناموفق شمرده شود،
+        // چون آن پول واقعاً از کاربر گرفته شده است.
+        // ------------------------------------------------------------------
+        $startedAt = microtime(true);
+
         $result = $gateway->start($order, $chatId);
 
+        $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
+
         if (!($result['ok'] ?? false)) {
+            PaymentGatewayOptimizer::recordFailure(
+                $method,
+                (string) ($result['message'] ?? $result['description'] ?? ''),
+                $elapsedMs
+            );
+
+            // اگر این درگاه چند بار پیاپی خراب بوده، به کاربر بگو کدام روش‌های
+            // دیگر سالم‌اند. جایگزین‌کردنِ خودکارِ روش پرداخت عمداً انجام نمی‌شود:
+            // هر درگاه کارمزد و دستورالعمل خودش را دارد و انتخاب کاربر باید محترم
+            // بماند.
+            $healthyAlternatives = $this->healthyAlternatives($method);
+
+            if ($healthyAlternatives !== []) {
+                $result['message'] = (string) ($result['message'] ?? '')
+                    . "\n\n⚠️ این روش پرداخت در حال حاضر مشکل دارد. "
+                    . 'این روش‌ها الان سالم‌اند: ' . implode('، ', $healthyAlternatives) . '.';
+            }
+
             return $result;
         }
+
+        PaymentGatewayOptimizer::recordSuccess($method, $elapsedMs);
 
         // ثبت تلاش پرداخت در دیتابیس.
         // اگر برای همین سفارش و همین روش قبلاً پرداختی ثبت شده، همان را
@@ -211,6 +246,32 @@ final class PaymentService
     // ------------------------------------------------------------------
     // تأیید دستی (کارت‌به‌کارت)
     // ------------------------------------------------------------------
+
+    /**
+     * نامِ روش‌های پرداختِ سالم، غیر از روشی که همین الان شکست خورده.
+     *
+     * @return array<int, string>
+     */
+    private function healthyAlternatives(string $failedMethod): array
+    {
+        try {
+            $names = array_keys($this->gateways);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $names = array_values(array_filter(
+            $names,
+            fn (string $n): bool => $n !== $failedMethod
+                && isset($this->gateways[$n])
+                && $this->gateways[$n]->isEnabled()
+                && $this->flags->isGatewayEnabled($n)
+        ));
+
+        return PaymentGatewayOptimizer::unhealthyAmong($names) === []
+            ? array_map(fn (string $n): string => $this->gateways[$n]->title(), $names)
+            : [];
+    }
 
     /**
      * ثبت رسید کارت‌به‌کارت توسط کاربر.

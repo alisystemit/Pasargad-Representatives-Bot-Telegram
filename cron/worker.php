@@ -100,6 +100,29 @@ try {
 
     echo 'پردازش صف: ' . json_encode($result, JSON_UNESCAPED_UNICODE) . "\n";
 
+    // ۱-الف) ♻️ پخش دوبارهٔ آپدیت‌هایی که پردازششان نیمه‌کاره مانده بود.
+    //
+    // چرا اینجا و نه داخل درخواستِ وبهوک: تلگرام هر آپدیت را فقط یک‌بار
+    // می‌فرستد. اگر پردازشش خطا بدهد، بدون این مرحله برای همیشه از دست می‌رود
+    // (مشتری رسید می‌فرستد، سفارش باز می‌ماند، کسی خبردار نمی‌شود).
+    //
+    // و چرا اینجا `sleep` نمی‌کنیم: خوابیدن درون وب‌سرور باعث تایم‌اوت تلگرام و
+    // ارسال دوبارهٔ همان آپدیت می‌شد — دو نسخهٔ همزمان از یک پردازشِ پول‌محور.
+    try {
+        $replay = \Pasargad\Bot\WebhookReliability::replay(
+            static function (array $payload): void {
+                (new \Pasargad\Bot\Kernel())->handle(new \Pasargad\Telegram\Update($payload));
+            },
+            20
+        );
+
+        if (($replay['attempted'] ?? 0) > 0) {
+            echo 'پخش دوبارهٔ آپدیت‌ها: ' . json_encode($replay, JSON_UNESCAPED_UNICODE) . "\n";
+        }
+    } catch (Throwable $e) {
+        echo 'خطای پخش دوبارهٔ آپدیت‌ها: ' . $e->getMessage() . "\n";
+    }
+
     // ۱-ب) ⚡️ بررسی خودکار فاکتورهای کارت‌به‌کارت خودکار
     //
     // سفارش‌هایی که با مبلغ یکتا پرداخت شده‌اند، اینجا از روی استعلام کارت
@@ -154,19 +177,47 @@ try {
     $syncer = new PanelSyncer($panels);
 
     if ($flags->isPanelSyncEnabled()) {
-        $synced = $syncer->syncMany($panels->listWatchable(200));
+        // ⚠️ فقط پنل‌هایی که واقعاً نیاز دارند.
+        //
+        // کرون ممکن است هر چند دقیقه یک‌بار اجرا شود، ولی پنلی که ده ثانیه پیش
+        // خوانده شده چیزِ تازه‌ای برای گفتن ندارد. فرستادن درخواستِ بیهوده
+        // بودجهٔ زمانی را می‌خورد و پنل‌های واقعیِ دیگر را بی‌وقت رها می‌کند.
+        $due = \Pasargad\Panel\PanelSyncManager::dueForSync($panels->listWatchable(200));
 
-        if ($synced['synced'] > 0 || $synced['failed'] > 0) {
-            echo sprintf("همگام‌سازی پنل‌ها: %d بررسی، %d موفق، %d ناموفق\n",
-                $synced['checked'], $synced['synced'], $synced['failed']);
+        if ($due === []) {
+            // ⚠️ پیام باید بگوید چند پنل اصلاً بود — وگرنه «همه به‌تازگی همگام
+            // بودند» برای فروشگاهی که هیچ پنلی ندارد، گمراه‌کننده است و یعنی
+            // کسی فکر می‌کند بررسی انجام شده.
+            printf(
+                "همگام‌سازی پنل‌ها: %d پنل دیده شد، نیازی به بررسی نبود.\n",
+                count($panels->listWatchable(200))
+            );
+        } else {
+            $synced = $syncer->syncMany($due);
+
+            if ($synced['synced'] > 0 || $synced['failed'] > 0) {
+                echo sprintf("همگام‌سازی پنل‌ها: %d بررسی، %d موفق، %d ناموفق\n",
+                    $synced['checked'], $synced['synced'], $synced['failed']);
+            }
+
+            // سقف زمانی اجرا را خوردیم ⇒ بقیه در اجرای بعدی بررسی می‌شوند.
+            // بدون این پیام، کسی فکر می‌کند همهٔ پنل‌ها همگام شدند.
+            if ($synced['skipped'] > 0) {
+                echo sprintf(
+                    "⚠️ سقف زمانی همگام‌سازی رسید: %d پنل برای اجرای بعدی ماند.\n",
+                    $synced['skipped']
+                );
+            }
         }
 
-        // سقف زمانی اجرا را خوردیم ⇒ بقیه در اجرای بعدی بررسی می‌شوند.
-        // بدون این پیام، کسی فکر می‌کند همهٔ پنل‌ها همگام شدند.
-        if ($synced['skipped'] > 0) {
+        // پنل‌های بدون کلید بی‌سروصدا از کار می‌افتند؛ این عدد تنها راهِ
+        // دیدنشان است تا برایشان کلید ساخته شود.
+        $report = \Pasargad\Panel\PanelSyncManager::getSyncStatusReport();
+
+        if ($report['unlinked'] > 0) {
             echo sprintf(
-                "⚠️ سقف زمانی همگام‌سازی رسید: %d پنل برای اجرای بعدی ماند.\n",
-                $synced['skipped']
+                "🔑 %d پنل کلید API ندارد و همگام نمی‌شود — نماینده باید کلید بسازد.\n",
+                $report['unlinked']
             );
         }
     }

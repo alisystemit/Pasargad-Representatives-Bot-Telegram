@@ -2133,6 +2133,39 @@ final class AdminController
 
             $lines[] = '   📊 وضعیت: ' . ($enabled ? 'فعال ✅' : 'غیرفعال 🔴')
                 . ($state['configured'] ? '' : ' — ⚠️ تا وقتی در config.php پیکربندی نشود کار نمی‌کند! 📝');
+
+            // ---- سنجهٔ واقعیِ سلامت ----
+            //
+            // این اعداد از **تلاش‌های واقعیِ پرداخت** می‌آیند، نه از health-check
+            // ساختگی. اگر هنوز تلاشی ثبت نشده، صریحاً «داده‌ای نیست» گفته
+            // می‌شود — چون نشان‌دادنِ نرخِ ساختگی در داشبوردِ ادمین از خرابیِ
+            // واقعی بدتر است: مدیر به عددِ دروغ اعتماد می‌کند.
+            $health = \Pasargad\Payment\PaymentGatewayOptimizer::getPerformanceMetrics($name);
+
+            if (!$health['has_data']) {
+                $lines[] = '   📈 هنوز تلاشی ثبت نشده — داده‌ای برای سنجش نیست.';
+            } else {
+                $rate = $health['success_rate'] === null
+                    ? '—'
+                    : \Pasargad\Support\Str::faNumber(round((float) $health['success_rate'] * 100, 1)) . '٪';
+
+                $lines[] = '   📈 موفقیت: ' . $rate
+                    . ' • ' . \Pasargad\Support\Str::faNumber((int) $health['successes'])
+                    . ' از ' . \Pasargad\Support\Str::faNumber((int) $health['attempts']) . ' تلاش';
+
+                if ($health['avg_response_ms'] !== null) {
+                    $lines[] = '   ⏱ میانگین پاسخ: ' . \Pasargad\Support\Str::faNumber((int) $health['avg_response_ms']) . ' میلی‌ثانیه';
+                }
+
+                if (!$health['healthy']) {
+                    $lines[] = '   🚨 <b>الآن ناسالم</b> — دو تلاشِ پیاپی شکست خورده. کاربران پیام خطا می‌گیرند و به روش‌های دیگر هدایت می‌شوند.';
+
+                    if (!empty($health['last_error'])) {
+                        $lines[] = '      آخرین خطا: <code>' . Str::escape((string) $health['last_error']) . '</code>';
+                    }
+                }
+            }
+
             $lines[] = '';
 
             $keyboard[] = [[
