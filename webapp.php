@@ -97,27 +97,80 @@ if ($method === 'POST') {
     // ------------------------------------------------------------------
     // احراز هویت
     // ------------------------------------------------------------------
-    $initRaw = (string) ($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? '');
+    //
+    // ⚠️ چرا چند منبع؟
+    //
+    // اپ `initData` را در هدر `X-Telegram-Init-Data` می‌فرستد. ولی اگر بین
+    // مرورگر و PHP یک پروکسی، CDN، WAF یا nginx باشد، ممکن است هدرهای
+    // `X-*` را حذف یا بازنویسی کند و آن‌وقت initData هرگز نمی‌رسد ⇒ ۴۰۱ روی
+    // هر درخواست.
+    //
+    // نکتهٔ مهم‌تر: fallback نباید «اولین مقدار غیرخالی» باشد. اگر پروکسی هدر
+    // را با یک مقدار **خراب** پر کند، دیگر به منبع سالم نمی‌رسیم. پس هر
+    // کاندید جدا **اعتبارسنجی** می‌شود و اولین کاندیدِ *معتبر* برنده است.
+    //
+    // ترتیب بر اساس کمترین نشت انتخاب شده:
+    //
+    //   ۱) header  ← کلاینت همیشه می‌فرستد؛ در لاگ دسترسی وب‌سرور ثبت
+    //                نمی‌شود. ⭐
+    //   ۲) body    ← پروکسی‌ها بدنه را به‌ندرت دست می‌زنند؛ در لاگ دسترسی هم
+    //                نمی‌آید. ⭐
+    //   ۳) query   ← آخرین راه. **در لاگ دسترسی و تاریخچهٔ مرورگر ثبت
+    //                می‌شود** و ممکن است از راه هدر Referer لو برود، پس فقط
+    //                وقتی به کار می‌آید که دو مسیر بالا کار نکرده باشند.
+    //
+    // کلاینت ما (۱) و (۲) را هم‌زمان می‌فرستد، پس در عمل به (۳) نمی‌رسیم.
+    $initCandidates = [
+        'header' => (string) ($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? ''),
+        'body'   => (string) ($input['initData'] ?? ''),
+        'query'  => (string) ($_GET['initData'] ?? ''),
+    ];
 
-    $init = InitData::parse($initRaw);
+    $init        = null;
+    $initSource  = '';
+    $initLastWhy = 'no_header';
 
-    if (!$init['ok']) {
+    foreach ($initCandidates as $source => $candidate) {
+        if ($candidate === '') {
+            continue;
+        }
+
+        $attempt = InitData::parse($candidate);
+
+        if ($attempt['ok']) {
+            $init       = $attempt;
+            $initSource = $source;
+            break;
+        }
+
+        $initLastWhy = (string) ($attempt['reason'] ?? 'unknown');
+    }
+
+    if ($init === null) {
         Logger::warning('WebApp auth failed', [
             'ip'      => $_SERVER['REMOTE_ADDR'] ?? '',
             'action'  => $action,
-            'reason'  => $init['reason'] ?? 'unknown',
-            'message' => $init['message'],
+            'reason'  => $initLastWhy,
+            'message' => 'no valid initData in any transport',
             'uri'     => (string) ($_SERVER['REQUEST_URI'] ?? ''),
             'method'  => $method,
+            'tried'   => array_keys(array_filter($initCandidates, static fn ($v): bool => $v !== '')),
         ]);
 
-        // `reason` به کلاینت برمی‌گردد تا پشتیبانی بتواند از سمت کاربر بپرسد
-        // و دقیقاً بداند کدام شاخه را ببیند (لاگ سرور کامل است).
         $json(401, [
             'ok'      => false,
-            'message' => $init['message'],
+            'message' => 'امضای دادهٔ ورودی نامعتبر است.',
             'auth'    => false,
-            'reason'  => $init['reason'] ?? 'unknown',
+            'reason'  => $initLastWhy,
+        ]);
+    }
+
+    if ($initSource !== '' && $initSource !== 'header') {
+        // اگر این لاگ زیاد دیده شود یعنی هدر را پروکسی حذف می‌کند و بیشتر
+        // درخواست‌ها از بدنه می‌آیند — نشانهٔ خوبی برای بررسی زیرساخت.
+        Logger::info('WebApp initData arrived outside the header', [
+            'source' => $initSource,
+            'ip'     => $_SERVER['REMOTE_ADDR'] ?? '',
         ]);
     }
 

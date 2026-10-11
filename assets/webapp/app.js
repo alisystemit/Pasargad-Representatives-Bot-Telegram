@@ -92,21 +92,40 @@ const API_URL = BOOT.api || 'webapp.php';
 /**
  * فراخوانی API.
  *
- * `initData` در هدر `X-Telegram-Init-Data` می‌رود (نه در بدنه) تا لاگ سرور
- * آن را در کنار هر درخواست ببیند و بتوان نشست را ردیابی کرد. سرور آن را با
- * HMAC بررسی می‌کند، پس دستکاری‌اش بی‌فایده است.
+ * ⚠️ چرا `initData` هم در هدر و هم در بدنه می‌رود؟
+ *
+ * مسیر اصلی هدر `X-Telegram-Init-Data` است چون در لاگ دسترسی وب‌سرور ثبت
+ * نمی‌شود. ولی اگر بین مرورگر و PHP یک پروکسی/CDN/WAF/nginx باشد، ممکن
+ * است هدرهای `X-*` را حذف یا بازنویسی کند و آن‌وقت initData هرگز نمی‌رسد
+ * ⇒ ۴۰۱ روی هر درخواست.
+ *
+ * پس همان مقدار را در **بدنهٔ JSON** هم می‌فرستیم: پروکسی‌ها بدنه را به‌ندرت
+ * دست می‌زنند و بدنه هم در لاگ دسترسی ثبت نمی‌شود.
+ *
+ * عمداً در query string نمی‌فرستیم: آنجا در لاگ دسترسی و تاریخچهٔ مرورگر
+ * ثبت می‌شود و ممکن است از راه هدر Referer لو برود. سرور آن را هم به‌عنوان
+ * آخرین راه می‌پذیرد، ولی کلاینت ترجیح می‌دهد به آن نرسد.
+ *
+ * سرور هر کاندید را جدا **اعتبارسنجی** می‌کند، پس اگر پروکسی هدر را با مقدار
+ * خراب پر کند، بدنهٔ سالم نادیده گرفته نمی‌شود.
  */
 async function api(action, params = {}) {
     let res;
+
+    const initData = t().initData || '';
 
     try {
         res = await fetch(API_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Telegram-Init-Data': t().initData || ''
+                ...(initData ? { 'X-Telegram-Init-Data': initData } : {})
             },
-            body: JSON.stringify({ action, ...params }),
+            body: JSON.stringify({
+                action,
+                ...params,
+                ...(initData ? { initData } : {})
+            }),
             cache: 'no-store'
         });
     } catch (e) {
