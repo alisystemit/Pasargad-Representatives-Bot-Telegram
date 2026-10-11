@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Pasargad\Bot;
 
 use Pasargad\Support\Config;
+use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
 use Pasargad\Store\PackageRepository;
 use Pasargad\Store\PanelRepository;
@@ -144,6 +145,14 @@ final class FullMenu
         $url = $this->webAppUrl();
 
         if ($url === '') {
+            // ⚠️ قبلاً این دکمه **بی‌صدا** حذف می‌شد و کاربر فقط می‌دید یک
+            // گزینه کم است، بدون اینکه بفهمد چرا. حالا علتش در لاگ می‌آید.
+            Logger::warning('Mini App button hidden — base_url is not a usable https URL', [
+                'base_url' => rtrim(trim(Config::str('base_url', '')), '/'),
+                'fix'      => 'base_url در config.php باید مثل https://example.com باشد '
+                    . '(با اسلیم جلو و بدون مسیر انتهایی).',
+            ]);
+
             return [];
         }
 

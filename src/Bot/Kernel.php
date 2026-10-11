@@ -2406,7 +2406,7 @@ final class Kernel
             . '</b> پاداش می‌گیرید (به کیف پولتان اضافه می‌شود).';
 
         // پاداش اسلات (bonus slate) — پاداش اضافی برای دعوت‌های موفق
-        $db = Pasargad\Support\Db::instance();
+        $db = \Pasargad\Support\Db::instance();
         $slateCount = $db->count('SELECT COUNT(*) FROM referrals WHERE referrer_user_id = ? AND slate_bonus_toman > 0', [(int) $user['id']]);
 
         if ($slateCount > 0) {

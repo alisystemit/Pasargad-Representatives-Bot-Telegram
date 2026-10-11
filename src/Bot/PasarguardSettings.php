@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Pasargad\Bot;
 
+use Pasargad\Panel\PanelException;
+use Pasargad\Panel\PasarGuardClient;
 use Pasargad\Support\Config;
 use Pasargad\Support\Str;
 use Pasargad\Telegram\BotApi;
@@ -187,6 +189,88 @@ final class PasarguardSettings
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
             'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
+
+    /**
+     * 🧪 تست اتصال اکانت Owner
+     *
+     * قبلاً دکمهٔ «🧪 تست اتصال» در کیبورد صفحهٔ اکانت owner بود ولی هیچ
+     * مسیری در `AdminController` آن را نمی‌گرفت، پس کلیک رویش به
+     * «❓ این گزینه در پنل مدیریت تعریف نشده است» می‌رسید.
+     *
+     * این متد همان تست را انجام می‌دهد: با اکانت ذخیره‌شده لاگین می‌کند و
+     * هویت ادمین را می‌خواند تا مدیر قبل از فروش پنل مطمئن شود کار می‌کند.
+     */
+    public function testOwnerConnection(int $chatId): void
+    {
+        $this->bot->sendMessage($chatId, '⏳ در حال تست اتصال به پنل…');
+
+        $username = Config::str('panel.owner_username', '');
+        $password = Config::str('panel.owner_password', '');
+
+        if ($username === '' || $password === '') {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '❌ <b>تست ممکن نیست — اکانت کامل نیست</b>',
+                '',
+                '• نام کاربری: ' . ($username !== '' ? '✅ تنظیم شده' : '❌ تنظیم نشده'),
+                '• رمز عبور: ' . ($password !== '' ? '✅ تنظیم شده' : '❌ تنظیم نشده'),
+                '',
+                'ابتدا هر دو را ذخیره کنید، بعد دوباره تست بگیرید.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    [['text' => '✏️ نام کاربری', 'data' => BotApi::encodeData('admin.settings.panel.owner', ['step' => 'username'])]],
+                    [['text' => '🔑 رمز عبور', 'data' => BotApi::encodeData('admin.settings.panel.owner', ['step' => 'password'])]],
+                    Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
+                ])),
+            ]);
+
+            return;
+        }
+
+        try {
+            $client = new PasarGuardClient();
+            $token  = $client->login($username, $password, false);
+            $client->forgetToken($username);
+
+            if ($token === '') {
+                throw new PanelException('پنل توکنی برنگرداند.');
+            }
+
+            $admin = $client->getAdmin($username, $username, $password);
+        } catch (PanelException $e) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '❌ <b>اتصال برقرار نشد</b>',
+                '',
+                Str::escape($e->getMessage()),
+                '',
+                '💡 اگر مطمئن هستید اطلاعات درست است، آدرس پنل و سرویس آن را بررسی کنید.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
+                ])),
+            ]);
+
+            return;
+        }
+
+        $name = (string) ($admin['username'] ?? $username);
+        $role = is_array($admin['role'] ?? null)
+            ? (string) ($admin['role']['name'] ?? '')
+            : (string) ($admin['role'] ?? '');
+
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '✅ <b>اتصال برقرار شد</b>',
+            '',
+            '• نام کاربری: <code>' . Str::escape($name) . '</code>',
+            '• نقش: ' . ($role !== '' ? Str::escape($role) : '—'),
+            '• آدرس پنل: <code>' . Str::escape(Config::str('panel.base_url', '—')) . '</code>',
+            '',
+            '🎉 اکانت owner سالم است و می‌تواند پنل نمایندگی بسازد.',
+        ]), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
+            ])),
         ]);
     }
 

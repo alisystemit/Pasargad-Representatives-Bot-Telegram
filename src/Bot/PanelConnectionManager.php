@@ -107,6 +107,7 @@ final class PanelConnectionManager
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                     [['text' => '🔐 نام کاربری و رمز عبور', 'data' => BotApi::encodeData('panel.connect.password')]],
                     [['text' => '🔑 کلید API', 'data' => BotApi::encodeData('panel.connect.apikey')]],
+                    [['text' => '🖥️ پنل‌های من', 'data' => BotApi::encodeData('panel.mine')]],
                     Keyboard::back(BotApi::encodeData('panel.list'), '🔙 بازگشت'),
                 ])),
             ]

@@ -21,6 +21,7 @@ $suites = [
     ['امنیت پرداخت',          $root . '/tests/payment_security_test.php', false],
     ['جریان‌های چندمرحله‌ای',  $root . '/tests/state_flow_test.php', false],
     ['ساختار کیبورد',         $root . '/tests/keyboard_test.php',   false],
+    ['ناوبری و دکمه‌های مرده', $root . '/tests/navigation_test.php', false],
     ['تقسیم پیام بلند',       $root . '/tests/message_split_test.php', false],
     ['منطق خرید و اجرا',      $root . '/tests/shop_test.php',      false],
     ['پنل‌های نمایندگی',       $root . '/tests/panel_test.php',     false],

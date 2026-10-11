@@ -213,6 +213,10 @@ final class AdminController
                 }
                 break;
 
+            case 'admin.settings.panel.owner.test':
+                (new PasarguardSettings($this->bot))->testOwnerConnection($chatId);
+                break;
+
             case 'admin.settings.panel.role':
                 (new PasarguardSettings($this->bot))->setRepRole($chatId);
                 $this->sessions->set($update->userId(), ['step' => 'admin_rep_role']);
@@ -318,7 +322,7 @@ final class AdminController
                 break;
 
             case 'admin.coupon.delete':
-                $this->deleteCoupon($chatId, (int) ($data['id'] ?? 0));
+                $this->deleteCoupon($chatId, (int) ($data['id'] ?? 0), ($data['step'] ?? null) === 'yes');
                 break;
 
             // ---------------- تیکت پشتیبانی ----------------
@@ -1071,15 +1075,23 @@ final class AdminController
 
         $nav = [];
         if ($page > 0) {
-            $nav[] = ['text' => '◀️', 'data' => BotApi::encodeData('admin.packages', ['page' => $page - 1])];
+            $prefix = $onlyActive ? 'admin.packages.active' : 'admin.packages';
+            $nav[] = ['text' => '◀️', 'data' => BotApi::encodeData($prefix, ['page' => $page - 1])];
         }
         if ($page < $totalPages - 1) {
-            $nav[] = ['text' => '▶️', 'data' => BotApi::encodeData('admin.packages', ['page' => $page + 1])];
+            $prefix = $onlyActive ? 'admin.packages.active' : 'admin.packages';
+            $nav[] = ['text' => '▶️', 'data' => BotApi::encodeData($prefix, ['page' => $page + 1])];
         }
         if ($nav !== []) {
             $keyboard[] = $nav;
         }
 
+        // فیلتر «فقط فعال‌ها» — مسیرش در `route()` بود ولی هیچ دکمه‌ای
+        // آن را صدا نمی‌زد، پس مدیر نمی‌توانست بسته‌های غیرفعال را پنهان کند.
+        $keyboard[] = [[
+            'text' => $onlyActive ? '👁️ نمایش همه' : '🟢 فقط فعال‌ها',
+            'data' => BotApi::encodeData($onlyActive ? 'admin.packages' : 'admin.packages.active'),
+        ]];
         $keyboard[] = [['text' => '➕ بستهٔ جدید', 'data' => BotApi::encodeData('admin.pkg.new')]];
         $keyboard[] = Keyboard::back('admin.home', '🛠 پنل مدیریت');
 
@@ -2754,6 +2766,13 @@ final class AdminController
                 'text' => ($active ? '🔴 خاموش ' : '🟢 روشن ') . Str::truncate((string) $coupon['code'], 16),
                 'data' => BotApi::encodeData('admin.coupon.toggle', ['id' => (int) $coupon['id']]),
             ]];
+
+            // 🗑 قبلاً مسیر حذف در `route()` بود ولی هیچ دکمه‌ای آن را صدا
+            // نمی‌زد؛ کدهای تخفیف عملاً غیرقابل حذف بودند.
+            $keyboard[] = [[
+                'text' => '🗑 حذف ' . Str::truncate((string) $coupon['code'], 16),
+                'data' => BotApi::encodeData('admin.coupon.delete', ['id' => (int) $coupon['id'], 'step' => 'confirm']),
+            ]];
         }
 
         $keyboard[] = [['text' => '➕ کد تخفیف جدید', 'data' => BotApi::encodeData('admin.coupon.new')]];
@@ -2893,8 +2912,42 @@ final class AdminController
         $this->showCoupons($chatId);
     }
 
-    private function deleteCoupon(int $chatId, int $couponId): void
+    /**
+     * 🗑 حذف کد تخفیف — با تأیید دو مرحله‌ای.
+     *
+     * حذف بازگشت‌پذیر نیست، پس اول فقط «مطمئنی؟» می‌پرسد و تنها با
+     * `step = 'yes'` واقعاً حذف می‌کند. قبلاً این متد بلافاصله حذف می‌کرد.
+     */
+    private function deleteCoupon(int $chatId, int $couponId, bool $confirmed = false): void
     {
+        if (!$confirmed) {
+            $coupon = $this->coupons()->find($couponId);
+
+            if ($coupon === null) {
+                $this->bot->sendMessage($chatId, Text::notFound());
+                return;
+            }
+
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '⚠️ <b>حذف کد تخفیف</b>',
+                '',
+                'کد <code>' . Str::escape((string) $coupon['code']) . '</code> '
+                    . 'برای همیشه حذف می‌شود.',
+                '',
+                'این کار قابل بازگشت نیست. مطمئن هستید؟',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    [
+                        'text' => '✅ بله، حذف کن',
+                        'data' => BotApi::encodeData('admin.coupon.delete', ['id' => $couponId, 'step' => 'yes']),
+                    ],
+                    [['text' => '❌ انصراف', 'data' => BotApi::encodeData('admin.coupons')]],
+                ])),
+            ]);
+
+            return;
+        }
+
         $this->coupons()->delete($couponId);
         $this->bot->sendMessage($chatId, '🗑️ کد حذف شد.');
         $this->showCoupons($chatId);

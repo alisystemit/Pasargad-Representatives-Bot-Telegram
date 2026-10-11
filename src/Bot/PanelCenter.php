@@ -117,13 +117,16 @@ final class PanelCenter
                 '🛒💎 برای شروع، یک بستهٔ «🖥️ پنل نمایندگی 🌟» بخرید تا حساب اپراتور شما ساخته شود! 🎁🚀',
                 '',
                 'اگر از قبل پنل دارید و فقط می‌خواهید آن را به ربات وصل کنید، '
-                    . 'از دکمهٔ «🔗 من پنل دارم» استفاده کنید! 🔌👇',
+                    . 'از دکمهٔ «🔗 من پنل دارم» استفاده کنید! 🔌👇 '
+                    . 'اگر پنل روی دامنهٔ خودتان نصب است، «➕ اتصال پنل جدید» را بزنید '
+                    . 'تا آدرس پنل، نام کاربری و رمز (یا کلید API) را بپرسد. 🔑',
             ]), [
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                     [
                         ['text' => '🛒 خرید پنل نمایندگی', 'data' => BotApi::encodeData('shop', ['kind' => 'agency'])],
                     ],
                     [['text' => '🔗 من پنل دارم', 'data' => BotApi::encodeData('panel.self')]],
+                    [['text' => '➕ اتصال پنل جدید (آدرس + رمز یا کلید API)', 'data' => BotApi::encodeData('panel.connect')]],
                     Keyboard::back('menu'),
                 ])),
             ]);
@@ -182,6 +185,13 @@ final class PanelCenter
         $keyboard[] = [[
             'text' => '🔗 من پنل دارم',
             'data' => BotApi::encodeData('panel.self'),
+        ]];
+        // مسیر کامل‌تر: آدرس پنل + نام کاربری + رمز یا کلید API. وقتی پنل روی
+        // دامنهٔ خودِ نماینده نصب است، «من پنل دارم» کافی نیست چون فقط روی
+        // پنل پیش‌فرض کار می‌کند.
+        $keyboard[] = [[
+            'text' => '➕ اتصال پنل جدید (آدرس + رمز یا کلید API)',
+            'data' => BotApi::encodeData('panel.connect'),
         ]];
         $keyboard[] = Keyboard::back('menu');
 
@@ -596,12 +606,24 @@ final class PanelCenter
             $lines[] = '   📅 ' . Str::date((int) $config['expire_at']);
             $lines[] = '';
 
+            $configId = (int) $config['id'];
+            $row      = [];
+
             if ($status === TestConfigRepository::STATUS_ACTIVE) {
-                $keyboard[] = [[
+                $row[] = [
                     'text' => '⛔️ غیرفعال کردن ' . Str::truncate((string) $config['panel_username'], 18),
-                    'data' => BotApi::encodeData('panel.test.off', ['id' => (int) $config['id']]),
-                ]];
+                    'data' => BotApi::encodeData('panel.test.off', ['id' => $configId]),
+                ];
             }
+
+            // 🗑 صفحهٔ «حذف خودکار» قبلاً در Kernel مسیر داشت ولی هیچ دکمه‌ای
+            // آن را صدا نمی‌زد، پس قابلیت کاملاً غیرقابل‌دسترس بود.
+            $row[] = [
+                'text' => '🗑 حذف خودکار ' . Str::truncate((string) $config['panel_username'], 18),
+                'data' => BotApi::encodeData('panel.test.autodelete.show', ['id' => $configId]),
+            ];
+
+            $keyboard[] = $row;
         }
 
         $keyboard[] = Keyboard::back('panel.list', '🖥 بازگشت به پنل‌ها');

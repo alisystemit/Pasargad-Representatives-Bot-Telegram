@@ -88,6 +88,7 @@ final class UserSettings
 
         $keyboard = [
             [['text' => '🖥️ پنل‌های من', 'data' => BotApi::encodeData('panel.list')]],
+            [['text' => '➕ اتصال پنل جدید (آدرس + رمز یا کلید API)', 'data' => BotApi::encodeData('panel.connect')]],
             [['text' => '🎟️ کد تخفیف من', 'data' => BotApi::encodeData('coupon.apply')]],
             [['text' => '👤 حساب من', 'data' => BotApi::encodeData('user.account')]],
             [['text' => '🔐 تنظیمات مدیریتی', 'data' => BotApi::encodeData('settings.global')]],
