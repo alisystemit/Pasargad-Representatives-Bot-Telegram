@@ -33,6 +33,7 @@ $suites = [
     ['bind پارامترهای کوئری',  $root . '/tests/db_binding_test.php',      false],
     ['مشتریِ سمج و ادمین',    $root . '/tests/hostile_customer_test.php', false],
     ['اتصال پنل با کلید (وب‌اپ)', $root . '/tests/webapp_link_key_test.php', false],
+    ['گزارش خطای داخلی',   $root . '/tests/error_report_test.php',   false],
     ['لایهٔ همگام‌سازی پنل',   $root . '/tests/panel_sync_manager_test.php', false],
     ['مایگریشن',               $root . '/tests/migrator_test.php',   false],
     ['پنل متصل و کلید API',     $root . '/tests/panel_access_test.php', false],

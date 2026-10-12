@@ -19,6 +19,7 @@ use Pasargad\Store\TicketRepository;
 use Pasargad\Store\TestConfigRepository;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
+use Pasargad\Support\ErrorHandler;
 use Pasargad\Support\Invoice;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
@@ -381,9 +382,12 @@ final class Kernel
 
             $this->safeReply($chatId, '⚠️🔗 ارتباط با پنل برقرار نشد: ' . $e->getMessage());
         } catch (\Throwable $e) {
+            $stage = $this->stageOf($update);
+
             Logger::error('Update handling failed', [
                 'user_id' => $userId,
                 'update'  => $update->updateId(),
+                'stage'   => $stage,
                 'error'   => $e->getMessage(),
                 'file'    => $e->getFile() . ':' . $e->getLine(),
             ]);
@@ -402,7 +406,26 @@ final class Kernel
                 (array) $update->raw()
             );
 
-            $this->safeReply($chatId, '⚠️🔧 خطایی رخ داد! 😔 لطفاً دوباره تلاش کنید. 🙏');
+            // ⭐️ گزارشِ کامل: بخش + ورودی + علت + فایل:خط.
+            //
+            // «خطایی رخ داد» برای کاربری که باید کپی کند و بفرستد **بی‌فایده** است:
+            // نه می‌گوید کجا شکسته، نه چه ورودی‌ای بوده. ساختنِ این متن خودش هم
+            // ممکن است خطا بدهد (لاگ، escape، …) پس کل مسیر در یک `try` است تا
+            // خرابیِ گزارش‌دهنده، خودِ خطای اصلی را پنهان نکند.
+            try {
+                $this->safeReply($chatId, ErrorHandler::diagnostic(
+                    $e,
+                    $stage,
+                    trim($update->text()) !== '' ? $update->text() : $stage,
+                    ['user_id' => $userId, 'update_id' => $update->updateId()]
+                ));
+            } catch (\Throwable $reportFailure) {
+                Logger::error('Error report itself failed', [
+                    'error' => $reportFailure->getMessage(),
+                ]);
+
+                $this->safeReply($chatId, '⚠️🔧 خطایی رخ داد! 😔 لطفاً دوباره تلاش کنید. 🙏');
+            }
         }
     }
 
@@ -565,6 +588,51 @@ final class Kernel
         }
 
         return max(0, min(999, (int) $digits));
+    }
+
+    /**
+     * نامِ فارسیِ بخشی که آپدیت در آن شکست خورده.
+     *
+     * ⭐️ بدون این، گزارشِ خطا می‌گوید «در Kernel.php:412 خطا شد» ولی نمی‌گوید
+     * **کدام** کاربر داشت چه می‌کرد. برای کاربری که دارد پیام را برای ما کپی
+     * می‌کند، «دکمهٔ pay» ده برابر مفیدتر از یک شمارهٔ خط است.
+     *
+     * برای دکمه‌ها **نامِ فنیِ همان `callback_data`** را می‌دهیم چون دقیقاً همان
+     * چیزی است که باید در کد جست‌وجو شود.
+     */
+    private function stageOf(Update $update): string
+    {
+        if ($update->isCallbackQuery()) {
+            $ns = '';
+
+            if (($update->callbackPayload()['n'] ?? '') !== '') {
+                $ns = 'دکمهٔ ' . (string) $update->callbackPayload()['n'];
+            }
+
+            return $ns !== '' ? $ns : 'دکمه (بدون نام)';
+        }
+
+        if ($update->hasPhoto()) {
+            return 'ارسال رسید (عکس)';
+        }
+
+        if ($update->hasDocument()) {
+            return 'ارسال فایل';
+        }
+
+        if ($update->isCommand()) {
+            return 'دستور /' . $update->command();
+        }
+
+        if (trim($update->text()) !== '') {
+            return 'پیام متنی';
+        }
+
+        if (trim((string) ($update->contactPhone() ?? '')) !== '') {
+            return 'ارسال مخاطب';
+        }
+
+        return 'آپدیت ناشناخته';
     }
 
     private function handleChannelGate(Update $update, int $chatId): void
@@ -2246,6 +2314,16 @@ final class Kernel
         try {
             $txns = $this->users->walletHistory((int) $fresh['id'], 10);
         } catch (\Throwable $e) {
+            // ⚠️ این catch عمداً «بی‌صدا» بود و همین بد بود: تاریخچهٔ کیف پول
+            // خالی نشان داده می‌شد و هیچ‌کس نمی‌فهمید چرا — نه کاربر، نه ما.
+            // یک خطای خواندنِ تاریخچه، نمایشِ حساب را کامل از کار می‌اندازد.
+            // پس حداقل لاگ می‌شود و کاربر هم می‌فهمد بخشی از صفحه ناقص است.
+            Logger::warning('Wallet history unavailable on account page', [
+                'user_id' => (int) $fresh['id'],
+                'error'   => $e->getMessage(),
+                'at'      => basename($e->getFile()) . ':' . (int) $e->getLine(),
+            ]);
+
             $txns = [];
         }
 
@@ -2336,6 +2414,14 @@ final class Kernel
         try {
             $payments = $this->orders->paymentsForUser((int) $user['id'], 20);
         } catch (\Throwable $e) {
+            // مثلِ بالا: خالی‌کردنِ بی‌صدا یعنی «تاریخچه نداری» نمایش داده می‌شد
+            // در حالی که واقعاً مشکل فنی بود.
+            Logger::warning('Payment history unavailable', [
+                'user_id' => (int) $user['id'],
+                'error'   => $e->getMessage(),
+                'at'      => basename($e->getFile()) . ':' . (int) $e->getLine(),
+            ]);
+
             $payments = [];
         }
 

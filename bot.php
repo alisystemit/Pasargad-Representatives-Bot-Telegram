@@ -13,9 +13,11 @@ require_once __DIR__ . '/bootstrap.php';
 
 use Pasargad\Bot\Kernel;
 use Pasargad\Support\Config;
+use Pasargad\Support\ErrorHandler;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Migrator;
 use Pasargad\Support\Db;
+use Pasargad\Telegram\BotApi;
 use Pasargad\Telegram\Update;
 
 // جلوگیری از اجرای بی‌مورد روی درخواست GET (تست سلامت)
@@ -104,6 +106,27 @@ try {
         'file'  => $e->getFile() . ':' . $e->getLine(),
         'trace' => array_slice(explode("\n", $e->getTraceAsString()), 0, 5),
     ]);
+
+    // ⭐️ این catch برای خطاهایی است که **قبل** از رسیدن به `Kernel::handle`
+    // رخ می‌دهند: مهاجرتِ دیتابیس، ساختِ کلاینت، بررسی بودجه. یعنی دقیقاً
+    // جاهایی که قبلاً فقط لاگ می‌دیدند و کاربر **هیچ چیز** نمی‌دید — سکوتِ
+    // مطلق، بدترین حالت برای کسی که منتظرِ جواب است.
+    //
+    // پس همین‌جا هم گزارشِ کامل فرستاده می‌شود. این‌که خودِ مسیر گزارش هم
+    // خراب شود نباید جلوی پاسخِ ۲۰۰ را بگیرد، پس کلش در یک `try` دیگر است.
+    try {
+        $u = new Update(is_array($update) ? $update : []);
+        $chatId = $u->chatId();
+
+        if ($chatId > 0) {
+            (new BotApi(Config::str('bot_token')))->sendMessage(
+                $chatId,
+                ErrorHandler::diagnostic($e, 'راه‌اندازی وبهوک', $u->text())
+            );
+        }
+    } catch (Throwable $ignored) {
+        // ارسالِ گزارش هرگز نباید خودش خطا بدارد.
+    }
 
     // پاسخ 200 تا تلگرام retry نکند؛ خطا در لاگ ثبت شده است.
     echo json_encode(['ok' => true]);

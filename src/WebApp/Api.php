@@ -32,6 +32,7 @@ use Pasargad\Store\TestConfigService;
 use Pasargad\Store\TicketRepository;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
+use Pasargad\Support\ErrorHandler;
 use Pasargad\Support\Invoice;
 use Pasargad\Support\Logger;
 use Pasargad\Support\Str;
@@ -341,7 +342,35 @@ final class Api
                 'file'    => $e->getFile() . ':' . $e->getLine(),
             ]);
 
-            return ['ok' => false, 'message' => 'خطای داخلی رخ داد. لطفاً دوباره تلاش کنید.'];
+            // ⭐️ همان گزارشِ ربات، با همان سطح از جزئیات.
+            //
+            // «خطای داخلی رخ داد» در وب‌اپ از «خطایی رخ داد» در ربات هم بدتر است:
+            // کاربر پیام را می‌بیند، می‌بندد و هرگز نمی‌فهمد چه شد. اینجا که پیام
+            // در یک پاسخِ JSON برمی‌گردد، می‌شود دقیقاً گفت **کدام اکشن** و **کجا**
+            // شکست خورد.
+            //
+            // `diagnostic()` خودش لاگ می‌کند و هرگز استثنا نمی‌دهد، ولی کلِ ساختِ
+            // پاسخ در یک `try` است تا خرابیِ گزارش‌دهنده هم خطای تازه نسازد.
+            try {
+                $input = $input === [] ? '' : (string) json_encode($input, JSON_UNESCAPED_UNICODE);
+
+                return [
+                    'ok'        => false,
+                    'action'    => $action,
+                    'message'   => ErrorHandler::diagnostic(
+                        $e,
+                        'وب‌اپ ← ' . $action,
+                        $input,
+                        ['user_id' => $this->telegramId]
+                    ),
+                    'error'     => ErrorHandler::sanitize($e->getMessage()),
+                    'at'        => basename($e->getFile()) . ':' . (int) $e->getLine(),
+                ];
+            } catch (\Throwable $reportFailure) {
+                Logger::error('WebApp error report failed', ['error' => $reportFailure->getMessage()]);
+
+                return ['ok' => false, 'message' => 'خطای داخلی رخ داد. لطفاً دوباره تلاش کنید.'];
+            }
         }
 
         return is_array($result) ? $result + ['ok' => true] : ['ok' => true];
