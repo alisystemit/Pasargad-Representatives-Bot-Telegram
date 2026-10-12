@@ -375,7 +375,9 @@ final class Api
             'panel.detail'   => $this->panelDetail($this->intInput($input, 'id')),
             'panel.sync'     => $this->panelSync($this->intInput($input, 'id')),
             'panel.stats'    => $this->panelStats($this->intInput($input, 'id'), $this->boolInput($input, 'force')),
-            'panel.link'     => $this->panelLink((string) ($input['username'] ?? ''), (string) ($input['password'] ?? '')),
+            // ⚠️ فقط کلید API — درست مثل ربات. قبلاً اینجا نام کاربری + رمز می‌خواست در
+    // حالی که ربات فقط کلید می‌گیرد؛ دو قرارداد برای یک کار.
+'panel.link'     => $this->panelLink((string) ($input['api_key'] ?? '')),
             'panel.subscribe' => $this->panelSubscribe($this->intInput($input, 'id')),
             'panel.users'    => $this->panelUsersPreview($this->intInput($input, 'id'), $this->intInput($input, 'limit')),
 
@@ -888,25 +890,30 @@ final class Api
     }
 
     /**
-     * ثبت پنل موجود («من پنل دارم»).
+     * ثبت پنل موجود («من پنل دارم») — فقط با **کلید API**.
      *
-     * همان دو مرحلهٔ ربات، اما در یک فرم: نام کاربری + رمز. اعتبارسنجی رمز با
-     * همان کلاینت پنل انجام می‌شود و قفل ضد brute-force هم اعمال می‌شود —
-     * بدون آن، هر کسی می‌توانست رمزها را روی پنل اصلی حدس بزند.
+     * ⚠️ این متد قبلاً نام کاربری + رمز عبور می‌گرفت، در حالی که ربات مدت‌ها
+     * بود که فقط کلید می‌گیرد. یعنی دو رابط برای **یک کار**، با دو قراردادِ
+     * متفاوت — و کاربری که در ربات با کلید وصل شده بود، در وب‌اپ مجبور می‌شد
+     * رمزِ عبوری را پیدا کند که شاید اصلاً نداشته باشد.
+     *
+     * همان قواعدی که ربات رعایت می‌کند، اینجا هم:
+     *
+     *   ۱) **تست قبل از ذخیره.** تا وقتی کلید واقعاً تأیید نشده، چیزی نوشته
+     *      نمی‌شود — وگرنه پنل‌های خراب در فهرستِ نماینده جمع می‌شدند.
+     *   ۲) **نامِ واقعی ادمین از خودِ پنل** (`GET /api/admin`) خوانده می‌شود،
+     *      نه از روی کلید ساخته می‌شود؛ خیلی قابل‌شناسایی‌تر است.
+     *   ۳) **مالکیت ربوده نمی‌شود.** پنلِ وصل‌شده به حسابِ دیگری رد می‌شود.
+     *   ۴) **قفل ضد حدس** — کلید هم رمز است و باید همان محافظت را داشته باشد.
      *
      * @return array<string, mixed>
      */
-    private function panelLink(string $username, string $password): array
+    private function panelLink(string $apiKey): array
     {
-        $username = trim($username);
-        $password = (string) $password;
+        $apiKey = trim($apiKey);
 
-        if (!Str::isValidPanelUsername($username)) {
-            return ['ok' => false, 'message' => 'نام کاربری پنل معتبر نیست.'];
-        }
-
-        if ($password === '' || mb_strlen($password) > 128) {
-            return ['ok' => false, 'message' => 'رمز عبور را وارد کنید.'];
+        if ($apiKey === '' || mb_strlen($apiKey) > 256) {
+            return ['ok' => false, 'message' => 'کلید API را وارد کنید.'];
         }
 
         $security = $this->security;
@@ -918,39 +925,60 @@ final class Api
             return ['ok' => false, 'message' => 'تلاش‌های ناموفق زیاد بود. ' . Str::faNumber($minutes) . ' دقیقه دیگر تلاش کنید.'];
         }
 
-        $existing = $this->panels->findByPanelUsername($username);
-
-        if ($existing !== null && (int) $existing['user_id'] !== $this->userId()) {
-            return ['ok' => false, 'message' => 'این پنل قبلاً به حساب دیگری وصل شده است. اگر اشتباه است با پشتیبانی تماس بگیرید.'];
-        }
-
         try {
-            $admin = $this->requirePanelClient()->getAdmin($username, $username, $password);
+            $admin = $this->requirePanelClient()->getAdminWithApiKey($apiKey);
         } catch (PanelException $e) {
-            $max = max(1, $this->settings->int(Settings::LOGIN_MAX_ATTEMPTS, 5));
+            $max  = max(1, $this->settings->int(Settings::LOGIN_MAX_ATTEMPTS, 5));
             $lock = max(60, $this->settings->int(Settings::LOGIN_LOCK_MINUTES, 15) * 60);
 
             $failure = $security->recordFailure($this->telegramId, $kind, $max, $lock);
 
             if ($failure['locked']) {
-                return ['ok' => false, 'message' => 'تلاش‌های ناموفق زیاد بود؛ ورود موقتاً قفل شد.'];
+                return ['ok' => false, 'message' => 'تلاش‌های ناموفق زیاد بود؛ اتصال موقتاً قفل شد.'];
             }
 
-            return ['ok' => false, 'message' => 'ورود ناموفق بود: ' . $e->getMessage()];
+            // ⭐️ خطای احراز هویت جدا گفته می‌شود چون فرقِ «کلید اشتباه است» با
+            // «پنل در دسترس نیست» برای کاربر کاملاً متفاوت است — و بدون این
+            // تفکیک، کاربر کلیدِ درستش را می‌بیند که «ناموفق» برگشته و فکر
+            // می‌کند کلیدش خراب است.
+            return ['ok' => false, 'message' => $e->isAuthError()
+                ? 'کلید API معتبر نیست یا منقضی شده است.'
+                : 'اتصال به پنل برقرار نشد: ' . $this->stripEmoji($e->getMessage())];
         } catch (\Throwable $e) {
             return ['ok' => false, 'message' => 'خطای غیرمنتظره هنگام بررسی پنل.'];
         }
 
         $security->clear($this->telegramId, $kind);
 
+        // نامِ واقعی را پنل خودش می‌گوید. اگر جواب نداد، یک شناسهٔ پایدار از روی
+        // خودِ کلید ساخته می‌شود تا اتصالِ بعدی همان پنل را بشناسد (وگرنه هر بار
+        // یک ردیفِ تازه ساخته می‌شد و پنل‌های تکراری جمع می‌شدند).
+        $username = trim((string) ($admin['username'] ?? ''));
+
+        if ($username === '') {
+            $username = 'apikey-' . substr(hash('sha256', $apiKey), 0, 12);
+        }
+
+        $existing = $this->panels->findByPanelUsername($username);
+
+        if ($existing !== null && (int) $existing['user_id'] !== $this->userId()) {
+            return ['ok' => false, 'message' => 'این پنل قبلاً به حساب دیگری وصل شده است. اگر اشتباه است با پشتیبانی تماس بگیرید.'];
+        }
+
         $wasKnown = $existing !== null;
 
+        // ⚠️ رمز عبور **خالی** ثبت می‌شود و کلید در ستونِ `api_key` می‌نشیند؛
+        // رمزنگاریِ هر دو را `PanelRepository` انجام می‌دهد.
+        //
+        // `base_url` عمداً نوشته نمی‌شود (NULL) ⇒ این پنل از `panel.base_url`
+        // سراسری استفاده می‌کند، درست مثل پنل‌هایی که ربات می‌سازد.
         $panelId = $this->panels->upsertFromPanel(
             $this->userId(),
             $username,
-            $password,
+            '',
             $admin,
-            $wasKnown ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF
+            $wasKnown ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
+            ['api_key' => $apiKey]
         );
 
         $panel = $this->panels->find($panelId);
@@ -961,9 +989,9 @@ final class Api
 
         return [
             'message' => $wasKnown
-                ? 'اطلاعات پنل شما به‌روزرسانی شد.'
+                ? 'اتصال پنل به‌روزرسانی شد.'
                 : 'پنل شما با موفقیت به ربات اضافه شد.',
-            'panel'   => View::panelDetail($panel, $this->panels->plainPassword($panel), $this->graceDays()),
+            'panel'   => View::panelDetail($panel, '', $this->graceDays()),
         ];
     }
 

@@ -525,8 +525,11 @@ views.panels = async (root) => {
         return;
     }
 
-    root.innerHTML = `
-        <div class="notice notice-info"><div>برای دیدن رمز پنل، روی هر پنل بزنید. همه‌چیز رمزنگاری‌شده ذخیره می‌شود.</div></div>
+    // ⭐️ این جمله قبلاً می‌گفت «برای دیدن رمز پنل…» — ولی پنلی که با **کلید API**
+        // وصل شده رمزی ندارد. نمایشِ آن جمله برای چنین کاربری یعنی دنبالِ رمزی
+        // می‌گردد که هرگز وجود نداشته و فکر می‌کند پنلش ناقص است.
+        root.innerHTML = `
+        <div class="notice notice-info"><div>برای دیدن جزئیاتِ هر پنل، روی آن بزنید. همه‌چیز رمزنگاری‌شده ذخیره می‌شود.</div></div>
         <div class="list">${d.items.map(panelCard).join('')}</div>
         <button class="btn btn-ghost mt-8" data-go="link" type="button">🔌 افزودن پنل موجود</button>
     `;
@@ -587,7 +590,12 @@ views.panel = async (root, args) => {
             <div class="kv">
                 ${copyField(p.login_url, '🌐 آدرس ورود')}
                 ${copyField(p.username, '👤 نام کاربری')}
-                ${copyField(p.password, '🔒 رمز عبور')}
+                ${p.password
+                    ? copyField(p.password, '🔒 رمز عبور')
+                    // ⭐️ برای پنل‌هایی که با **کلید API** وصل شده‌اند رمزی وجود ندارد.
+                    // نشان دادنِ «ثبت نشده» کنارِ نام کاربری، کاربر را می‌ترساند که
+                    // پنلش خراب است — در حالی که همه‌چیز درست کار می‌کند.
+                    : '<div class="kv-row"><span>🔑 احراز هویت</span><b class="muted">کلید API</b></div>'}
                 ${p.sub_url ? copyField(p.sub_url, '🔗 لینک اشتراک') : ''}
             </div>
         </section>
@@ -655,42 +663,48 @@ views.link = async (root) => {
     root.innerHTML = `
         <div class="notice notice-warn"><div>
             <b>🔐 اطلاعات شما رمزنگاری می‌شود</b>
-            رمز پنل فقط برای مدیریت پنل خودتان استفاده می‌شود و با کلید اختصاصی
-            رمزنگاری می‌گردد.
+            کلید API فقط برای مدیریت پنل خودتان استفاده می‌شود و پیش از ذخیره
+            رمزنگاری می‌گردد. این ربات هیچ‌وقت رمز عبور پنل شما را نمی‌خواهد.
         </div></div>
 
         <section class="card">
             <div class="field">
-                <label for="pnlUser">نام کاربری پنل</label>
-                <input class="input num" id="pnlUser" placeholder="مثلاً rep_alireza" autocomplete="off" autocapitalize="off">
-            </div>
-            <div class="field">
-                <label for="pnlPass">رمز عبور پنل</label>
-                <input class="input" id="pnlPass" type="password" placeholder="••••••••" autocomplete="new-password">
+                <label for="pnlKey">کلید API پنل</label>
+                <input class="input num" id="pnlKey" placeholder="کلید را از پنل کپی کنید"
+                       autocomplete="off" autocapitalize="off" spellcheck="false">
             </div>
             <button class="btn btn-primary" id="pnlGo" type="button">🔗 اتصال پنل</button>
-            <div class="hint mt-8">پنل باید در حالت فعال باشد و حساب ادمین (اپراتور) داشته باشد.</div>
+            <div class="hint mt-8">
+                کلید را از بخش «API Keys» پنل خودتان بسازید و اینجا بچسبانید.
+                پنل باید فعال باشد و کلید، دسترسی لازم را داشته باشد.
+            </div>
         </section>
     `;
 
     const go = document.getElementById('pnlGo');
+    const field = document.getElementById('pnlKey');
 
     go.addEventListener('click', () => run(go, async () => {
-        const username = document.getElementById('pnlUser').value.trim();
-        const password = document.getElementById('pnlPass').value;
+        const apiKey = field.value.trim();
 
-        if (!username || !password) {
-            toast('نام کاربری و رمز را وارد کنید.', 'bad');
+        if (!apiKey) {
+            toast('کلید API را وارد کنید.', 'bad');
             return;
         }
 
-        const res = await api('panel.link', { username, password });
+        const res = await api('panel.link', { api_key: apiKey });
 
-        document.getElementById('pnlPass').value = '';
+        // ⭐️ فیلد **قبل** از هر کار دیگری پاک می‌شود، حتی اگر درخواست خطا بدهد.
+        // کلید یک راز است و نباید در فرم بماند و با یک اسکرین‌شاتِ دیگر لو برود.
+        field.value = '';
         toast(res.message || 'پنل متصل شد.', 'ok');
         go('panels');
-    }).catch((e) => toast(e.message, 'bad')));
+    }).catch((e) => {
+        field.value = '';
+        toast(e.message, 'bad');
+    }));
 };
+
 
 /* ── فروشگاه ── */
 views.shop = async (root, args) => {
