@@ -440,7 +440,37 @@ final class Provisioner
         $panelId   = (int) $panel['id'];
         $bytes     = Str::gbToBytes((float) $order['volume_gb'] + (float) ($order['bonus_gb'] ?? 0));
         $days      = (int) $order['duration_days'];
-        $expireAt  = $days > 0 ? time() + $days * 86400 : null;
+
+        // ------------------------------------------------------------------
+        // انقضا افزایشی است، نه «از الان».
+        //
+        // اگر کاربر ۲۰ روز اعتبار دارد و بستهٔ ۳۰ روزه می‌خرد، باید ۵۰ روز
+        // بگیرد؛ قبلاً `time() + 30d` نوشته می‌شد و ۱۰ روز پرداخت‌شده
+        // می‌سوخت. مقدار مطلق یک‌بار محاسبه و در سفارش ذخیره می‌شود تا
+        // تلاش مجدد همان تاریخ را دوباره اضافه نکند.
+        // ------------------------------------------------------------------
+        $hasStoredExpire = array_key_exists('target_expire_at', $order)
+            && $order['target_expire_at'] !== null;
+
+        if ($hasStoredExpire) {
+            $expireAt = (int) $order['target_expire_at'];
+        } elseif ($days > 0) {
+            $currentExpire = (int) ($panel['access_expire_at'] ?? 0);
+            $baseExpire    = max(time(), $currentExpire);
+            $computed      = $baseExpire + $days * 86400;
+
+            if ($this->orders->reserveTargetExpire($orderId, $computed)) {
+                $expireAt = $computed;
+            } else {
+                // پروسهٔ دیگری زودتر مقدار را ثبت کرده؛ همان را بخوان.
+                $fresh = $this->orders->find($orderId);
+                $expireAt = $fresh !== null && $fresh['target_expire_at'] !== null
+                    ? (int) $fresh['target_expire_at']
+                    : $computed;
+            }
+        } else {
+            $expireAt = null;
+        }
 
         if ($bytes <= 0 && $expireAt === null) {
             return $this->failTerminal($orderId, 'invalid_volume', 'حجم یا مدت این سفارش نامعتبر است.');
@@ -465,9 +495,10 @@ final class Provisioner
         // بدهد، تلاش مجدد سقفِ از قبل افزایش‌یافته را می‌خواند و حجم را
         // **دو برابر** اعمال می‌کند.
         // ------------------------------------------------------------------
-        $storedTarget = isset($order['target_limit']) && $order['target_limit'] !== null
-            ? (int) $order['target_limit']
-            : 0;
+        // `target_limit = 0` یک مقدار معتبر است (پنل نامحدود) و با «ثبت‌نشده»
+        // قابل اشتباه نیست؛ پس به‌جای `> 0`، وجودِ NULL بررسی می‌شود.
+        $hasStoredTarget = array_key_exists('target_limit', $order) && $order['target_limit'] !== null;
+        $storedTarget    = $hasStoredTarget ? (int) $order['target_limit'] : 0;
 
         $admin        = $client->getAdminWithApiKey($apiKey);
         $usedTraffic  = (int) ($admin['used_traffic'] ?? 0);
@@ -475,11 +506,16 @@ final class Provisioner
             ? (int) $admin['data_limit']
             : 0;
 
-        $baseLimit = max($currentLimit, $usedTraffic);
-        $newLimit  = $baseLimit + $bytes;
+        // `data_limit = 0` در پنل یعنی نامحدود. قبلاً مقدار نامحدود صفر
+        // تلقی می‌شد و `used + purchased` جای آن نوشته می‌شد؛ یعنی یک پنل
+        // نامحدود با خرید شارژ به پنل محدود تبدیل می‌شد.
+        $isUnlimited = $currentLimit === 0;
 
-        if ($storedTarget > 0) {
-            $baseLimit = max(0, $storedTarget - $bytes);
+        $baseLimit = $isUnlimited ? 0 : max($currentLimit, $usedTraffic);
+        $newLimit  = $isUnlimited ? 0 : $baseLimit + $bytes;
+
+        if ($hasStoredTarget) {
+            $baseLimit = $isUnlimited ? 0 : max(0, $storedTarget - $bytes);
             $newLimit  = $storedTarget;
 
             Logger::info('Reusing previously computed target limit', [

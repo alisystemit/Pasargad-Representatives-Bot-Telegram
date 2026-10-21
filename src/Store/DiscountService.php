@@ -181,9 +181,14 @@ final class DiscountService
 
         // تخفیف معرفی فقط روی **اولین** خرید است، وگرنه یک نفر می‌توانست
         // همیشه با یک معرفی وارد شود و از تخفیف دائمی استفاده کند.
+        //
+        // ⚠️ معیار «خرید» پرداخت واقعی است، نه فقط ساخت سفارش. قبلاً سفارش
+        // `created`/`awaiting_payment` هم تخفیف معرفی را می‌سوزاند؛ حتی اگر
+        // کاربر هرگز پول نمی‌داد.
         $used = (int) $this->dbValue(
             "SELECT COUNT(*) FROM orders
              WHERE user_id = :id AND referred_by IS NOT NULL
+               AND paid_at IS NOT NULL
                AND status NOT IN ('cancelled','rejected','refunded')",
             ['id' => $userId]
         );

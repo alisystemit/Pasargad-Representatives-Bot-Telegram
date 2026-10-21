@@ -399,9 +399,9 @@ echo "\n════════════════════════
 echo "\n  باگ ۱۰: شارژ پنل نامحدود نباید محدودش کند";
 echo "\n════════════════════════════════════════\n";
 
-// پنل نامحدود (data_limit = 0) که ۸۰ گیگ مصرف کرده است. اگر شارژ از
-// صفر شروع کند، سقف جدید ۵۰ گیگ می‌شود که زیر مصرف است و سرویس مشتری
-// نماینده بی‌دلیل قطع می‌شود — در حالی که نماینده پول داده است.
+// پنل نامحدود (data_limit = 0) که ۸۰ گیگ مصرف کرده است. شارژ حجم نباید
+// «نامحدود» را به یک سقف محدود تبدیل کند؛ در PasarGuard صفر یعنی نامحدود،
+// نه «صفر گیگ». تبدیل آن به «مصرف + خرید» عملاً بخشی از سرویس را از بین می‌برد.
 [$user10, $panel10] = makeRep('unlimited_target', $panel, $users, $panels, [
     'data_limit'   => 0,          // نامحدود
     'used_traffic' => 80 * $GB,   // ولی ۸۰ گیگ مصرف کرده
@@ -415,8 +415,8 @@ $res10 = $prov->provision($order10);
 check('شارژ موفق بود', $res10['ok'], (string) $res10['message']);
 
 $newLimit = (int) $panel->admins['unlimited_target']['data_limit'];
-check('سقف جدید بالای مصرف است', $newLimit > 80 * $GB, "new=" . ($newLimit / $GB) . 'GB');
-check('سقف = مصرف + ۱۰ گیگ (بستهٔ شارژ)', $newLimit === 90 * $GB, 'new=' . ($newLimit / $GB) . 'GB');
+check('پنل نامحدود، نامحدود ماند', $newLimit === 0, 'new=' . ($newLimit / $GB) . 'GB');
+check('حجمِ خریداری‌شده به پنل نامحدود تحمیل نشد', $newLimit === 0, 'new=' . ($newLimit / $GB) . 'GB');
 check('پنل محدود نشد (بازگشت به حالت محدود)',
     \Pasargad\Store\PanelRepository::isUsable($panels->find((int) $panel10['id'])));
 

@@ -521,7 +521,7 @@ final class AgencyService
         // یک مرحلهٔ تازه و قابل‌شکست است، پس «ساخت شد ولی بعدش شکست خورد» به
         // مسیری تکرارشونده تبدیل شده که هر بار رمز را خراب می‌کرد.
         if ($recovered) {
-            $existing = $panels->findByPanelUsername($username);
+            $existing = $panels->findByPanelUsername($username, $createdOnBaseUrl);
             $stored   = $existing === null ? '' : $panels->plainPassword($existing);
 
             if ($stored !== '') {
@@ -534,7 +534,15 @@ final class AgencyService
             }
         }
 
-        $panelId = $panels->upsertFromPanel($userId, $username, $password, $admin, PanelRepository::SOURCE_BOT);
+        $panelId = $panels->upsertFromPanel(
+            $userId,
+            $username,
+            $password,
+            $admin,
+            PanelRepository::SOURCE_BOT,
+            [],
+            $createdOnBaseUrl
+        );
 
         $panels->update($panelId, [
             'granted_volume'   => $panelBytes,

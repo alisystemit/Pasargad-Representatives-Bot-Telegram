@@ -89,6 +89,17 @@ final class ReferralRepository
             return ['ok' => false, 'message' => 'شما قبلاً با کد معرفی وارد شده‌اید.'];
         }
 
+        // ثبت معرفی بعد از اولین پرداخت بی‌معناست: تخفیف اولین خرید دیگر
+        // قابل استفاده نیست و فقط پاداش معرف را بی‌دلیل فعال می‌کند.
+        $paid = $this->db->count(
+            'SELECT COUNT(*) FROM orders WHERE user_id = ? AND paid_at IS NOT NULL',
+            [$refereeId]
+        );
+
+        if ($paid > 0) {
+            return ['ok' => false, 'message' => 'بعد از اولین خرید امکان ثبت کد معرفی وجود ندارد.'];
+        }
+
         try {
             $this->db->insert('referrals', [
                 'referrer_user_id' => $referrerId,

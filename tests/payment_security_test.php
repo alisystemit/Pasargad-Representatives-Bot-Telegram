@@ -114,6 +114,7 @@ $order = $orders->create((int) $user['id'], [
 
 $orders->upsertPayment((int) $order['id'], [
     'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 5.00, 'currency' => 'USD',
     'external_id' => 'NP-UNIQ-1', 'status' => 'pending',
 ]);
 
@@ -122,6 +123,8 @@ $payload = [
     'payment_id'     => 'NP-UNIQ-1',
     'order_id'       => (string) $order['code'],
     'payment_status' => 'finished',
+    'price_amount'   => 5.00,
+    'price_currency' => 'usd',
     'pay_amount'     => 5.0,
     'pay_currency'   => 'usd',
     'order_description' => 'Purchase بستهٔ تست',   // فارسی!
@@ -221,7 +224,7 @@ echo "\n════════════════════════
 
 // این دقیقاً شکل واقعی IPN درگاه با pay_currency = btc است:
 // price_amount = مبلغ فاکتور به دلار، pay_amount = مقدار واقعی بیت‌کوین
-$btcUser = makeUser('btc_admin');
+$btcUser = makeUser('btc_admin', ['data_limit' => 50 * $GB, 'used_traffic' => 0]);
 $btcOrder = $orders->create((int) $btcUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
     'kind' => PackageRepository::KIND_TOPUP, 'volume_gb' => 100,
@@ -258,7 +261,7 @@ $btcRow = $orders->find((int) $btcOrder['id']);
 check('سفارش بیت‌کوین paid شد',
     in_array((string) $btcRow['status'], [OrderRepository::STATUS_PAID, OrderRepository::STATUS_APPLIED], true),
     'status=' . $btcRow['status']);
-check('حجم روی پنل اعمال شد', (int) $panel->admins['btc_admin']['data_limit'] === 100 * $GB,
+check('حجم روی پنل اعمال شد', (int) $panel->admins['btc_admin']['data_limit'] === 150 * $GB,
     'limit=' . ((int) $panel->admins['btc_admin']['data_limit'] / $GB) . 'GB');
 
 // ---- نرخ متفاوت بین سفارش و پرداخت نباید رد شود ----
@@ -480,7 +483,7 @@ echo "\n════════════════════════
 // =====================================================================
 
 $replayUser = makeUser('replay_admin');
-$panel->addAdmin('replay_admin', ['data_limit' => 0, 'used_traffic' => 0]);
+$panel->addAdmin('replay_admin', ['data_limit' => 20 * $GB, 'used_traffic' => 5 * $GB]);
 
 $replayOrder = $orders->create((int) $replayUser['id'], [
     'package_id' => $pkgId, 'package_title' => 'بستهٔ تست',
@@ -491,6 +494,7 @@ $replayOrder = $orders->create((int) $replayUser['id'], [
 ]);
 $orders->upsertPayment((int) $replayOrder['id'], [
     'method' => NowPaymentsGateway::NAME, 'amount_toman' => 500000,
+    'amount_usd' => 5.00, 'currency' => 'USD',
     'external_id' => 'NP-REPLAY', 'status' => 'pending',
 ]);
 
@@ -498,6 +502,8 @@ $replayPayload = [
     'payment_id'     => 'NP-REPLAY',
     'order_id'       => (string) $replayOrder['code'],
     'payment_status' => 'finished',
+    'price_amount'   => 5.0,
+    'price_currency' => 'usd',
     'pay_amount'     => 5.0,
     'pay_currency'   => 'usd',
 ];
@@ -507,20 +513,20 @@ $r1 = $payments->handleIpn(json_decode($first['body'], true), $first['headers'],
 check('IPN اول پرداخت کرد', $r1['ok'] ?? false, (string) ($r1['message'] ?? ''));
 
 $limitAfterFirst = (int) $panel->admins['replay_admin']['data_limit'];
-check('حجم اعمال شد', $limitAfterFirst === 50 * $GB, 'limit=' . ($limitAfterFirst / $GB) . 'GB');
+check('حجم اعمال شد', $limitAfterFirst === 70 * $GB, 'limit=' . ($limitAfterFirst / $GB) . 'GB');
 
 // همان IPN دوباره (NOWPayments گاهی تکرار می‌فرستد)
 $second = signedIpn($replayPayload);
 $r2 = $payments->handleIpn(json_decode($second['body'], true), $second['headers'], $second['body']);
 $limitAfterSecond = (int) $panel->admins['replay_admin']['data_limit'];
-check('IPN تکراری حجم را دوباره اضافه نکرد', $limitAfterSecond === 50 * $GB,
+check('IPN تکراری حجم را دوباره اضافه نکرد', $limitAfterSecond === 70 * $GB,
     'limit=' . ($limitAfterSecond / $GB) . 'GB');
 check('پاسخ تکراری بی‌خطا بود', $r2['ok'] ?? false, (string) ($r2['message'] ?? ''));
 
 // سومین بار هم
 $third = signedIpn($replayPayload);
 $payments->handleIpn(json_decode($third['body'], true), $third['headers'], $third['body']);
-check('سومین تکرار هم بی‌اثر بود', (int) $panel->admins['replay_admin']['data_limit'] === 50 * $GB);
+check('سومین تکرار هم بی‌اثر بود', (int) $panel->admins['replay_admin']['data_limit'] === 70 * $GB);
 
 // =====================================================================
 echo "\n════════════════════════════════════════";

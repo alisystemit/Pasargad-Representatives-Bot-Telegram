@@ -109,6 +109,7 @@ $adminId = 999;
 $userId = 1111;
 [$userRow, $userPanel] = makeRep('normaluser', $panel, $users, $panels, [
     'telegram_id' => $userId,
+    'data_limit'  => 30 * 1073741824,
 ]);
 
 // ------------------------------------------------------------------

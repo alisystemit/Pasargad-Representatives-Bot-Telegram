@@ -126,12 +126,51 @@ final class PanelRepository
      *
      * @return array<string, mixed>|null
      */
-    public function findByPanelUsername(string $panelUsername): ?array
+    public function findByPanelUsername(string $panelUsername, ?string $baseUrl = null): ?array
     {
-        return $this->db->first(
-            'SELECT * FROM panels WHERE panel_username = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1',
-            [trim($panelUsername)]
-        );
+        $username = trim($panelUsername);
+
+        if ($username === '') {
+            return null;
+        }
+
+        // سازگاری عقب‌رو: اگر آدرس سرور مشخص نشده باشد، فقط با نام کاربری
+        // جست‌وجو می‌شود (رفتار قبلی). فراخوانی‌هایی که آدرس را می‌دانند آن را
+        // پاس می‌دهند تا دو ادمین هم‌نام روی دو سرور با هم قاطی نشوند.
+        if ($baseUrl === null) {
+            return $this->db->first(
+                'SELECT * FROM panels WHERE panel_username = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1',
+                [$username]
+            );
+        }
+
+        // کلید هویت پنل «نام کاربری + سرور» است، نه فقط نام کاربری.
+        $wanted = $this->normalizeBaseUrl($baseUrl);
+
+        foreach ($this->db->all(
+            'SELECT * FROM panels WHERE panel_username = ? COLLATE NOCASE ORDER BY id ASC',
+            [$username]
+        ) as $row) {
+            if ($this->normalizeBaseUrl(isset($row['base_url']) ? (string) $row['base_url'] : null) === $wanted) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * آدرس پایهٔ مؤثر یک پنل؛ خالی یعنی سراسری.
+     */
+    private function normalizeBaseUrl(?string $baseUrl): string
+    {
+        $base = trim((string) $baseUrl);
+
+        if ($base === '') {
+            $base = \Pasargad\Support\Config::str('panel.base_url', '');
+        }
+
+        return rtrim(trim($base), '/');
     }
 
     /**
@@ -352,9 +391,16 @@ final class PanelRepository
      * @param array<string, mixed> $adminDetails پاسخ پنل
      * @return int شناسهٔ پنل
      */
-    public function upsertFromPanel(int $userId, string $panelUsername, string $password, array $adminDetails, string $source = self::SOURCE_BOT, array $extra = []): int
-    {
-        $existing = $this->findByPanelUsername($panelUsername);
+    public function upsertFromPanel(
+        int $userId,
+        string $panelUsername,
+        string $password,
+        array $adminDetails,
+        string $source = self::SOURCE_BOT,
+        array $extra = [],
+        ?string $baseUrl = null
+    ): int {
+        $existing = $this->findByPanelUsername($panelUsername, $baseUrl);
 
         $payload = [
             'user_id'        => $userId,
@@ -408,7 +454,15 @@ final class PanelRepository
             $payload['users_total'] = max(0, (int) $adminDetails['total_users']);
         }
 
-        $subUrl = self::extractSubUrl($adminDetails);
+        // آدرس پایهٔ همان پنل؛ اگر اتصال جدید است و آدرسش را نمی‌دانیم،
+        // `extractSubUrl` به `panel.base_url` سراسری برمی‌گردد.
+        $effectiveBaseUrl = trim((string) ($baseUrl ?? ''));
+
+        if ($effectiveBaseUrl === '' && $existing !== null) {
+            $effectiveBaseUrl = (string) ($existing['base_url'] ?? '');
+        }
+
+        $subUrl = self::extractSubUrl($adminDetails, $effectiveBaseUrl !== '' ? $effectiveBaseUrl : null);
         if ($subUrl !== null) {
             $payload['sub_url'] = $subUrl;
         }
@@ -468,7 +522,11 @@ final class PanelRepository
             $payload['used_traffic'] = (int) $adminDetails['used_traffic'];
         }
 
-        $subUrl = self::extractSubUrl($adminDetails);
+        $panel = $this->find($panelId);
+        $subUrl = self::extractSubUrl(
+            $adminDetails,
+            $panel !== null ? (string) ($panel['base_url'] ?? '') : null
+        );
         if ($subUrl !== null) {
             $payload['sub_url'] = $subUrl;
         }
@@ -503,10 +561,21 @@ public function addGranted(int $panelId, int $bytes, ?int $expireAt): void
                          WHEN access_expire_at IS NULL OR access_expire_at < :e THEN :e
                          ELSE access_expire_at
                      END,
-                     updated_at       = :now
+                     -- تمدید یعنی چرخهٔ هشدارها باید از نو شروع شود؛ وگرنه
+                     -- پنلی که یک‌بار منقضی شده، پس از تمدید دیگر هیچ اعلان
+                     -- انقضا/ارفاقی دریافت نمی‌کند.
+                     expiry_notified     = 0,
+                     grace_notified      = 0,
+                     cutoff_requested_at = NULL,
+                     updated_at          = :now
                  WHERE id = :id',
                 ['b' => $bytes, 'e' => $expireAt, 'now' => time(), 'id' => $panelId]
             );
+
+            // کلیدهای هشدار قبلی هم پاک شوند تا مقایسهٔ «قبلاً برای این
+            // انقضا فرستاده شده» از کار نیفتد.
+            $this->db->delete('settings', ['key' => 'panelwarn:' . $panelId . ':exp']);
+            $this->db->delete('settings', ['key' => 'panelwarn:' . $panelId . ':grace']);
 
             return;
         }
@@ -787,8 +856,9 @@ public function addGranted(int $panelId, int $bytes, ?int $expireAt): void
      * می‌شود؛ اگر توکن بود با الگوی قابل تنظیم ساخته می‌شود.
      *
      * @param array<string, mixed> $details
+     * @param string|null $baseUrl آدرس اختصاصی همان ردیف پنل؛ null یعنی سراسری
      */
-    public static function extractSubUrl(array $details): ?string
+    public static function extractSubUrl(array $details, ?string $baseUrl = null): ?string
     {
         foreach (['sub_url', 'subscription_url', 'sub_link', 'sub', 'sub_token', 'subscription_token', 'token'] as $key) {
             $value = $details[$key] ?? null;
@@ -806,7 +876,14 @@ public function addGranted(int $panelId, int $bytes, ?int $expireAt): void
             // توکن خام → ساخت لینک با الگوی تنظیمات
             $pattern = \Pasargad\Support\Config::str('panel.sub_url_pattern', '/sub/{token}');
 
-            return rtrim(\Pasargad\Support\Config::str('panel.base_url', ''), '/')
+            // ⚠️ هر ردیف پنل می‌تواند روی دامنهٔ اختصاصی باشد. استفاده از
+            // `panel.base_url` سراسری، لینک اشتراک پنل‌های اختصاصی را به
+            // دامنهٔ اشتباه می‌فرستاد.
+            $resolvedBase = $baseUrl !== null && trim($baseUrl) !== ''
+                ? rtrim(trim($baseUrl), '/')
+                : rtrim(\Pasargad\Support\Config::str('panel.base_url', ''), '/');
+
+            return $resolvedBase
                 . str_replace('{token}', rawurlencode($value), $pattern);
         }
 

@@ -105,6 +105,13 @@ function seedOwner(FakePanelClient $panel, string $username): void
 
 function cb(int $tg, array $payload): Update
 {
+    // این تست ده‌ها کلیک را در کسری از ثانیه شبیه‌سازی می‌کند؛ در دنیای واقعی
+    // این‌ها در چند دقیقه پخش می‌شوند. برای اینکه محافظِ ضداسپمِ واقعی
+    // (که حالا درست کار می‌کند) تست را قطع نکند، پنجره‌اش را قبل از هر کلیک
+    // خالی می‌کنیم.
+    global $db;
+    $db->run('DELETE FROM flood_guard');
+
     return new Update([
         'update_id'      => 1,
         'callback_query' => [
@@ -119,6 +126,9 @@ function cb(int $tg, array $payload): Update
 
 function txt(int $tg, string $text): Update
 {
+    global $db;
+    $db->run('DELETE FROM flood_guard');
+
     return new Update([
         'update_id' => 1,
         'message'   => ['message_id' => 6, 'from' => ['id' => $tg], 'chat' => ['id' => $tg], 'text' => $text],

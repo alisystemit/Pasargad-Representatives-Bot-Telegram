@@ -331,7 +331,10 @@ final class PaymentService
 
         $this->orders->update($orderId, [
             'receipt_file_id'  => $fileId,
-            'receipt_photo_id' => $reference,
+            // ⚠️ قبلاً اینجا `$reference` نوشته می‌شد که هیچ‌کدام از فراخوان‌ها
+            // پرش نمی‌کنند و همیشه NULL بود؛ یعنی ستون هیچ‌وقت پر نمی‌شد.
+            // حالا همان شناسهٔ فایل تصویر رسید در هر دو ستون ثبت می‌شود.
+            'receipt_photo_id' => $fileId,
             'updated_at'       => time(),
         ]);
 
@@ -617,8 +620,9 @@ final class PaymentService
      * کارمزد درگاه و نوسان نرخ بین زمان ثبت سفارش و پرداخت، مبلغ را کمی جابه‌جا
      * می‌کنند. بدون این تلورانس، همهٔ پرداخت‌ها رد می‌شدند.
      *
-     * اگر هیچ مبلغی در payload نباشد، true برگردانده می‌شود تا نسخه‌های قدیمی‌تر
-     * درگاه که مبلغ را نمی‌فرستند همچنان کار کنند (امضا همچنان معتبر است).
+     * اگر مبلغ فاکتور (`price_amount`) در payload نباشد، پرداخت **رد** می‌شود.
+     * قبلاً در آن حالت فقط به امضا تکیه می‌شد و هر بدنهٔ امضاشده — حتی با
+     * مبلغ دستکاری‌شده — بسته را فعال می‌کرد.
      *
      * @param array<string, mixed> $order
      * @param array<string, mixed> $payload
@@ -645,13 +649,14 @@ final class PaymentService
         // ------------------------------------------------------------------
         $invoiceAmount = $payload['price_amount'] ?? null;
 
-        if ($invoiceAmount === null || !is_numeric($invoiceAmount)) {
-            Logger::warning('IPN has no price_amount field, relying on signature only', [
+        if ($invoiceAmount === null || !is_numeric($invoiceAmount) || (float) $invoiceAmount <= 0.0) {
+            Logger::error('IPN rejected: missing or invalid price_amount', [
                 'order_id'   => (int) $order['id'],
                 'payment_id' => $payload['payment_id'] ?? null,
+                'value'      => $invoiceAmount,
             ]);
 
-            return true;
+            return false;
         }
 
         $currency = strtoupper(trim((string) ($payload['price_currency'] ?? 'USD')));
@@ -663,13 +668,23 @@ final class PaymentService
             // نرخ را از همان چیزی می‌گیریم که فاکتور با آن ساخته شد، نه از
             // کانفیگ فعلی — چون ممکن است نرخ بین ثبت سفارش و پرداخت عوض شده
             // باشد و در آن حالت مقایسهٔ ناعادلانه رد می‌شد.
-            $rate = (float) ($paymentRow['amount_usd'] ?? 0) > 0.0
-                ? (float) $paymentRow['amount_usd']
-                : $paid;
+            //
+            // ⚠️ اگر `amount_usd` ثبت نشده باشد، نمی‌توان نرخ را ساخت. قبلاً
+            // به‌جای رد، `rate = paid` گذاشته می‌شد و نسبت همیشه ۱ می‌شد؛
+            // یعنی هر مبلغی «درست» به‌نظر می‌رسید.
+            $billedUsd = (float) ($paymentRow['amount_usd'] ?? 0.0);
 
-            $paidToman = $rate > 0.0
-                ? (int) round($expectedToman * ($paid / $rate))
-                : 0;
+            if ($billedUsd <= 0.0) {
+                Logger::error('IPN rejected: missing amount_usd for non-fiat invoice', [
+                    'order_id'   => (int) $order['id'],
+                    'payment_id' => $payload['payment_id'] ?? null,
+                    'currency'   => $currency,
+                ]);
+
+                return false;
+            }
+
+            $paidToman = (int) round($expectedToman * ($paid / $billedUsd));
         }
 
         $tolerance = (int) ceil($expectedToman * self::IPN_AMOUNT_TOLERANCE);

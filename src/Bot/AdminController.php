@@ -3718,7 +3718,6 @@ final class AdminController
         $keyboard = Keyboard::rows([
             [
                 ['text' => '🔄 بروزرسانی همه', 'data' => BotApi::encodeData('admin.bulk_ops.execute', ['op' => 'sync_all'])],
-                ['text' => '♻️ ریست وضعیت', 'data' => BotApi::encodeData('admin.bulk_ops.execute', ['op' => 'reset_status'])],
             ],
             Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت'),
         ]);
@@ -3730,28 +3729,30 @@ final class AdminController
 
     private function executeBulkOp(int $chatId, string $op): void
     {
-        $labels = [
-            'sync_all'     => '🔄 بروزرسانی همه',
-            'reset_status' => '♻️ ریست وضعیت',
-        ];
+        // ⚠️ هر عملیاتی که اینجا پیاده‌سازی نشده باشد باید صریحاً «انجام نشد»
+        // بگوید. قبلاً شاخهٔ else پیام «انجام شد» می‌فرستاد و ادمین فکر
+        // می‌کرد وضعیت‌ها ریست شده‌اند، در حالی که هیچ تغییری اعمال نشده بود.
+        if ($op !== 'sync_all') {
+            $this->bot->sendMessage(
+                $chatId,
+                '⚠️ این عملیات هنوز پیاده‌سازی نشده است.'
+            );
 
-        $label = $labels[$op] ?? $op;
-
-        $this->bot->sendMessage($chatId, '⏳ در حال اجرای عملیات: ' . $label . '...');
-
-        if ($op === 'sync_all') {
-            $count = 0;
-            $syncer = new PanelSyncer($this->panels, $this->panel());
-
-            foreach ($this->panels->listAll(500, 0) as $panel) {
-                $syncer->syncOne($panel);
-                $count++;
-            }
-
-            $this->bot->sendMessage($chatId, '✅ ' . Str::faNumber($count) . ' پنل بروزرسانی شد.');
-        } else {
-            $this->bot->sendMessage($chatId, '✅ عملیات «' . $label . '» انجام شد.');
+            $this->showBulkOps($chatId);
+            return;
         }
+
+        $this->bot->sendMessage($chatId, '⏳ در حال اجرای عملیات: 🔄 بروزرسانی همه...');
+
+        $count = 0;
+        $syncer = new PanelSyncer($this->panels, $this->panel());
+
+        foreach ($this->panels->listAll(500, 0) as $panel) {
+            $syncer->syncOne($panel);
+            $count++;
+        }
+
+        $this->bot->sendMessage($chatId, '✅ ' . Str::faNumber($count) . ' پنل بروزرسانی شد.');
 
         $this->showBulkOps($chatId);
     }

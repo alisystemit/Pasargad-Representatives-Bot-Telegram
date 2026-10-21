@@ -133,6 +133,55 @@ final class OrderRepository
     }
 
     /**
+     * لغو اتمیک یک سفارش پرداخت‌نشده.
+     *
+     * فقط از `created`/`awaiting_payment` عبور می‌کند؛ اگر هم‌زمان پرداخت
+     * ثبت شده باشد، این UPDATE هیچ ردیفی را عوض نمی‌کند و false برمی‌گردد.
+     */
+    public function cancel(int $orderId, string $reason): bool
+    {
+        return $this->db->run(
+            "UPDATE orders
+             SET status = 'cancelled',
+                 terminal_reason = :r,
+                 next_attempt_at = NULL,
+                 error = :r2,
+                 updated_at = :t
+             WHERE id = :id
+               AND status IN ('created', 'awaiting_payment')",
+            [
+                'r'  => $reason,
+                'r2' => Str::truncate($reason, 500),
+                't'  => time(),
+                'id' => $orderId,
+            ]
+        )->rowCount() > 0;
+    }
+
+    /**
+     * سفارش‌های پرداخت‌نشدهٔ قدیمی برای لغو خودکار.
+     *
+     * سفارش‌هایی که رسید کارت‌به‌کارت دارند کنار گذاشته می‌شوند؛ آن‌ها در
+     * انتظار بررسی ادمین‌اند و لغوشان یعنی از بین بردن رسید کاربر.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function staleUnpaid(int $minutes, int $limit = 50): array
+    {
+        $cutoff = time() - max(1, $minutes) * 60;
+
+        return $this->db->all(
+            "SELECT * FROM orders
+             WHERE status IN ('created', 'awaiting_payment')
+               AND created_at <= :cutoff
+               AND receipt_file_id IS NULL
+             ORDER BY id ASC
+             LIMIT " . max(1, min($limit, 200)),
+            ['cutoff' => $cutoff]
+        );
+    }
+
+    /**
      * انتقال وضعیت سفارش به «در حال اعمال» — تنها دروازهٔ ورود به اجرای بسته.
      *
      * این متد **مرجع نهایی** تصمیم «آیا این سفارش قابل اجرا است؟» است و
@@ -373,6 +422,21 @@ final class OrderRepository
     }
 
     /**
+     * ذخیرهٔ اتمیک تاریخ انقضای هدف برای شارژ/تمدید.
+     *
+     * مثل `reserveTargetLimit()`: اگر قبلاً ثبت شده باشد false برمی‌گرداند تا
+     * تلاش مجدد همان تاریخ را دوباره به اعتبار اضافه نکند.
+     */
+    public function reserveTargetExpire(int $orderId, int $targetExpireAt): bool
+    {
+        return $this->db->run(
+            'UPDATE orders SET target_expire_at = :e, updated_at = :now
+             WHERE id = :id AND target_expire_at IS NULL',
+            ['e' => $targetExpireAt, 'now' => time(), 'id' => $orderId]
+        )->rowCount() > 0;
+    }
+
+    /**
      * علامت‌گذاری اینکه بسته روی پنل (یا اعتبار) اعمال شده است.
      *
      * اگر قبلاً علامت خورده باشد false برمی‌گرداند تا از اجرای دوباره جلوگیری شود.
@@ -484,18 +548,45 @@ final class OrderRepository
      */
     public function upsertPayment(int $orderId, array $data): int
     {
-        $existing = $this->db->first(
-            'SELECT id FROM payments WHERE order_id = ? AND method = ? LIMIT 1',
-            [$orderId, (string) ($data['method'] ?? '')]
-        );
+        $method = (string) ($data['method'] ?? '');
+        $now    = time();
 
-        if ($existing !== null) {
-            $data['updated_at'] = time();
-            $this->db->update('payments', $data, ['id' => (int) $existing['id']]);
-            return (int) $existing['id'];
+        $data['order_id'] = $orderId;
+        $data['method']   = $method;
+        $data['updated_at'] = $now;
+
+        if (!isset($data['created_at'])) {
+            $data['created_at'] = $now;
         }
 
-        return $this->createPayment($orderId, $data);
+        $columns      = array_keys($data);
+        $placeholders = array_map(static fn (string $column): string => ':' . $column, $columns);
+
+        // ستون‌های هویتی و created_at در تعارض دست نمی‌خورند؛ بقیه به‌روز می‌شوند.
+        $updates = [];
+        foreach ($columns as $column) {
+            if (!in_array($column, ['order_id', 'method', 'created_at'], true)) {
+                $updates[] = $column . ' = excluded.' . $column;
+            }
+        }
+
+        $conflict = $updates === []
+            ? 'DO NOTHING'
+            : 'DO UPDATE SET ' . implode(', ', $updates);
+
+        $this->db->run(
+            'INSERT INTO payments (' . implode(', ', $columns) . ')
+             VALUES (' . implode(', ', $placeholders) . ')
+             ON CONFLICT(order_id, method) ' . $conflict,
+            $data
+        );
+
+        $id = $this->db->value(
+            'SELECT id FROM payments WHERE order_id = ? AND method = ? LIMIT 1',
+            [$orderId, $method]
+        );
+
+        return $id !== null ? (int) $id : 0;
     }
 
     /**

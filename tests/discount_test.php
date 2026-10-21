@@ -403,13 +403,13 @@ check('کد تخفیف ثبت نشد', ($refOrder['coupon_code'] ?? null) === nu
 check('پیام پرداخت تخفیف معرفی را گفت',
     str_contains($bot->lastTextFor(7002), 'معرفی'), $bot->lastTextFor(7002));
 
-// سفارش دوم نباید تخفیف معرفی بگیرد
+// سفارش دوم هنوز پرداخت نشده است، پس نباید تخفیف معرفی را «سوزانده» باشد.
 $bot->reset();
 $db->run('DELETE FROM flood_guard');
 $kernel->handle(cb(7002, ['n' => 'pkg.buy', 'id' => $pkgId, 'p' => $refereePanelId]));
 $refOrder2 = $db->first("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 1", [$refereeDbId]);
-check('تخفیف معرفی فقط برای اولین خرید بود',
-    (int) $refOrder2['price_toman'] === $PRICE, (string) $refOrder2['price_toman']);
+check('سفارش پرداخت‌نشده تخفیف معرفی را نسوزاند',
+    (int) $refOrder2['price_toman'] === 850000, (string) $refOrder2['price_toman']);
 
 // =====================================================================
 echo "\n▶ کد تخفیف برنده است بر معرفی\n";
@@ -457,6 +457,14 @@ $db->run(
      WHERE id = :id",
     ['paid' => time(), 'id' => (int) $refOrder['id']]
 );
+
+// پس از پرداختِ اولین سفارش، خرید بعدی دیگر تخفیف معرفی نمی‌گیرد.
+$bot->reset();
+$db->run('DELETE FROM flood_guard');
+$kernel->handle(cb(7002, ['n' => 'pkg.buy', 'id' => $pkgId, 'p' => $refereePanelId]));
+$refOrder3 = $db->first("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 1", [$refereeDbId]);
+check('بعد از پرداخت، خرید بعدی تخفیف معرفی ندارد',
+    (int) $refOrder3['price_toman'] === $PRICE, (string) $refOrder3['price_toman']);
 
 $reward2 = $discount->rewardReferrers($notifier);
 check('بعد از پرداخت، پاداش داده شد', $reward2['rewarded'] >= 1, json_encode($reward2));

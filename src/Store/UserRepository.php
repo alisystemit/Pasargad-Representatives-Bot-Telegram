@@ -118,12 +118,24 @@ final class UserRepository
         );
     }
 
-    public function deductLoyaltyPoints(int $userId, int $points): void
+    /**
+     * کسر امتیاز فقط اگر موجودی کافی باشد (compare-and-swap).
+     *
+     * @return bool false یعنی امتیاز کافی نبود و هیچ تغییری اعمال نشد.
+     */
+    public function deductLoyaltyPoints(int $userId, int $points): bool
     {
-        $this->db->run(
-            'UPDATE users SET loyalty_points = MAX(0, loyalty_points - ?), updated_at = ? WHERE id = ?',
-            [max(0, $points), time(), $userId]
-        );
+        $points = max(0, $points);
+
+        if ($points === 0) {
+            return true;
+        }
+
+        return $this->db->run(
+            'UPDATE users SET loyalty_points = loyalty_points - :p, updated_at = :t
+             WHERE id = :id AND loyalty_points >= :p',
+            ['p' => $points, 't' => time(), 'id' => $userId]
+        )->rowCount() === 1;
     }
 
     public function loyaltyPoints(int $userId): int
@@ -335,22 +347,27 @@ final class UserRepository
 
         $this->db->transaction(function () use ($userId, $amount, $note, $adminId, $kind, &$balance): void {
             $current = $this->walletBalance($userId);
-            $balance = $current + $amount;
 
-            // موجودی منفی نمی‌شود — به‌جای بدهکار کردن، تا صفر کم می‌شود
-            if ($balance < 0) {
-                $amount = -$current;
-                $balance = 0;
-            }
-
+            // ⚠️ کلمپ در خودِ SQL انجام می‌شود (`MAX(0, …)`) تا دو کسرِ هم‌زمان
+            // نتوانند موجودی را منفی کنند. قبلاً مقدار در PHP خوانده و بعد
+            // نوشته می‌شد؛ دو درخواست هم‌زمان هر دو «۵۰» را می‌خواندند و
+            // یکی از کسرها گم می‌شد (Race Condition).
             $this->db->run(
-                'UPDATE users SET wallet_balance = wallet_balance + :a, updated_at = :t WHERE id = :id',
+                'UPDATE users
+                 SET wallet_balance = MAX(0, wallet_balance + :a), updated_at = :t
+                 WHERE id = :id',
                 ['a' => $amount, 't' => time(), 'id' => $userId]
             );
 
+            $balance = $this->walletBalance($userId);
+
+            // مبلغی که واقعاً اعمال شد؛ برای کسرِ ناکافی، کمتر از `$amount`
+            // (یا صفر) است و همان در تاریخچه ثبت می‌شود.
+            $applied = $balance - $current;
+
             $this->db->insert('wallet_txns', [
                 'user_id'    => $userId,
-                'amount'     => $amount,
+                'amount'     => $applied,
                 // ⭐️ این allowlist فقط برای **خواناییِ تاریخچه** است، نه برای امنیت.
 //
 // پیش از این، `referral_level2` در آن نبود و `in_array()` آن را رد می‌کرد و

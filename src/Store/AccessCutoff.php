@@ -220,7 +220,7 @@ final class AccessCutoff
     ): ?array {
         // قبل از عمل، شمارش وضعیت‌ها تا گزارش صادقانه باشد (پنل بدنهٔ شمارشی
         // نمی‌دهد و «غیرفعال شد» بدون عدد یعنی ادعای بی‌سند).
-        $before = $this->countStatuses($client, $authUser, $password);
+        $before = $this->countStatuses($client, $authUser, $password, $username);
 
         try {
             $client->disablePanelUsers($username, $authUser, $password);
@@ -241,7 +241,7 @@ final class AccessCutoff
             return null;
         }
 
-        $after = $this->countStatuses($client, $authUser, $password);
+        $after = $this->countStatuses($client, $authUser, $password, $username);
 
         // اگر شمارش ممکن نشد، عدد را نمی‌سازیم — صادقانه «نامشخص» می‌گوییم.
         if ($before === null || $after === null) {
@@ -255,14 +255,27 @@ final class AccessCutoff
     }
 
     /**
-     * شمارش کاربران فعال/غیرفعال یک پنل با سه درخواست سبک.
+     * شمارش کاربران فعال/غیرفعال یک پنل با دو درخواست سبک.
      *
+     * @param string      $authUser نام کاربری احراز هویت (در حالت کلید API مقدار
+     *                              آن نقشی ندارد چون توکن ثابت است)
+     * @param string|null $admin    نام اپراتوری که کاربرانش شمرده می‌شوند
      * @return array{active:int, off:int}|null
      */
-    private function countStatuses(PasarGuardClient $client, string $username, string $password): ?array
-    {
-        $active = $client->countUsers($username, $password, ['active', 'limited'], $username);
-        $off    = $client->countUsers($username, $password, ['disabled', 'expired', 'on_hold'], $username);
+    private function countStatuses(
+        PasarGuardClient $client,
+        string $authUser,
+        string $password,
+        ?string $admin = null
+    ): ?array {
+        // ⚠️ فیلتر `admin` باید نام اپراتور **هدف** باشد، نه کاربر احراز هویت.
+        // در حالت کلید API، کاربر احراز هویت «api» است و اگر به‌عنوان فیلتر
+        // فرستاده شود، شمارش همیشه صفر برمی‌گردد و گزارش «کاربری غیرفعال نشد»
+        // بی‌دلیل نشان داده می‌شود.
+        $filter = $admin !== null && trim($admin) !== '' ? trim($admin) : null;
+
+        $active = $client->countUsers($authUser, $password, ['active', 'limited'], $filter);
+        $off    = $client->countUsers($authUser, $password, ['disabled', 'expired', 'on_hold'], $filter);
 
         if ($active === null || $off === null) {
             return null;

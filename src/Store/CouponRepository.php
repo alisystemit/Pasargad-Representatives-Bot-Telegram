@@ -159,13 +159,40 @@ final class CouponRepository
             // «ظرفیت تمام شد» یک نتیجهٔ قابل انتظار است، نه استثنا: بین بررسی
             // اولیه و این لحظه ممکن است کاربر دیگری کد را مصرف کرده باشد.
             // استثنا باعث می‌شد کل تراکنشِ ساخت سفارش برگردد.
+            $now = time();
+
+            // سقف `per_user_limit` هم داخل همان UPDATE بررسی می‌شود؛ وگرنه
+            // دو درخواست هم‌زمان هر دو از `quote()` عبور می‌کردند و کد بیش
+            // از سقف هر کاربر مصرف می‌شد. شرط `order_id` هم از ثبت دوبارهٔ
+            // مصرف برای همان سفارش جلوگیری می‌کند.
             $updated = $this->db->run(
                 'UPDATE coupons
                  SET used_count = used_count + 1, updated_at = :t
                  WHERE id = :id
                    AND is_active = 1
-                   AND (max_uses = 0 OR used_count < max_uses)',
-                ['t' => time(), 'id' => $couponId]
+                   AND (expires_at IS NULL OR expires_at > :now)
+                   AND (max_uses = 0 OR used_count < max_uses)
+                   AND (
+                       per_user_limit = 0
+                       OR (
+                           SELECT COUNT(*) FROM coupon_uses
+                           WHERE coupon_id = :id AND user_id = :uid
+                       ) < per_user_limit
+                   )
+                   AND (
+                       :oid = 0
+                       OR NOT EXISTS (
+                           SELECT 1 FROM coupon_uses
+                           WHERE order_id = :oid
+                       )
+                   )',
+                [
+                    't'   => $now,
+                    'now' => $now,
+                    'id'  => $couponId,
+                    'uid' => $userId,
+                    'oid' => $orderId,
+                ]
             )->rowCount();
 
             if ($updated !== 1) {
@@ -185,6 +212,70 @@ final class CouponRepository
         });
 
         return $ok;
+    }
+
+    /**
+     * آزادسازی مصرف کد برای یک سفارش لغوشده/منقضی.
+     *
+     * ردیف `coupon_uses` حذف و `used_count` یک واحد کم می‌شود. اگر کد هنوز
+     * فعال باشد، دوباره روی حساب کاربر گذاشته می‌شود تا لازم نباشد کد را
+     * از حافظه دوباره وارد کند.
+     *
+     * @return array<string, mixed>|null ردیف کد در صورت آزادسازی
+     */
+    public function releaseForOrder(int $orderId): ?array
+    {
+        if ($orderId <= 0) {
+            return null;
+        }
+
+        $coupon = null;
+
+        $this->db->transaction(function () use ($orderId, &$coupon): void {
+            $use = $this->db->first(
+                'SELECT coupon_id, user_id FROM coupon_uses WHERE order_id = ? LIMIT 1',
+                [$orderId]
+            );
+
+            if ($use === null) {
+                return;
+            }
+
+            $deleted = $this->db->run(
+                'DELETE FROM coupon_uses WHERE order_id = ?',
+                [$orderId]
+            )->rowCount();
+
+            if ($deleted <= 0) {
+                return;
+            }
+
+            $this->db->run(
+                'UPDATE coupons
+                 SET used_count = MAX(0, used_count - 1), updated_at = ?
+                 WHERE id = ?',
+                [time(), (int) $use['coupon_id']]
+            );
+
+            $coupon = $this->find((int) $use['coupon_id']);
+
+            if ($coupon === null) {
+                return;
+            }
+
+            $expired = $coupon['expires_at'] !== null && (int) $coupon['expires_at'] <= time();
+
+            if ((int) $coupon['is_active'] === 1 && !$expired) {
+                $this->db->run(
+                    "UPDATE users
+                     SET coupon_code = ?, updated_at = ?
+                     WHERE id = ? AND (coupon_code IS NULL OR coupon_code = '')",
+                    [(string) $coupon['code'], time(), (int) $use['user_id']]
+                );
+            }
+        });
+
+        return $coupon;
     }
 
     /**

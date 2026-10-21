@@ -254,16 +254,34 @@ final class FloodGuard
 
         $key = 'spam:' . $telegramId;
         $now = time();
+        $cutoff = $now - max(1, $windowSec);
 
         try {
-            $row = $this->db->first(
-                'SELECT COUNT(*) AS cnt FROM flood_guard WHERE key = ? AND updated_at >= ?',
-                [$key, $now - $windowSec]
+            // شمارندهٔ واقعی در همان ردیف نگه داشته می‌شود. قبلاً COUNT روی این
+            // جدول key-value انجام می‌شد و چون `key` کلید اصلی است، عدد هرگز
+            // از ۱ بالاتر نمی‌رفت و محدودیت عملاً وجود نداشت.
+            $this->db->run(
+                'INSERT INTO flood_guard (key, hits, window_start, updated_at)
+                 VALUES (:k, 1, :now, :now)
+                 ON CONFLICT(key) DO UPDATE SET
+                     hits = CASE
+                         WHEN flood_guard.window_start <= :cutoff THEN 1
+                         ELSE flood_guard.hits + 1
+                     END,
+                     window_start = CASE
+                         WHEN flood_guard.window_start <= :cutoff THEN :now
+                         ELSE flood_guard.window_start
+                     END,
+                     updated_at = :now',
+                ['k' => $key, 'now' => $now, 'cutoff' => $cutoff]
             );
 
-            $count = (int) ($row['cnt'] ?? 0);
+            $count = (int) ($this->db->value(
+                'SELECT hits FROM flood_guard WHERE key = ?',
+                [$key]
+            ) ?? 0);
 
-            if ($count >= $maxCount) {
+            if ($count > $maxCount) {
                 Logger::warning('Spam rate limit triggered', [
                     'user_id' => $telegramId,
                     'count'   => $count,
@@ -271,12 +289,6 @@ final class FloodGuard
                 ]);
                 return true;
             }
-
-            $this->db->run(
-                'INSERT INTO flood_guard (key, updated_at) VALUES (:k, :t)
-                 ON CONFLICT(key) DO UPDATE SET updated_at = excluded.updated_at',
-                ['k' => $key, 't' => $now]
-            );
 
             return false;
         } catch (\Throwable $e) {

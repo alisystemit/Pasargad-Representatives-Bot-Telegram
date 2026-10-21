@@ -86,6 +86,11 @@ function check(string $label, bool $condition, string $detail = ''): void
 
 function cb(int $userId, array $payload, int $nonce = 0): Update
 {
+    // سناریوهای این تست در چند ثانیه ده‌ها کلیک می‌فرستند؛ پنجرهٔ ضداسپم را
+    // خالی می‌کنیم تا محافظِ واقعی، تست را قطع نکند.
+    global $db;
+    $db->run('DELETE FROM flood_guard');
+
     $payload = $payload + ['n2' => $nonce];
 
     return new Update([
@@ -102,6 +107,9 @@ function cb(int $userId, array $payload, int $nonce = 0): Update
 
 function txt(int $userId, string $text, int $msgId): Update
 {
+    global $db;
+    $db->run('DELETE FROM flood_guard');
+
     return new Update([
         'update_id' => random_int(1, 999999),
         'message'   => [

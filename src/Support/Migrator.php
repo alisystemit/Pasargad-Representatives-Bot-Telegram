@@ -756,6 +756,42 @@ final class Migrator
             // اجرا شود. یکتا بودنِ per-referral است، نه global.
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_ref_comm_pair ON referral_commissions (referral_id, order_id)',
         ],
+
+        // ------------------------------------------------------------------
+        // 019: اصلاح باگ‌های چرخهٔ سفارش و ضداسپم
+        //
+        //   flood_guard.hits/window_start  شمارندهٔ واقعی پنجرهٔ زمانی؛ قبلاً
+        //                                  COUNT روی جدول key-value همیشه ۱ بود.
+        //   orders.loyalty_points_used      امتیاز کسرشده هنگام ساخت سفارش تا در
+        //                                  لغو/انقضا دقیقاً همان مقدار برگردد.
+        //   orders.target_expire_at         تاریخ انقضای مطلق محاسبه‌شده برای
+        //                                  idempotency تمدید (مثل target_limit).
+        // ------------------------------------------------------------------
+        '019_order_integrity' => [
+            'ALTER TABLE flood_guard ADD COLUMN hits INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE flood_guard ADD COLUMN window_start INTEGER NOT NULL DEFAULT 0',
+
+            'ALTER TABLE orders ADD COLUMN loyalty_points_used INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN target_expire_at INTEGER',
+
+            // هر سفارش فقط یک ردیف مصرف کد تخفیف داشته باشد؛ هم برای آزادسازی
+            // دقیق و هم برای جلوگیری از مصرف دوباره در درخواست‌های هم‌زمان.
+            //
+            // ⚠️ پیش از ساخت ایندکس یکتا، ردیف‌های تکراریِ قدیمی پاک می‌شوند.
+            // کد قدیمی در Race می‌توانست دو ردیف برای یک سفارش بسازد؛ بدون این
+            // پاک‌سازی، `CREATE UNIQUE INDEX` شکست می‌خورد و مهاجرت نیمه‌کاره
+            // می‌ماند (ربات با خطای اسکیما بالا نمی‌آمد).
+            'DELETE FROM coupon_uses
+             WHERE order_id IS NOT NULL
+               AND id NOT IN (
+                   SELECT MIN(id) FROM coupon_uses
+                   WHERE order_id IS NOT NULL
+                   GROUP BY order_id
+               )',
+
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_coupon_uses_order
+             ON coupon_uses(order_id) WHERE order_id IS NOT NULL',
+        ],
         ];
     }
 

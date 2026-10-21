@@ -312,6 +312,10 @@ foreach (array_keys($found) as $ns) {
 
     $payload = ['n' => $ns] + paramsFor($ns, $seed);
 
+    // هر سناریو کاربر تازه‌ای ندارد؛ بدون خالی‌کردن پنجرهٔ ضداسپم، بعد از ۱۵
+    // کلیک بقیهٔ دکمه‌ها بی‌پاسخ می‌مانند و تست به‌اشتباه شکست می‌خورد.
+    $db->run('DELETE FROM flood_guard');
+
     try {
         $kernel->handle(new Update([
             'update_id' => crc32($ns) % 100000 + 1,
@@ -387,6 +391,10 @@ foreach (array_keys($found) as $ns) {
 
     $payload = ['n' => $ns] + paramsFor($ns, $seed);
 
+    // هر سناریو کاربر تازه‌ای ندارد؛ بدون خالی‌کردن پنجرهٔ ضداسپم، بعد از ۱۵
+    // کلیک بقیهٔ دکمه‌ها بی‌پاسخ می‌مانند و تست به‌اشتباه شکست می‌خورد.
+    $db->run('DELETE FROM flood_guard');
+
     try {
         $kernel->handle(new Update([
             'update_id' => (crc32($ns) % 90000) + 500000,
@@ -443,6 +451,10 @@ foreach (array_keys($found) as $ns) {
     $kernel = bootKernel($bot, $panel);
 
     $payload = ['n' => $ns] + paramsFor($ns, $seed);
+
+    // هر سناریو کاربر تازه‌ای ندارد؛ بدون خالی‌کردن پنجرهٔ ضداسپم، بعد از ۱۵
+    // کلیک بقیهٔ دکمه‌ها بی‌پاسخ می‌مانند و تست به‌اشتباه شکست می‌خورد.
+    $db->run('DELETE FROM flood_guard');
 
     try {
         $kernel->handle(new Update([

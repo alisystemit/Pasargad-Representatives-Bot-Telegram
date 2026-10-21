@@ -988,7 +988,10 @@ final class Api
             $username = 'apikey-' . substr(hash('sha256', $apiKey), 0, 12);
         }
 
-        $existing = $this->panels->findByPanelUsername($username);
+        // آدرس پایهٔ سراسری؛ این مسیر همیشه روی همان سرور پیش‌فرض کار می‌کند.
+        $globalBase = (string) Config::str('panel.base_url', '');
+
+        $existing = $this->panels->findByPanelUsername($username, $globalBase);
 
         if ($existing !== null && (int) $existing['user_id'] !== $this->userId()) {
             return ['ok' => false, 'message' => 'این پنل قبلاً به حساب دیگری وصل شده است. اگر اشتباه است با پشتیبانی تماس بگیرید.'];
@@ -1007,7 +1010,8 @@ final class Api
             '',
             $admin,
             $wasKnown ? PanelRepository::SOURCE_BOT : PanelRepository::SOURCE_SELF,
-            ['api_key' => $apiKey]
+            ['api_key' => $apiKey],
+            $globalBase
         );
 
         $panel = $this->panels->find($panelId);
@@ -1305,12 +1309,21 @@ final class Api
     private function quoteFor(array $package, int $days, int $panelId = 0): array
     {
         if ($days > 0) {
+            $matched = false;
+
             foreach (PackageRepository::periodOptions($package) as $option) {
                 if ((int) $option['duration_days'] === $days) {
                     $package['duration_days'] = (int) $option['duration_days'];
                     $package['price_toman']   = (int) $option['price_toman'];
+                    $matched = true;
                     break;
                 }
+            }
+
+            // دورهٔ خارج از لیست نباید بی‌صدا به دورهٔ پیش‌فرض بسته برگردد؛
+            // وگرنه کاربر قیمت یک دوره را می‌بیند و بستهٔ دورهٔ دیگری می‌خرد.
+            if (!$matched) {
+                return ['ok' => false, 'message' => 'دورهٔ انتخاب‌شده معتبر نیست.'];
             }
         }
 
@@ -1387,13 +1400,12 @@ final class Api
             $quote = $this->discounts->quote($code, $userId, $listPrice);
 
             if ($quote['ok'] ?? false) {
-                $bind  = $this->discounts->referrals()->findByReferee($userId);
-
+                // تخفیف معرفی اعمال نشده، پس `referred_by` هم نباید پر شود.
                 $resolved = [
                     'discount'  => (int) $quote['discount'],
                     'code'      => $code,
                     'coupon_id' => (int) $quote['coupon']['id'],
-                    'referral'  => $bind !== null ? (string) $bind['code'] : '',
+                    'referral'  => '',
                 ];
             } else {
                 // کد بی‌اعتبار (منقضی/ظرفیت تمام) بی‌صدا دور می‌رود تا خرید
@@ -1467,12 +1479,19 @@ final class Api
         }
 
         if ($days > 0) {
+            $matched = false;
+
             foreach (PackageRepository::periodOptions($package) as $option) {
                 if ((int) $option['duration_days'] === $days) {
                     $package['duration_days'] = (int) $option['duration_days'];
                     $package['price_toman']   = (int) $option['price_toman'];
+                    $matched = true;
                     break;
                 }
+            }
+
+            if (!$matched) {
+                throw new ShopException('دورهٔ انتخاب‌شده معتبر نیست.');
             }
         }
 
@@ -1537,6 +1556,7 @@ final class Api
                 'discount_toman'       => (int) $discount['discount'],
                 'coupon_code'          => $discount['code'] !== '' ? $discount['code'] : null,
                 'referred_by'          => $discount['referral'] !== '' ? $discount['referral'] : null,
+                'loyalty_points_used'  => $discount['loyalty'] > 0 ? (int) $discount['loyalty_points'] : 0,
                 'panel_id'             => $resolvedPanelId > 0 ? $resolvedPanelId : null,
                 'status'               => OrderRepository::STATUS_CREATED,
             ]);
@@ -1544,23 +1564,30 @@ final class Api
             // مصرف کد فقط حالا که سفارش واقعاً ساخته شد؛ وگرنه کدی که نتوانسته
             // استفاده شود، سوخته می‌خورد.
             if ((int) $discount['discount'] > 0 && $discount['coupon_id'] > 0) {
-                $this->discounts->consumeCoupon(
+                $consumed = $this->discounts->consumeCoupon(
                     (int) $discount['coupon_id'],
                     $this->userId(),
                     (int) $order['id'],
                     (int) $discount['discount']
                 );
 
+                if (!$consumed) {
+                    throw new ShopException('کد تخفیف دیگر قابل استفاده نیست؛ لطفاً دوباره تلاش کنید.');
+                }
+
                 $this->users->clearCouponCode($this->userId());
+            }
+
+            // امتیاز داخل تراکنش و شرطی کسر می‌شود تا دو سفارش هم‌زمان هر دو
+            // تخفیف وفاداری نگیرند.
+            if ($discount['loyalty'] > 0
+                && !$this->users->deductLoyaltyPoints($this->userId(), (int) $discount['loyalty_points'])) {
+                throw new ShopException('امتیاز وفاداری کافی نیست؛ لطفاً دوباره تلاش کنید.');
             }
         });
 
         if ($order === null) {
             return ['ok' => false, 'message' => 'ثبت سفارش ناموفق بود.'];
-        }
-
-        if ($discount['loyalty'] > 0) {
-            $this->users->deductLoyaltyPoints($this->userId(), (int) $discount['loyalty_points']);
         }
 
         $this->users->refreshOrderStats($this->userId());
@@ -1781,11 +1808,34 @@ final class Api
             ];
         }
 
-        $paid = $this->orders->markPaid(
-            (int) $order['id'],
-            self::METHOD_WALLET,
-            (string) $order['code']
-        );
+        $paid = false;
+
+        try {
+            $paid = $this->orders->markPaid(
+                (int) $order['id'],
+                self::METHOD_WALLET,
+                (string) $order['code']
+            );
+        } catch (\Throwable $e) {
+            // اگر ثبت پرداخت استثنا بدهد، موجودی حتماً باید برگردد.
+            Logger::error('Wallet payment markPaid threw', [
+                'order_id' => (int) $order['id'],
+                'error'    => $e->getMessage(),
+            ]);
+
+            $this->users->adjustWallet(
+                $this->userId(),
+                $price,
+                'بازگشت موجودی — خطا در ثبت پرداخت کیف پول',
+                0,
+                'manual'
+            );
+
+            return [
+                'ok'      => false,
+                'message' => 'پرداخت ثبت نشد و موجودی کیف پول شما دست‌نخورده برگشت.',
+            ];
+        }
 
         if (!$paid) {
             // ⚠️ موجودی کم شد ولی سفارش پرداخت‌شده نشد ⇒ پول گم می‌شود.
@@ -1805,8 +1855,25 @@ final class Api
 
         $this->users->refreshOrderStats($this->userId());
 
-        $fresh  = $this->orders->find((int) $order['id']) ?? $order;
-        $result = $this->provisioner->provision($fresh);
+        // مسیر کیف پول هم باید از همان `applyAfterPayment` رد شود: اعلان به
+        // کاربر، امتیاز وفاداری، هشدار خطای ادمین و احترام به
+        // `autoApply` همه آنجا انجام می‌شود. قبلاً مستقیماً `provision()`
+        // صدا زده می‌شد و این‌ها دور زده می‌شدند.
+        try {
+            $result = $this->payments->applyAfterPayment((int) $order['id']);
+        } catch (\Throwable $e) {
+            Logger::error('Wallet payment applyAfterPayment threw', [
+                'order_id' => (int) $order['id'],
+                'error'    => $e->getMessage(),
+            ]);
+
+            $result = [
+                'ok'      => false,
+                'message' => 'پرداخت ثبت شد ولی اعمال بسته خطا داد؛ ادمین مطلع شد و به‌زودی بررسی می‌شود.',
+            ];
+        }
+
+        $fresh = $this->orders->find((int) $order['id']) ?? $order;
 
         return [
             'ok'        => true,

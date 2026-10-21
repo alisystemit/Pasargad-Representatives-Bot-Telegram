@@ -128,6 +128,8 @@ function tap(int $userId, string $text): void
 {
     global $kernel;
 
+    clearFlood();
+
     $kernel->handle(new Update([
         'update_id' => uid(),
         'message'   => ['message_id' => uid(), 'date' => time(),
@@ -140,6 +142,8 @@ function tap(int $userId, string $text): void
 function click(int $userId, string $ns, array $params = []): void
 {
     global $kernel;
+
+    clearFlood();
 
     $kernel->handle(new Update([
         'update_id' => uid(),

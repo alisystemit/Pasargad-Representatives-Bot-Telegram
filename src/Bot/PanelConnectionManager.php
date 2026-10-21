@@ -322,7 +322,7 @@ final class PanelConnectionManager
                 $username = 'apikey-' . substr(hash('sha256', $credential), 0, 12);
             }
 
-            $existing = $this->panels->findByPanelUsername($username);
+            $existing = $this->panels->findByPanelUsername($username, $baseUrl);
 
             // ⚠️ مالکیت را نمی‌رباییم: اگر پنل به حساب دیگری وصل است، رد می‌شود.
             if ($existing !== null && (int) $existing['user_id'] !== $userId) {
@@ -353,7 +353,8 @@ final class PanelConnectionManager
                 [
                     'base_url' => $baseUrl,
                     'api_key'  => $credential,
-                ]
+                ],
+                $baseUrl
             );
 
             $this->clearPending($chatId, $pending);

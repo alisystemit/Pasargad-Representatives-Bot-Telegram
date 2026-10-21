@@ -100,6 +100,26 @@ try {
 
     echo 'پردازش صف: ' . json_encode($result, JSON_UNESCAPED_UNICODE) . "\n";
 
+    // ۱-۰) 🧹 لغو خودکار سفارش‌های پرداخت‌نشده و آزادسازی دارایی رزروشده.
+    //
+    // سفارش در لحظهٔ ساخت، کد تخفیف و امتیاز وفاداری را رزرو می‌کند. اگر
+    // هرگز پرداخت نشود، این رزروها باید برگردند؛ وگرنه کاربر امتیاز/کدش را
+    // برای همیشه از دست می‌دهد و ظرفیت کد هم اشغال می‌ماند.
+    //
+    // سفارش‌هایی که رسید کارت‌به‌کارت دارند کنار گذاشته می‌شوند (در انتظار
+    // بررسی ادمین‌اند).
+    try {
+        $ttlMinutes = \Pasargad\Support\Config::int('store.unpaid_order_ttl_minutes', 1440);
+        $cancellations = new \Pasargad\Store\OrderCancellationService($db, $orders, null, $users);
+        $cancelled = $cancellations->cancelStale($ttlMinutes, 50);
+
+        if ($cancelled > 0) {
+            echo 'لغو سفارش‌های منقضی: ' . $cancelled . "\n";
+        }
+    } catch (Throwable $e) {
+        echo 'خطای لغو سفارش‌های منقضی: ' . $e->getMessage() . "\n";
+    }
+
     // ۱-الف) ♻️ پخش دوبارهٔ آپدیت‌هایی که پردازششان نیمه‌کاره مانده بود.
     //
     // چرا اینجا و نه داخل درخواستِ وبهوک: تلگرام هر آپدیت را فقط یک‌بار

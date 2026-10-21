@@ -19,6 +19,7 @@ use Pasargad\Store\TicketRepository;
 use Pasargad\Store\TestConfigRepository;
 use Pasargad\Store\UserRepository;
 use Pasargad\Support\Config;
+use Pasargad\Support\Db;
 use Pasargad\Support\ErrorHandler;
 use Pasargad\Support\Invoice;
 use Pasargad\Support\Logger;
@@ -1199,22 +1200,28 @@ final class Kernel
                 }
 
                 // رفع Race Condition: استفاده از transaction برای atomicity
+                //
+                // ⚠️ قبلاً `Db::instance()` بدون import به `Pasargad\Bot\Db` اشاره
+                // می‌کرد و متد `fetchOne()` هم وجود نداشت؛ نتیجه Fatal Error بود
+                // که با `catch (\Exception)` گرفته نمی‌شد. حالا هم کلاس درست
+                // import شده، هم متد `first()` استفاده می‌شود و هم خطای
+                // `\Throwable` گرفته می‌شود.
                 try {
                     $db = Db::instance();
-                    $db->transaction(function () use ($db, $configId, $seconds) {
+                    $db->transaction(function () use ($db, $configId, $seconds, $user): void {
                         // بررسی کنتورل: آیا کانفیگ توسط کاربر دیگری تغییر نیافته؟
-                        $config = $db->fetchOne(
+                        $config = $db->first(
                             'SELECT id, user_id, is_auto_delete FROM test_configs WHERE id = ?',
                             [$configId]
                         );
-                        
-                        if (!$config) {
-                            throw new \Exception('کانفیگ تست یافت نشد.');
+
+                        if ($config === null || (int) ($config['user_id'] ?? 0) !== (int) ($user['id'] ?? 0)) {
+                            throw new \RuntimeException('کانفیگ تست یافت نشد.');
                         }
-                        
+
                         // اگر قبلاً auto_delete فعال شده، دوباره set نشود
                         if ((int) ($config['is_auto_delete'] ?? 0) === 1) {
-                            throw new \Exception('این کانفیگ قبلاً برای حذف خودکار تنظیم شده است.');
+                            throw new \RuntimeException('این کانفیگ قبلاً برای حذف خودکار تنظیم شده است.');
                         }
 
                         $this->testRepo->update($configId, [
@@ -1222,7 +1229,7 @@ final class Kernel
                             'auto_delete_at' => time() + $seconds,
                         ]);
                     });
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->bot->sendMessage($chatId, '⚠️ خطا: ' . $e->getMessage());
                     return true;
                 }
@@ -3327,7 +3334,7 @@ final class Kernel
         // حجم می‌گیرد — در حالی که max_per_user = 1 است.
         // ------------------------------------------------------------------
         try {
-            $this->orders->transaction(function () use ($user, $package, $resolvedPanelId, $discount, $listPrice, $finalPrice, &$order): void {
+            $this->orders->transaction(function () use ($user, $package, $resolvedPanelId, $discount, $listPrice, $finalPrice, $loyaltyExtra, $redeemPoints, &$order): void {
                 $maxPerUser = (int) $package['max_per_user'];
 
                 if ($maxPerUser > 0) {
@@ -3355,23 +3362,38 @@ final class Kernel
                     'discount_toman' => (int) $discount['discount'],
                     'coupon_code'   => $discount['code'] !== '' ? (string) $discount['code'] : null,
                     'referred_by'   => $discount['referral'] !== '' ? (string) $discount['referral'] : null,
+                    'loyalty_points_used' => $loyaltyExtra > 0 ? $redeemPoints : 0,
                     'panel_id'      => $resolvedPanelId > 0 ? $resolvedPanelId : null,
                     'status'        => OrderRepository::STATUS_CREATED,
                 ]);
 
                 // مصرف کد فقط حالا که سفارش واقعاً ساخته شد.
                 if ((int) $discount['discount'] > 0 && $discount['coupon_id'] > 0) {
-                    $this->discounts()->consumeCoupon(
+                    $consumed = $this->discounts()->consumeCoupon(
                         (int) $discount['coupon_id'],
                         (int) $user['id'],
                         (int) $order['id'],
                         (int) $discount['discount']
                     );
 
+                    // اگر بین quote و این لحظه ظرفیت/سقف کاربر پر شده باشد،
+                    // نباید سفارش با تخفیف ثبت شود. throw کل تراکنش را
+                    // برمی‌گرداند (شامل خود سفارش).
+                    if (!$consumed) {
+                        throw new ShopException('کد تخفیف دیگر قابل استفاده نیست؛ لطفاً دوباره تلاش کنید.');
+                    }
+
                     // کد تخفیف یک‌بارمصرف است (مگر per_user_limit بیشتر باشد)، پس
                     // بعد از مصرف از کاربر برداشته می‌شود تا روی خرید بعدی دوباره
                     // اعمال نشود.
                     $this->users->clearCouponCode((int) $user['id']);
+                }
+
+                // کسر امتیاز هم داخل همان تراکنش و به‌صورت شرطی انجام می‌شود؛
+                // وگرنه دو سفارش هم‌زمان هر دو تخفیف وفاداری می‌گرفتند.
+                if ($loyaltyExtra > 0
+                    && !$this->users->deductLoyaltyPoints((int) $user['id'], $redeemPoints)) {
+                    throw new ShopException('امتیاز وفاداری کافی نیست؛ لطفاً دوباره تلاش کنید.');
                 }
             });
         } catch (ShopException $e) {
@@ -3382,10 +3404,6 @@ final class Kernel
 
         if ($order === null) {
             return;
-        }
-
-        if ($loyaltyExtra > 0) {
-            $this->users->deductLoyaltyPoints((int) $user['id'], $redeemPoints);
         }
 
         $this->users->refreshOrderStats((int) $user['id']);
@@ -3413,13 +3431,14 @@ final class Kernel
             $quote = $this->discounts()->quote($code, $userId, $listPrice);
 
             if ($quote['ok'] ?? false) {
-                $bind = $this->discounts()->referrals()->findByReferee($userId);
-
+                // تخفیف معرفی اعمال نشده (کد تخفیف برنده است)، پس نباید
+                // `referred_by` پر شود؛ وگرنه تخفیف معرفی برای همیشه
+                // «مصرف‌شده» حساب می‌شود.
                 return [
                     'discount'  => (int) $quote['discount'],
                     'code'      => $code,
                     'coupon_id' => (int) $quote['coupon']['id'],
-                    'referral'  => $bind !== null ? (string) $bind['code'] : '',
+                    'referral'  => '',
                 ];
             }
 
@@ -3595,7 +3614,33 @@ final class Kernel
             return;
         }
 
-        $paid = $this->orders->markPaid((int) $order['id'], self::METHOD_WALLET, (string) $order['code']);
+        $paid = false;
+
+        try {
+            $paid = $this->orders->markPaid((int) $order['id'], self::METHOD_WALLET, (string) $order['code']);
+        } catch (\Throwable $e) {
+            Logger::error('Wallet payment markPaid threw', [
+                'order_id' => (int) $order['id'],
+                'error'    => $e->getMessage(),
+            ]);
+
+            $this->users->adjustWallet(
+                (int) $user['id'],
+                $price,
+                'بازگشت موجودی — خطا در ثبت پرداخت کیف پول',
+                0,
+                'manual'
+            );
+
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '⚠️ <b>پرداخت ثبت نشد</b>',
+                '',
+                'موجودی کیف پول شما دست‌نخورده برگشت. لطفاً دوباره تلاش کنید یا با',
+                'پشتیبانی تماس بگیرید.',
+            ]));
+
+            return;
+        }
 
         if (!$paid) {
             // ⚠️ موجودی کم شد ولی سفارش پرداخت‌شده علامت نخورد ⇒ پول گم شده.
@@ -3620,11 +3665,23 @@ final class Kernel
 
         $this->users->refreshOrderStats((int) $user['id']);
 
-        $fresh  = $this->orders->find((int) $order['id']);
-        $result = $fresh === null
-            ? ['ok' => false, 'message' => 'سفارش یافت نشد.']
-            : $this->provisioner->provision($fresh);
+        // همان مسیر «پس از پرداخت»: اعلان کاربر، امتیاز وفاداری، هشدار خطای
+        // ادمین و احترام به `autoApply` فقط همان‌جا انجام می‌شود. قبلاً اینجا
+        // مستقیم `provision()` صدا زده می‌شد و همه دور زده می‌شدند.
+        $result = ['ok' => false, 'message' => 'سفارش یافت نشد.'];
 
+        try {
+            $result = $this->payments->applyAfterPayment((int) $order['id']);
+        } catch (\Throwable $e) {
+            Logger::error('Wallet payment applyAfterPayment threw', [
+                'order_id' => (int) $order['id'],
+                'error'    => $e->getMessage(),
+            ]);
+        }
+
+        // پیام نهایی همیشه فرستاده می‌شود چون موجودیِ باقی‌مانده را اعلام
+        // می‌کند؛ `applyAfterPayment` هم پیام «اجرا شد» را می‌فرستد، ولی این
+        // یکی اطلاعات کیف پول را دارد.
         $this->bot->sendMessage(
             $chatId,
             (($result['ok'] ?? false) ? '🎉 ' : '⏳ ')
