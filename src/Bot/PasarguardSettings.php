@@ -156,6 +156,111 @@ final class PasarguardSettings
             'reply_markup' => $this->bot->buildMarkup($keyboard),
         ]);
     }
+    
+    /**
+     * شروع فرآیند تنظیم کلید API جدید.
+     */
+    public function startSetApiKey(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions): void
+    {
+        $sessions->set($telegramId, [
+            'mode' => 'set_panel_api_key',
+            'step' => 'enter_api_key',
+        ]);
+        
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '🔑 <b>لطفاً کلید API را ارسال کنید</b>',
+            '',
+            'کلید باید از پنل مرکزی Pasargad گرفته شده باشد:',
+            '1. وارد پنل Pasargad شوید',
+            '2. به Settings → API Keys بروید',
+            '3. یک کلید جدید با دسترسی‌های زیر بسازید:',
+            '   • admins.create',
+            '   • admins.read', 
+            '   • api_keys.create',
+            '   • admin_roles.read',
+            '',
+            '⚠️ بعد از ارسال، این پیام را حذف کنید چون کلید در گفتگو دیده می‌شود.',
+            '❌ برای لغو: /cancel',
+        ]));
+    }
+    
+    /**
+     * پردازش کلید API ارسال شده.
+     */
+    public function processApiKey(int $chatId, int $telegramId, string $apiKey, \Pasargad\Bot\SessionStore $sessions): void
+    {
+        $apiKey = trim($apiKey);
+        
+        if (empty($apiKey)) {
+            $this->bot->sendMessage($chatId, '⚠️ کلید API نمی‌تواند خالی باشد. لطفاً دوباره ارسال کنید یا /cancel بزنید.');
+            return;
+        }
+        
+        // تست کلید
+        $this->bot->sendMessage($chatId, '⏳ در حال تست کلید API…');
+        
+        try {
+            $client = new PasarGuardClient();
+            $client->useStaticToken($apiKey);
+            $admin = $client->getAdminWithApiKey($apiKey);
+            
+            // ذخیره کلید در تنظیمات
+            $settings = new \Pasargad\Store\Settings();
+            $settings->set('panel_api_key', $apiKey);
+            
+            $sessions->clear($telegramId);
+            
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '✅ <b>کلید API با موفقیت تنظیم شد!</b>',
+                '',
+                'پنل: ' . ($admin['username'] ?? '—'),
+                'نقش: ' . (is_array($admin['role'] ?? null) ? ($admin['role']['name'] ?? '—') : ($admin['role'] ?? '—')),
+                '',
+                '📋 سیستم اکنون آماده ساخت پنل‌های نمایندگی است.',
+                'کاربران می‌توانند بستهٔ «پنل نمایندگی» را خریداری کنند.',
+            ]), [
+                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                    Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
+                ])),
+            ]);
+            
+        } catch (PanelException $e) {
+            $this->bot->sendMessage($chatId, implode("\n", [
+                '❌ <b>کلید API معتبر نیست</b>',
+                '',
+                Str::escape($e->getMessage()),
+                '',
+                '💡 مطمئن شوید کلید دسترسی‌های لازم را دارد.',
+                'لطفاً کلید صحیح را ارسال کنید یا /cancel بزنید.',
+            ]));
+        }
+    }
+    
+    /**
+     * حذف کلید API ذخیره شده.
+     */
+    public function deleteApiKey(int $chatId): void
+    {
+        $settings = new \Pasargad\Store\Settings();
+        $settings->delete('panel_api_key');
+        
+        $this->bot->sendMessage($chatId, implode("\n", [
+            '🗑️ <b>کلید API حذف شد</b>',
+            '',
+            'ساخت پنل نمایندگی تا تنظیم مجدد کلید غیرفعال است.',
+            '',
+            'برای تنظیم مجدد از دکمهٔ «✏️ تنظیم کلید جدید» استفاده کنید.',
+        ]), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
+            ])),
+        ]);
+    }
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
 
     /**
      * تنظیم نقش نماینده
