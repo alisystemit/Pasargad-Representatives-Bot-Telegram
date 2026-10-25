@@ -35,7 +35,7 @@ final class NowPaymentsGateway implements PaymentGateway
 
     public function isEnabled(): bool
     {
-        return Config::str('nowpayments.api_key') !== '';
+        return (new \Pasargad\Store\BotConfig())->nowpaymentsApiKey() !== '';
     }
 
     public function requiresReview(): bool
@@ -76,6 +76,7 @@ final class NowPaymentsGateway implements PaymentGateway
         // (کمتر از یک دلار) به همان یک دلار افزایش می‌یابند و مبلغ واقعی
         // پرداختی در پیام به کاربر اعلام می‌شود تا فاکتور مبهم نباشد.
         $minimumUsd   = (float) Config::str('nowpayments.min_amount_usd', '1');
+        $minimumUsd   = $minimumUsd > 0 ? $minimumUsd : (float) Config::str('nowpayments.min_amount_usd', '1');
         $minimumUsd   = $minimumUsd > 0 ? $minimumUsd : 1.0;
         $isBelowMinimum = $amountUsd < $minimumUsd;
 
@@ -223,7 +224,7 @@ final class NowPaymentsGateway implements PaymentGateway
      */
     public function verifyIpnSignature(array $headers, string $body): bool
     {
-        $secret = Config::str('nowpayments.ipn_secret', '');
+        $secret = (new \Pasargad\Store\BotConfig())->nowpaymentsIpnSecret();
         if ($secret === '') {
             return false;
         }
@@ -273,7 +274,7 @@ final class NowPaymentsGateway implements PaymentGateway
     private function call(string $method, string $path, array $payload = []): array
     {
         $url    = $this->baseUrl() . $path;
-        $apiKey = Config::str('nowpayments.api_key');
+        $apiKey = (new \Pasargad\Store\BotConfig())->nowpaymentsApiKey();
 
         $result = Http::json(strtoupper($method), $url, $method === 'post' ? $payload : null, [
             'headers' => [

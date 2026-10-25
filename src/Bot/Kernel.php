@@ -547,6 +547,14 @@ final class Kernel
         'admin_rules',
         'admin_broadcast',
         'admin_text',
+        'admin_payment_card',
+        'admin_payment_owner',
+        'admin_payment_bank',
+        'admin_autocard_api_url',
+        'admin_autocard_api_key',
+        'admin_autocard_card',
+        'admin_nowpayments_api_key',
+        'admin_nowpayments_ipn_secret',
         'admin_wallet',
         'admin_testconfig',
         'admin_panel_transfer',
@@ -1397,8 +1405,7 @@ final class Kernel
                 }
 
                 $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $settings->set('payment_card_number', $card);
+                (new \Pasargad\Store\BotConfig())->setCardNumber($card);
                 $this->bot->sendMessage($chatId, '✅ شماره کارت ذخیره شد: ' . \Pasargad\Support\Str::maskCardNumber($card));
                 return true;
 
@@ -1416,8 +1423,7 @@ final class Kernel
                 }
 
                 $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $settings->set('payment_card_owner', $owner);
+                (new \Pasargad\Store\BotConfig())->setCardOwner($owner);
                 $this->bot->sendMessage($chatId, '✅ نام صاحب کارت ذخیره شد.');
                 return true;
 
@@ -1435,9 +1441,98 @@ final class Kernel
                 }
 
                 $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $settings->set('payment_card_bank', $bank);
+                (new \Pasargad\Store\BotConfig())->setCardBank($bank);
                 $this->bot->sendMessage($chatId, '✅ نام بانک ذخیره شد.');
+                return true;
+
+            case 'admin_autocard_api_url':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $url = trim($text);
+                if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
+                    $this->bot->sendMessage($chatId, '⚠️ آدرس API معتبر نیست. با https:// شروع کنید.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                (new \Pasargad\Store\BotConfig())->setAutocardApiUrl($url);
+                $this->bot->sendMessage($chatId, '✅ آدرس API استعلام ذخیره شد.');
+                return true;
+
+            case 'admin_autocard_api_key':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $apiKey = trim($text);
+                if ($apiKey === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ کلید API نمی‌تواند خالی باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                (new \Pasargad\Store\BotConfig())->setAutocardApiKey($apiKey);
+                $this->bot->sendMessage($chatId, '✅ کلید API ذخیره شد.');
+                return true;
+
+            case 'admin_autocard_card':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $card = preg_replace('/\D/', '', trim($text));
+                if ($card !== '' && strlen($card) !== 16) {
+                    $this->bot->sendMessage($chatId, '⚠️ شماره کارت باید ۱۶ رقم باشد (یا برای استفاده از کارت دستی، /cancel بزنید).');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                (new \Pasargad\Store\BotConfig())->setAutocardCardNumber($card);
+                $this->bot->sendMessage($chatId, '✅ شماره کارت خودکار ذخیره شد.');
+                return true;
+
+            case 'admin_nowpayments_api_key':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $apiKey = trim($text);
+                if ($apiKey === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ کلید API نمی‌تواند خالی باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                (new \Pasargad\Store\BotConfig())->setNowpaymentsApiKey($apiKey);
+                $this->bot->sendMessage($chatId, '✅ کلید API NowPayments ذخیره شد.');
+                return true;
+
+            case 'admin_nowpayments_ipn_secret':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                $secret = trim($text);
+                if ($secret === '') {
+                    $this->bot->sendMessage($chatId, '⚠️ IPN Secret نمی‌تواند خالی باشد.');
+                    return true;
+                }
+
+                $this->sessions->clear($telegramId);
+                (new \Pasargad\Store\BotConfig())->setNowpaymentsIpnSecret($secret);
+                $this->bot->sendMessage($chatId, '✅ IPN Secret ذخیره شد.');
                 return true;
 
             // ⚠️ مراحل `panel:username` و `panel:password` عمداً حذف شدند.

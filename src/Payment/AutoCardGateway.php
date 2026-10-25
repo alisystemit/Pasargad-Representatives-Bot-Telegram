@@ -46,9 +46,10 @@ final class AutoCardGateway implements PaymentGateway
      */
     public static function cardNumber(): string
     {
-        $own = trim(Config::str('autocard.card_number', ''));
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $own = trim($botConfig->autocardCardNumber());
 
-        return $own !== '' ? $own : trim(Config::str('store.card_number', ''));
+        return $own !== '' ? $own : trim($botConfig->cardNumber());
     }
 
     /**
@@ -59,7 +60,8 @@ final class AutoCardGateway implements PaymentGateway
      */
     public static function isConfigured(): bool
     {
-        return self::cardNumber() !== '' && trim(Config::str('autocard.api_url', '')) !== '';
+        $botConfig = new \Pasargad\Store\BotConfig();
+        return self::cardNumber() !== '' && trim($botConfig->autocardApiUrl()) !== '';
     }
 
     public function isEnabled(): bool

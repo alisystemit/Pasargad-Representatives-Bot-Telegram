@@ -70,6 +70,15 @@ final class Settings
         self::$cache[$key] = $value;
     }
 
+    public function delete(string $key): void
+    {
+        $this->db->run('DELETE FROM settings WHERE key = ?', [$key]);
+
+        if (self::$cache !== null) {
+            unset(self::$cache[$key]);
+        }
+    }
+
     /**
      * @param array<string, string|int> $pairs
      */

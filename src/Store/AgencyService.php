@@ -113,18 +113,14 @@ final class AgencyService
      */
     private function ownerCredentials(): ?array
     {
-        // ابتدا از API Key ذخیره شده در تنظیمات استفاده می‌کنیم
-        $settings = new Settings();
-        $apiKey = $settings->get('panel_api_key');
-        
+        $botConfig = new BotConfig();
+        $apiKey = $botConfig->ownerApiKey();
+
         if (!empty($apiKey)) {
             return ['api', $apiKey];
         }
-        
-        // اگر API Key در تنظیمات نبود، از config.php استفاده می‌کنیم
-        $globalKey = trim((string) Config::str('panel.api_key', ''));
 
-        return $globalKey === '' ? null : ['api', $globalKey];
+        return null;
     }
 
     /**
@@ -138,11 +134,7 @@ final class AgencyService
             return ['ok' => true, 'message' => ''];
         }
 
-        // بررسی می‌کنیم آیا API Key در تنظیمات ذخیره شده یا نه
-        $settings = new Settings();
-        $apiKey = $settings->get('panel_api_key');
-        
-        if (empty($apiKey)) {
+        if (empty((new BotConfig())->ownerApiKey())) {
             return [
                 'ok'      => false,
                 'message' => '⛔️🔧 خرید پنل نمایندگی موقتاً در دسترس نیست! 😔'

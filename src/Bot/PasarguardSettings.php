@@ -34,10 +34,11 @@ final class PasarguardSettings
      */
     public function mainMenu(int $chatId): void
     {
-        $baseUrl = Config::str('panel.base_url', '');
-        $botKey = Config::str('panel.api_key', '');
-        $autocard = Config::str('autocard.api_url', '');
-        $card = Config::str('store.card_number', '');
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $baseUrl = $botConfig->panelBaseUrl();
+        $botKey = $botConfig->ownerApiKey();
+        $autocard = $botConfig->autocardApiUrl();
+        $card = $botConfig->cardNumber();
 
         $status = [
             $baseUrl ? '✅' : '❌' => 'آدرس پنل',
@@ -78,7 +79,7 @@ final class PasarguardSettings
      */
     public function setPanelBaseUrl(int $chatId): void
     {
-        $current = Config::str('panel.base_url', 'https://us.api-system.top');
+        $current = (new \Pasargad\Store\BotConfig())->panelBaseUrl();
         
         $lines = [
             '🌐 <b>آدرس پنل Pasargad</b>',
@@ -116,8 +117,8 @@ final class PasarguardSettings
      */
     public function setOwnerAccount(int $chatId): void
     {
-        $settings = new \Pasargad\Store\Settings();
-        $current = $settings->get('panel_api_key', Config::str('panel.api_key', ''));
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $current = $botConfig->ownerApiKey();
         $masked  = $current === ''
             ? ''
             : '…' . substr($current, -4);
@@ -205,8 +206,7 @@ final class PasarguardSettings
             $admin = $client->getAdminWithApiKey($apiKey);
             
             // ذخیره کلید در تنظیمات
-            $settings = new \Pasargad\Store\Settings();
-            $settings->set('panel_api_key', $apiKey);
+            (new \Pasargad\Store\BotConfig())->setOwnerApiKey($apiKey);
             
             $sessions->clear($telegramId);
             
@@ -241,8 +241,7 @@ final class PasarguardSettings
      */
     public function deleteApiKey(int $chatId): void
     {
-        $settings = new \Pasargad\Store\Settings();
-        $settings->delete('panel_api_key');
+        (new \Pasargad\Store\BotConfig())->deleteOwnerApiKey();
         
         $this->bot->sendMessage($chatId, implode("\n", [
             '🗑️ <b>کلید API حذف شد</b>',
@@ -267,7 +266,7 @@ final class PasarguardSettings
      */
     public function setRepRole(int $chatId): void
     {
-        $roleId = Config::int('panel.rep_role_id', 0);
+        $roleId = (new \Pasargad\Store\BotConfig())->repRoleId();
 
         $lines = [
             '🎭 <b>نقش نماینده در پنل</b>',
@@ -310,15 +309,15 @@ final class PasarguardSettings
     {
         $this->bot->sendMessage($chatId, '⏳ در حال تست اتصال به پنل…');
 
-        $apiKey = Config::str('panel.api_key', '');
+        $apiKey = (new \Pasargad\Store\BotConfig())->ownerApiKey();
 
         if ($apiKey === '') {
             $this->bot->sendMessage($chatId, implode("\n", [
                 '❌ <b>تست ممکن نیست — کلید تنظیم نشده</b>',
                 '',
-                'مقدار <code>panel.api_key</code> در <code>config.php</code> خالی است.',
+                'کلید سازندهٔ پنل تنظیم نشده است.',
                 '',
-                'کلید را از داخل پنل بسازید (Settings → API Keys) و آنجا بگذارید.',
+                'روی دکمهٔ «✏️ تنظیم کلید جدید» بزنید و کلید API را وارد کنید.',
             ]), [
                 'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                     Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
@@ -377,9 +376,10 @@ final class PasarguardSettings
      */
     public function paymentSettings(int $chatId): void
     {
-        $card = Config::str('store.card_number', '');
-        $owner = Config::str('store.card_owner', '');
-        $bank = Config::str('store.card_bank', '');
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $card = $botConfig->cardNumber();
+        $owner = $botConfig->cardOwner();
+        $bank = $botConfig->cardBank();
 
         $lines = [
             '💳✨ <b>تنظیمات پرداخت 💰</b>',
@@ -396,6 +396,7 @@ final class PasarguardSettings
             [['text' => '💳 شماره کارت', 'data' => BotApi::encodeData('admin.settings.payment.card')]],
             [['text' => '👤 صاحب کارت', 'data' => BotApi::encodeData('admin.settings.payment.owner')]],
             [['text' => '🏦 نام بانک', 'data' => BotApi::encodeData('admin.settings.payment.bank')]],
+            [['text' => '🪙 ارز دیجیتال (NowPayments)', 'data' => BotApi::encodeData('admin.settings.nowpayments')]],
             Keyboard::back(BotApi::encodeData('admin.settings.pasargad'), '🔙 بازگشت'),
         ]);
 
@@ -405,13 +406,93 @@ final class PasarguardSettings
     }
 
     /**
+     * تنظیمات ارز دیجیتال (NowPayments)
+     */
+    public function nowpaymentsSettings(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions, ?string $step = null): void
+    {
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $apiKey = $botConfig->nowpaymentsApiKey();
+        $ipnSecret = $botConfig->nowpaymentsIpnSecret();
+
+        $lines = [
+            '🪙✨ <b>ارز دیجیتال (NowPayments)</b>',
+            '',
+            '📋 وضعیت فعلی:',
+            '• کلید API: ' . ($apiKey ? '✅ ذخیره شده (رمزشده)' : '❌ تنظیم نشده'),
+            '• IPN Secret: ' . ($ipnSecret ? '✅ ذخیره شده (رمزشده)' : '❌ تنظیم نشده'),
+            '',
+            '👇 انتخاب کنید:',
+        ];
+
+        if ($step) {
+            match ($step) {
+                'api_key' => $this->setNowpaymentsApiKey($chatId, $telegramId, $sessions),
+                'ipn' => $this->setNowpaymentsIpn($chatId, $telegramId, $sessions),
+                default => null,
+            };
+            return;
+        }
+
+        $keyboard = Keyboard::rows([
+            [['text' => '🔑 کلید API', 'data' => BotApi::encodeData('admin.settings.nowpayments', ['step' => 'api_key'])]],
+            [['text' => '🔒 IPN Secret', 'data' => BotApi::encodeData('admin.settings.nowpayments', ['step' => 'ipn'])]],
+            Keyboard::back(BotApi::encodeData('admin.settings.payment'), '🔙 بازگشت'),
+        ]);
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
+
+    private function setNowpaymentsApiKey(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions): void
+    {
+        $sessions->set($telegramId, ['step' => 'admin_nowpayments_api_key']);
+
+        $lines = [
+            '🔑 <b>کلید API NowPayments</b>',
+            '',
+            'کلید API درگاه NowPayments را بفرستید.',
+            'از پنل NowPayments دریافت کنید: https://nowpayments.io/api-keys',
+            '',
+            '❌ برای لغو: /cancel',
+        ];
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back(BotApi::encodeData('admin.settings.nowpayments'), '🔙 بازگشت'),
+            ])),
+        ]);
+    }
+
+    private function setNowpaymentsIpn(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions): void
+    {
+        $sessions->set($telegramId, ['step' => 'admin_nowpayments_ipn_secret']);
+
+        $lines = [
+            '🔒 <b>IPN Secret</b>',
+            '',
+            'Secret مورد استفاده برای امضای IPN را بفرستید.',
+            'در پنل NowPayments > Settings > IPN تنظیم کنید.',
+            '',
+            '❌ برای لغو: /cancel',
+        ];
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                Keyboard::back(BotApi::encodeData('admin.settings.nowpayments'), '🔙 بازگشت'),
+            ])),
+        ]);
+    }
+
+    /**
      * تنظیمات کارت خودکار
      */
-    public function autocardSettings(int $chatId, ?string $step = null): void
+    public function autocardSettings(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions, ?string $step = null): void
     {
-        $apiUrl = Config::str('autocard.api_url', '');
-        $apiKey = Config::str('autocard.api_key', '');
-        $card = Config::str('autocard.card_number', '');
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $apiUrl = $botConfig->autocardApiUrl();
+        $apiKey = $botConfig->autocardApiKey();
+        $card = $botConfig->autocardCardNumber();
 
         $lines = [
             '⚡️✨ <b>کارت‌به‌کارت خودکار 🤖</b>',
@@ -430,9 +511,9 @@ final class PasarguardSettings
 
         if ($step) {
             match ($step) {
-                'api_url' => $this->setAutocardApiUrl($chatId),
-                'api_key' => $this->setAutocardApiKey($chatId),
-                'card' => $this->setAutocardCard($chatId),
+                'api_url' => $this->setAutocardApiUrl($chatId, $telegramId, $sessions),
+                'api_key' => $this->setAutocardApiKey($chatId, $telegramId, $sessions),
+                'card' => $this->setAutocardCard($chatId, $telegramId, $sessions),
                 default => null,
             };
             return;
@@ -452,9 +533,11 @@ final class PasarguardSettings
         ]);
     }
 
-    private function setAutocardApiUrl(int $chatId): void
+    private function setAutocardApiUrl(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions): void
     {
-        $current = Config::str('autocard.api_url', '');
+        $current = (new \Pasargad\Store\BotConfig())->autocardApiUrl();
+
+        $sessions->set($telegramId, ['step' => 'admin_autocard_api_url']);
 
         $lines = [
             '🌐 <b>آدرس API استعلام تراکنش</b>',
@@ -465,7 +548,7 @@ final class PasarguardSettings
             'آدرس API سرویس استعلام را بفرستید',
             '(GET request، پاسخ JSON)',
             '',
-            '/cancel برای لغو',
+            '❌ برای لغو: /cancel',
         ];
 
         $keyboard = Keyboard::rows([
@@ -477,8 +560,10 @@ final class PasarguardSettings
         ]);
     }
 
-    private function setAutocardApiKey(int $chatId): void
+    private function setAutocardApiKey(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions): void
     {
+        $sessions->set($telegramId, ['step' => 'admin_autocard_api_key']);
+
         $lines = [
             '🔑 <b>کلید API</b>',
             '',
@@ -487,7 +572,7 @@ final class PasarguardSettings
             '',
             '⚠️ کلید <b>رمزشده</b> ذخیره می‌شود',
             '',
-            '/cancel برای لغو',
+            '❌ برای لغو: /cancel',
         ];
 
         $keyboard = Keyboard::rows([
@@ -499,9 +584,11 @@ final class PasarguardSettings
         ]);
     }
 
-    private function setAutocardCard(int $chatId): void
+    private function setAutocardCard(int $chatId, int $telegramId, \Pasargad\Bot\SessionStore $sessions): void
     {
-        $current = Config::str('autocard.card_number', '');
+        $current = (new \Pasargad\Store\BotConfig())->autocardCardNumber();
+
+        $sessions->set($telegramId, ['step' => 'admin_autocard_card']);
 
         $lines = [
             '💳 <b>شماره کارت خودکار</b>',
@@ -511,7 +598,8 @@ final class PasarguardSettings
             '',
             'اگر خالی بگذارید، کارت دستی استفاده می‌شود',
             '',
-            'شماره کارت (۱۶ رقم) را بفرستید یا /cancel',
+            'شماره کارت (۱۶ رقم) را بفرستید',
+            '❌ برای لغو: /cancel',
         ];
 
         $keyboard = Keyboard::rows([

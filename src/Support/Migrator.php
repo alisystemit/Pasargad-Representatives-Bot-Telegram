@@ -792,6 +792,26 @@ final class Migrator
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_coupon_uses_order
              ON coupon_uses(order_id) WHERE order_id IS NOT NULL',
         ],
+
+        // ------------------------------------------------------------------
+        // 020: افزودن تنظیمات قابل ویرایش ربات (کارت، درگاه‌ها، اکانت سازنده)
+        //
+        // قبلاً این تنظیمات فقط در config.php بودند. حالا از داخل ربات قابل
+        // ویرایش هستند و در جدول settings ذخیره می‌شوند.
+        // ------------------------------------------------------------------
+        '020_bot_settings' => [
+            "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES
+                ('store_card_number', '', 0),
+                ('store_card_owner', '', 0),
+                ('store_card_bank', '', 0),
+                ('store_card_note', '', 0),
+                ('nowpayments_api_key', '', 0),
+                ('nowpayments_ipn_secret', '', 0),
+                ('autocard_api_url', '', 0),
+                ('autocard_api_key', '', 0),
+                ('autocard_card_number', '', 0),
+                ('autocard_card_owner', '', 0)",
+        ],
         ];
     }
 

@@ -38,14 +38,15 @@ final class AutoCardClient
      */
     public function fetchTransactions(): array
     {
-        $url = trim(Config::str('autocard.api_url', ''));
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $url = trim($botConfig->autocardApiUrl());
 
         if ($url === '') {
-            return ['ok' => false, 'message' => 'آدرس API استعلام در config.php تنظیم نشده است.', 'transactions' => []];
+            return ['ok' => false, 'message' => 'آدرس API استعلام تنظیم نشده است.', 'transactions' => []];
         }
 
         $headers = ['Accept: application/json'];
-        $apiKey  = trim(Config::str('autocard.api_key', ''));
+        $apiKey  = trim($botConfig->autocardApiKey());
 
         if ($apiKey !== '') {
             $headers[] = 'Authorization: Bearer ' . $apiKey;

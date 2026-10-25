@@ -269,7 +269,21 @@ final class AdminController
             case 'admin.settings.autocard':
                 // فقط صفحهٔ کارت خودکار؛ فراخوانی `showGateways` اینجا یعنی
                 // دو پیام پشت‌سرهم و دو کیبورد که آخری روی اولی می‌افتد.
-                (new PasarguardSettings($this->bot))->autocardSettings($chatId, (string) ($data['step'] ?? null));
+                (new PasarguardSettings($this->bot))->autocardSettings(
+                    $chatId,
+                    $update->userId(),
+                    $this->sessions,
+                    (string) ($data['step'] ?? null)
+                );
+                break;
+
+            case 'admin.settings.nowpayments':
+                (new PasarguardSettings($this->bot))->nowpaymentsSettings(
+                    $chatId,
+                    $update->userId(),
+                    $this->sessions,
+                    (string) ($data['step'] ?? null)
+                );
                 break;
 
             // ---------------- درگاه‌های پرداخت ----------------
@@ -2120,11 +2134,11 @@ final class AdminController
             $lines[] = ($isOn ? '🟢' : '🔴') . ' <b>' . Str::escape($gateway->title()) . '</b> ✨';
 
             if ($name === 'card2card') {
-                $card = Config::str('store.card_number');
+                $card = (new \Pasargad\Store\BotConfig())->cardNumber();
                 $lines[] = '   🏦 شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape($card) . '</code> ✅' : '<i>⚠️ تنظیم نشده</i>');
             } elseif ($name === 'autocard') {
                 $card = \Pasargad\Payment\AutoCardGateway::cardNumber();
-                $api  = trim(Config::str('autocard.api_url', ''));
+                $api  = trim((new \Pasargad\Store\BotConfig())->autocardApiUrl());
                 $lines[] = '   🏦 شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape($card) . '</code> ✅' : '<i>⚠️ تنظیم نشده</i>');
                 $lines[] = '   🔌 استعلام: ' . ($api !== '' ? '<code>' . Str::escape(Str::truncate($api, 40)) . '</code> ✅' : '<i>⚠️ api_url تنظیم نشده</i>');
                 $lines[] = '   💡 مبالغ یکتا + تأیید خودکار، بدون رسید دستی 🤖';

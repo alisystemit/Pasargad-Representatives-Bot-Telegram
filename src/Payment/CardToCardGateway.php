@@ -29,7 +29,7 @@ final class CardToCardGateway implements PaymentGateway
 
     public function isEnabled(): bool
     {
-        $number = Config::str('store.card_number');
+        $number = (new \Pasargad\Store\BotConfig())->cardNumber();
 
         return $number !== '';
     }
@@ -56,6 +56,12 @@ final class CardToCardGateway implements PaymentGateway
         $code    = (string) $order['code'];
         $amount  = (int) $order['price_toman'];
 
+        $botConfig = new \Pasargad\Store\BotConfig();
+        $cardNumber = $botConfig->cardNumber();
+        $cardOwner = $botConfig->cardOwner();
+        $cardBank = $botConfig->cardBank();
+        $cardNote = $botConfig->cardNote();
+
         $lines = [
             '🏦✨ <b>پرداخت کارت‌به‌کارت دستی 📝</b>',
             '',
@@ -63,23 +69,20 @@ final class CardToCardGateway implements PaymentGateway
             '💰💵 مبلغ قابل پرداخت: <b>' . Str::formatToman($amount) . '</b>',
             '🔑🧾 کد پیگیری: <code>' . Str::escape($code) . '</code>',
             '',
-            '🏦 شماره کارت: <code>' . Str::escape(Config::str('store.card_number')) . '</code> 💳',
+            '🏦 شماره کارت: <code>' . Str::escape($cardNumber) . '</code> 💳',
         ];
 
-        $owner = Config::str('store.card_owner');
-        if ($owner !== '') {
-            $lines[] = '👤 به نام: <b>' . Str::escape($owner) . '</b> 🙏';
+        if ($cardOwner !== '') {
+            $lines[] = '👤 به نام: <b>' . Str::escape($cardOwner) . '</b> 🙏';
         }
 
-        $bank = Config::str('store.card_bank');
-        if ($bank !== '') {
-            $lines[] = '🏦 بانک: ' . Str::escape($bank) . ' 🏛️';
+        if ($cardBank !== '') {
+            $lines[] = '🏦 بانک: ' . Str::escape($cardBank) . ' 🏛️';
         }
 
-        $note = Config::str('store.card_note');
-        if ($note !== '') {
+        if ($cardNote !== '') {
             $lines[] = '';
-            $lines[] = '📌 ' . Str::escape($note);
+            $lines[] = '📌 ' . Str::escape($cardNote);
         }
 
         $lines[] = '';
