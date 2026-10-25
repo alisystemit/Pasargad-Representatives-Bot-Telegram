@@ -31,7 +31,10 @@ use Pasargad\Bot\Kernel;
 use Pasargad\Bot\Notifier;
 use Pasargad\Bot\SessionStore;
 use Pasargad\Panel\FakePanelClient;
+use Pasargad\Panel\PasarGuardClient;
 use Pasargad\Payment\PaymentService;
+use Pasargad\Store\AgencyService;
+use Pasargad\Store\BotConfig;
 use Pasargad\Store\FeatureFlags;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
@@ -451,6 +454,47 @@ check(
 );
 check('هیچ رمز عبوری ذخیره نشد', ($saved[0]['panel_password'] ?? '') === '', var_export($saved[0]['panel_password'] ?? null, true));
 
+// ------------------------------------------------------------------
+echo "\n▶ ۹) ساخت پنل نمایندگی با کلید سازنده (بدون رمز)\n";
+// ------------------------------------------------------------------
+
+// باگ واقعی: `Provisioner` یک `PasarGuardClient` بدون کلید می‌ساخت و به
+// `AgencyService` می‌داد. آن کلاینت `createAdmin()` را با login رمز می‌فرستاد،
+// پس خرید پنل نمایندگی همیشه با «نام کاربری یا رمز عبور اشتباه» شکست می‌خورد.
+$ownerConfig = new BotConfig();
+$ownerConfig->setPanelBaseUrl('https://us.api-system.top');
+$ownerConfig->setOwnerApiKey('pg_key_owner_section9');
+
+$agency       = new AgencyService();
+$panelFactory = new ReflectionMethod(AgencyService::class, 'panelClient');
+$ownerClient  = $panelFactory->invoke($agency);
+
+check('کلید سازنده روی کلاینت نشست', $ownerClient->hasStaticToken());
+check('درخواست با طرح ApiKey می‌رود', $ownerClient->authScheme() === 'ApiKey', $ownerClient->authScheme());
+check('آدرس پنل از تنظیمات ربات (نه فقط config.php) می‌آید',
+    $ownerClient->baseUrl() === 'https://us.api-system.top', $ownerClient->baseUrl());
+check('login بدون هیچ تماس شبکه‌ای همان کلید را برمی‌گرداند',
+    $ownerClient->login('api', '') === 'pg_key_owner_section9');
+
+$prodProvisioner = new Provisioner();
+$agencyProperty  = new ReflectionProperty(Provisioner::class, 'agency');
+$prodAgency      = $agencyProperty->getValue($prodProvisioner);
+$clientProperty  = new ReflectionProperty(AgencyService::class, 'panel');
+
+check('Provisioner در مسیر عادی کلاینت بی‌کلید را به AgencyService نمی‌دهد',
+    $clientProperty->getValue($prodAgency) === null);
+
+// مسیر وبه‌اپ/کرون: کلاینت واقعی از بیرون تزریق می‌شود. باید همان کلاینت
+// کلید سازنده را بگیرد، وگرنه ساخت پنل با ۴۰۱ «رمز اشتباه» می‌افتد.
+$injectedReal   = new PasarGuardClient();
+$realProvisioner = new Provisioner($injectedReal, $orders, $users, new Settings(), $panels);
+$realAgency      = $agencyProperty->getValue($realProvisioner);
+$injectedClient  = $panelFactory->invoke($realAgency);
+
+check('کلاینت واقعیِ تزریق‌شده هم کلید سازنده را می‌گیرد',
+    $injectedClient->hasStaticToken() && $injectedClient->authScheme() === 'ApiKey');
+check('همان نمونهٔ تزریق‌شده است (کلاینت تازه ساخته نمی‌شود)',
+    $injectedClient === $injectedReal);
 
 echo "\n" . str_repeat('─', 62) . "\n";
 echo "نتیجه: {$passed} موفق، {$failed} ناموفق\n";

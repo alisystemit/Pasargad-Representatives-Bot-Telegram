@@ -128,9 +128,15 @@ final class FeatureFlags
      */
     public function gatewayStatuses(): array
     {
+        // از همان منبعی خوانده می‌شود که خودِ درگاه‌ها استفاده می‌کنند
+        // (`BotConfig` با fallback به config.php). نسخهٔ قبلی فقط config.php را
+        // می‌خواند، پس کارتی که ادمین داخل ربات ذخیره کرده بود در صفحهٔ
+        // تنظیمات همچنان «پیکربندی نشده» نشان داده می‌شد.
+        $botConfig = new BotConfig();
+
         $configured = [
-            CardToCardGateway::NAME   => \Pasargad\Support\Config::str('store.card_number') !== '',
-            NowPaymentsGateway::NAME => \Pasargad\Support\Config::str('nowpayments.api_key') !== '',
+            CardToCardGateway::NAME   => trim($botConfig->cardNumber()) !== '',
+            NowPaymentsGateway::NAME => trim($botConfig->nowpaymentsApiKey()) !== '',
             AutoCardGateway::NAME    => AutoCardGateway::isConfigured(),
         ];
 

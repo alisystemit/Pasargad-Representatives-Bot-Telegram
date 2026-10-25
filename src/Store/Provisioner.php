@@ -63,7 +63,14 @@ final class Provisioner
         // کلاینت پنل باید به AgencyService هم برسد، وگرنه خودش یک کلاینت
         // واقعی می‌سازد و به شبکه وصل می‌شود — یعنی تست‌ها و هر حالتی که
         // کلاینت جعلی تزریق شده، بی‌صدا از کلاینت واقعی رد می‌شوند.
-        $this->agency = $agency ?? new AgencyService($this->panel);
+        //
+        // ⚠️ ولی در مسیر عادی (کلاینت تزریق نشده) عمداً آن را پاس نمی‌دهیم:
+        // `new PasarGuardClient()` کلید API سازنده را روی خود ندارد و
+        // ساخت پنل نمایندگی با ۴۰۱ («رمز اشتباه») شکست می‌خورد. در این حالت
+        // `AgencyService` خودش کلاینتِ کلیددار می‌سازد.
+        $this->agency = $agency ?? ($panel !== null
+            ? new AgencyService($panel)
+            : new AgencyService());
     }
 
     public function panels(): PanelRepository

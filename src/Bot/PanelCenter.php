@@ -299,7 +299,6 @@ final class PanelCenter
                 : '🔒 رمز عبور: <code>' . Str::escape($password) . '</code>',
             '',
             '💿 سقف دیسک: ' . ($panel['disk_quota'] > 0 ? Str::formatBytes((int) $panel['disk_quota']) : 'نامحدود'),
-            $panel['is_dead'] ? '⚠️ وضعیت: پنل مرده' : '',
         ];
 
         if (!empty($panel['panel_role'])) {

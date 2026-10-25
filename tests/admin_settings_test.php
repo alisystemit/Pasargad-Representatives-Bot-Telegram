@@ -183,6 +183,9 @@ check('مقدار در دیتابیس ثبت شده', (new BotConfig())->cardNum
     'مقدار: ' . (new BotConfig())->cardNumber());
 check('همان پاسخ، صفحهٔ تنظیمات با شمارهٔ ماسک‌شده را نشان می‌دهد',
     str_contains($out, '••••••••••••0582') && !str_contains($out, '6063731065250582'));
+check('درگاه کارت‌به‌کارت با همین کارت «پیکربندی‌شده» شمرده می‌شود',
+    $flags->gatewayStatuses()['card2card']['configured'] === true,
+    json_encode($flags->gatewayStatuses()));
 
 $out = click('admin.settings.payment.owner');
 check('صفحهٔ ورود نام صاحب کارت باز می‌شود', str_contains($out, 'نام صاحب کارت را بفرستید'));
@@ -266,6 +269,9 @@ click('admin.settings.autocard', ['step' => 'card']);
 $out = type('6104337812345678');
 check('شمارهٔ کارت خودکار ذخیره می‌شود',
     (new BotConfig())->autocardCardNumber() === '6104337812345678');
+check('درگاه کارت خودکار با تنظیمات ربات «پیکربندی‌شده» شمرده می‌شود',
+    $flags->gatewayStatuses()['autocard']['configured'] === true,
+    json_encode($flags->gatewayStatuses()));
 
 // ==================================================================
 echo "\n▶ ۶) NowPayments\n";
@@ -275,6 +281,9 @@ click('admin.settings.nowpayments', ['step' => 'api_key']);
 $out = type('np-api-key-123');
 check('کلید API NowPayments ذخیره و رمزگشایی می‌شود',
     (new BotConfig())->nowpaymentsApiKey() === 'np-api-key-123');
+check('درگاه NowPayments با کلید ذخیره‌شده «پیکربندی‌شده» شمرده می‌شود',
+    $flags->gatewayStatuses()['nowpayments']['configured'] === true,
+    json_encode($flags->gatewayStatuses()));
 
 click('admin.settings.nowpayments', ['step' => 'ipn']);
 $out = type('np-ipn-secret-456');
@@ -299,6 +308,10 @@ echo "\n▶ ۸) صفحهٔ درگاه‌ها: شماره کارت نباید ک�
 $out = click('admin.gateways');
 check('شمارهٔ کارت کامل در صفحهٔ درگاه‌ها دیده نمی‌شود', !str_contains($out, '6063731065250582'));
 check('نسخهٔ ماسک‌شده نمایش داده می‌شود', str_contains($out, '0582'));
+
+$out = click('admin.settings');
+check('صفحهٔ تنظیمات دیگر ادعا نمی‌کند درگاه‌ها در config.php تنظیم نشده‌اند',
+    !str_contains($out, 'config.php'), $out);
 
 // ==================================================================
 echo "\n▶ ۹) دکمه‌های تکراری در صفحهٔ تنظیمات حذف شده‌اند\n";

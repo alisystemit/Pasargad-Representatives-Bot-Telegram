@@ -109,7 +109,7 @@ class PasarGuardClient
 
     public function __construct(?string $baseUrl = null)
     {
-        $this->baseUrl   = rtrim($baseUrl ?? Config::str('panel.base_url', 'https://us.api-system.top'), '/');
+        $this->baseUrl   = rtrim($baseUrl ?? self::configuredBaseUrl(), '/');
         $this->verifySsl = Config::bool('panel.verify_ssl', true);
         $this->timeout   = Config::int('panel.timeout', 20);
 
@@ -121,6 +121,31 @@ class PasarGuardClient
         $this->deadline = self::$processBudget > 0.0
             ? microtime(true) + self::$processBudget
             : 0.0;
+    }
+
+    /**
+     * آدرس مؤثر پنل، با اولویت تنظیمِ داخل ربات.
+     *
+     * «🌐 آدرس پنل» در تنظیمات Pasargad در جدول settings ذخیره می‌شود، ولی
+     * این کلاینت فقط `config.php` را می‌دید. نتیجه: ادمین آدرس را عوض می‌کرد،
+     * ربات تأیید می‌داد، و همهٔ درخواست‌های بعدی همچنان به سرور قبلی می‌رفتند.
+     *
+     * اگر جدول settings هنوز ساخته نشده یا خواندنش ممکن نیست (ابزار CLI
+     * پیش از مایگریشن)، به همان config.php برمی‌گردیم.
+     */
+    private static function configuredBaseUrl(): string
+    {
+        try {
+            $fromBot = trim((new \Pasargad\Store\BotConfig())->panelBaseUrl());
+
+            if ($fromBot !== '') {
+                return $fromBot;
+            }
+        } catch (\Throwable) {
+            // دیتابیس آماده نیست؛ از config.php استفاده می‌کنیم.
+        }
+
+        return Config::str('panel.base_url', 'https://us.api-system.top');
     }
 
     /**

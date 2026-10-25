@@ -356,7 +356,7 @@ final class PasarguardSettings
             '',
             '• ادمین کلید: <code>' . Str::escape($name) . '</code>',
             '• نقش: ' . ($role !== '' ? Str::escape($role) : '—'),
-            '• آدرس پنل: <code>' . Str::escape(Config::str('panel.base_url', '—')) . '</code>',
+            '• آدرس پنل: <code>' . Str::escape((new \Pasargad\Store\BotConfig())->panelBaseUrl()) . '</code>',
             '',
             '🎉 کلید معتبر است.',
             '',

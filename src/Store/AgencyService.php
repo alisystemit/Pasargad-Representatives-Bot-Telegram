@@ -95,7 +95,38 @@ final class AgencyService
                 }
             }
 
-            $this->panel = new PasarGuardClient();
+            // ⚠️ مسیر اکانت owner سراسری **باید** با کلید API کار کند.
+            //
+            // نسخهٔ قبلی فقط `new PasarGuardClient()` می‌ساخت؛ آن کلاینت
+            // نام کاربری/رمز را از config.php می‌خواند و `createAdmin()` را با
+            // `login()` می‌فرستاد. چون ربات دیگر رمز نگه نمی‌دارد، پنل با ۴۰۱
+            // («نام کاربری یا رمز عبور اشتباه») رد می‌کرد — همان خطایی که خرید
+            // «پنل نمایندگی» را همیشه به تعویق می‌انداخت.
+            $credentials = $this->ownerCredentials();
+            $client      = new PasarGuardClient();
+
+            if ($credentials !== null) {
+                $client->useStaticToken($credentials[1]);
+            }
+
+            return $this->panel = $client;
+        }
+
+        // کلاینت تزریق‌شده هم اگر «کلاینت واقعی» و بی‌کلید باشد، باید کلید
+        // سازنده را بگیرد. مسیر وبه‌اپ/کرون یک `PasarGuardClient` واقعی را
+        // به Provisioner می‌دهد؛ بدون این، همان ۴۰۱ «رمز اشتباه» برمی‌گشت.
+        //
+        // ⚠️ کلاینت‌های ساختگی تست (زیرکلاس‌ها) عمداً دست‌نخورده می‌مانند تا
+        // رفتار تست‌شده عوض نشود.
+        if ($this->creator === null
+            && get_class($this->panel) === PasarGuardClient::class
+            && !$this->panel->hasStaticToken()
+        ) {
+            $credentials = $this->ownerCredentials();
+
+            if ($credentials !== null) {
+                $this->panel->useStaticToken($credentials[1]);
+            }
         }
 
         return $this->panel;

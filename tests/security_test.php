@@ -180,6 +180,8 @@ echo "\n▶ سوپرادمین به پنل مدیریت دسترسی دارد\n"
 $bot->reset();
 $kernel->handle(cb($adminId, ['n' => 'admin.home']));
 check('پنل مدیریت برای سوپرادمین باز شد', str_contains($bot->allText(), 'پنل مدیریت'), $bot->allText());
+check('دکمهٔ حذف‌شدهٔ «مانیتورینگ» برنگشته', !str_contains($bot->allText(), 'مانیتورینگ'));
+check('دکمهٔ حذف‌شدهٔ «ربات‌های مرده» برنگشته', !str_contains($bot->allText(), 'ربات‌های مرده'));
 
 $bot->reset();
 $kernel->handle(cb($adminId, ['n' => 'admin.packages']));

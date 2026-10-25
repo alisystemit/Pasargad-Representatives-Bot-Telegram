@@ -406,7 +406,7 @@ final class AdminController
                 $this->toggleTestAutoDelete($chatId, (int) ($data['id'] ?? 0));
                 break;
 
-            // ---------------- سهمیه دیسک / ربات مرده ----------------
+            // ---------------- سهمیه دیسک ----------------
             case 'admin.panel.disk_quota':
                 $this->showPanelDiskQuota($chatId, (int) ($data['id'] ?? 0));
                 break;
@@ -417,15 +417,6 @@ final class AdminController
 
             case 'admin.panel.disk_quota.save':
                 $this->savePanelDiskQuota($chatId, (int) ($data['id'] ?? 0), (int) ($data['v'] ?? 0));
-                break;
-
-            case 'admin.panel.dead_bot':
-                $this->showDeadBots($chatId);
-                break;
-
-            // ---------------- مانیتورینگ مرکزی ----------------
-            case 'admin.monitoring':
-                $this->showMonitoring($chatId);
                 break;
 
             // ---------------- عملیات گروهی ----------------
@@ -643,10 +634,6 @@ final class AdminController
                 ['text' => '📋 لاگ حسابرسی', 'data' => BotApi::encodeData('admin.audit_log')],
             ],
             [
-                ['text' => '🔔 مانیتورینگ', 'data' => BotApi::encodeData('admin.monitoring')],
-                ['text' => '💀 ربات‌های مرده', 'data' => BotApi::encodeData('admin.panel.dead_bot')],
-            ],
-            [
                 ['text' => '⚡ عملیات گروهی', 'data' => BotApi::encodeData('admin.bulk_ops')],
                 ['text' => '👥 دعوت', 'data' => BotApi::encodeData('admin.referrals')],
             ],
@@ -824,7 +811,6 @@ final class AdminController
                 ? '♾️ بدون محدودیت'
                 : Str::date((int) $panel['access_expire_at']) . ' 🗓'),
             $panel['disk_quota'] > 0 ? '💿 سقف دیسک: ' . Str::formatBytes((int) $panel['disk_quota']) : '',
-            $panel['is_dead'] ? '⚠️ وضعیت: پنل مرده' : '',
         ];
 
         if ($daysLeft !== null && !$expired) {
@@ -1425,7 +1411,7 @@ final class AdminController
         if ($user !== null) {
             $this->notifier->notifyUser(
                 (int) $user['telegram_id'],
-                ($approved ? '✅ ' : '❌ ') . '<b>سفارش ' . Str::escape((string) $order['code']) . '</b>\n\n'
+                ($approved ? '✅ ' : '❌ ') . '<b>سفارش ' . Str::escape((string) $order['code']) . "</b>\n\n"
                 . Str::escape((string) $result['message'])
             );
         }
@@ -1684,7 +1670,7 @@ final class AdminController
             $note  = '';
 
             if (!$status['configured']) {
-                $note = '  (⚠️ پیکربندی نشده در config.php)';
+                $note = '  (⚠️ از «🌐 تنظیمات Pasargad» کامل کنید)';
             }
 
             $lines[] = $icon . ' ' . $label . ': <b>' . ($status['enabled'] ? 'فعال ✅' : 'غیرفعال 🔴') . '</b>' . $note;
@@ -1709,7 +1695,7 @@ final class AdminController
         $lines[] = '💧 هشدار حجم کم: <b>' . Str::faNumber(max(1, $this->settings->int(Settings::LOW_VOLUME_ALERT, 5))) . '٪</b>';
 
         $lines[] = ($agencyReady ? '🟢' : '🔴') . ' ساخت پنل نمایندگی: <b>'
-            . ($agencyReady ? 'آماده' : 'نیازمند تنظیم اکانت سازنده در config.php') . '</b>';
+            . ($agencyReady ? 'آماده' : 'نیازمند کلید سازندهٔ پنل') . '</b>';
 
         $testPanelId = $this->settings->int(Settings::TEST_CONFIG_PANEL_ID, 0);
         $testPanelLabel = '👤 خودکار';
@@ -3612,7 +3598,7 @@ final class AdminController
     }
 
     // ------------------------------------------------------------------
-    // سهمیه دیسک و ربات مرده
+    // سهمیه دیسک
     // ------------------------------------------------------------------
 
     private function showPanelDiskQuota(int $chatId, int $panelId): void
@@ -3625,13 +3611,11 @@ final class AdminController
         }
 
         $diskQuota = (int) ($panel['disk_quota'] ?? 0);
-        $isDead    = (int) ($panel['is_dead'] ?? 0);
 
         $lines = [
             '🖥✨ <b>' . Str::escape((string) $panel['panel_username']) . '</b>',
             '',
             '💾 سهمیه دیسک: ' . ($diskQuota > 0 ? Str::formatBytes($diskQuota) : 'نامحدود ♾️'),
-            '💀 وضعیت ربات: ' . ($isDead ? '🔴 مرده' : '🟢 زنده'),
         ];
 
         $keyboard = Keyboard::rows([
@@ -3672,57 +3656,6 @@ final class AdminController
 
         $this->bot->sendMessage($chatId, '✅ سهمیه دیسک به ' . Str::formatBytes(max(0, $quota)) . ' تنظیم شد.');
         $this->showPanel($chatId, $panelId);
-    }
-
-    private function showDeadBots(int $chatId): void
-    {
-        $db = Db::instance();
-        $rows = $db->all('SELECT * FROM panels WHERE is_dead = 1 ORDER BY id DESC LIMIT 20');
-
-        $lines = ['💀✨ <b>ربات‌های مرده 🖥️</b>', ''];
-
-        if ($rows === []) {
-            $lines[] = '🎉 ربات مرده‌ای وجود ندارد! ✅';
-        } else {
-            foreach ($rows as $panel) {
-                $lines[] = '• <code>' . Str::escape((string) $panel['panel_username']) . '</code>';
-                $lines[] = '  👤 کاربر: ' . (int) ($panel['telegram_id'] ?? 0);
-                $lines[] = '  📅 آخرین بازدید: ' . Str::date((int) ($panel['last_seen_at'] ?? 0));
-                $lines[] = '';
-            }
-        }
-
-        $this->bot->sendMessage($chatId, implode("\n", $lines), [
-            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت'),
-            ])),
-        ]);
-    }
-
-    // ------------------------------------------------------------------
-    // مانیتورینگ مرکزی
-    // ------------------------------------------------------------------
-
-    private function showMonitoring(int $chatId): void
-    {
-        $db = Db::instance();
-        $all = $db->count('SELECT COUNT(*) FROM panels');
-        $online = $db->count("SELECT COUNT(*) FROM panels WHERE monitor_status = 'online'");
-        $offline = $db->count("SELECT COUNT(*) FROM panels WHERE monitor_status = 'offline' OR monitor_status IS NULL");
-
-        $lines = [
-            '📡✨ <b>مانیتورینگ مرکزی ربات‌ها 🖥️</b>',
-            '',
-            '🔢 کل پنل‌ها: ' . Str::faNumber($all),
-            '🟢 آنلاین: ' . Str::faNumber($online),
-            '🔴 آفلاین: ' . Str::faNumber($offline),
-        ];
-
-        $this->bot->sendMessage($chatId, implode("\n", $lines), [
-            'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت'),
-            ])),
-        ]);
     }
 
     // ------------------------------------------------------------------
