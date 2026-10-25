@@ -800,6 +800,9 @@ final class AdminController
             '🌐 آدرس: ' . Str::escape(PanelRepository::loginUrl(
                 $panel['login_url'] === null ? null : (string) $panel['login_url']
             )) . ' 🔗',
+            // نام کاربری جدا و کپی‌پذیر کنار رمز تکرار می‌شود؛ در عنوان پیام
+            // فقط برای شناسایی پنل است و ادمین برای ورود باید آن را کپی کند.
+            '👤 یوزر: <code>' . Str::escape((string) $panel['panel_username']) . '</code> 🔑',
             '🔒 رمز: <code>' . Str::escape($this->panels->plainPassword($panel)) . '</code> 🔑',
             '🎭 نقش پنل: ' . Str::escape((string) ($panel['panel_role'] ?? '—')) . ' 👑',
             '',

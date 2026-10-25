@@ -484,6 +484,9 @@ $bot->reset();
 $kernel->handle(cb(777, ['n' => 'admin.panel.view', 'id' => (int) $newPanel['id']]));
 check('جزئیات پنل برای ادمین باز شد', str_contains($bot->allText(), 'نماینده'), $bot->allText());
 check('رمز پنل برای ادمین هم هست', str_contains($bot->allText(), '🔒 رمز'));
+check('یوزر پنل کنار رمز برای کپی هست',
+    str_contains($bot->allText(), '👤 یوزر: <code>' . (string) $newPanel['panel_username'] . '</code>'),
+    $bot->allText());
 
 // ------------------------------------------------------------------
 echo "\n▶ مرحلهٔ ۱۱: مسدودسازی کاربر\n";
