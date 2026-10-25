@@ -116,7 +116,8 @@ final class PasarguardSettings
      */
     public function setOwnerAccount(int $chatId): void
     {
-        $current = Config::str('panel.api_key', '');
+        $settings = new \Pasargad\Store\Settings();
+        $current = $settings->get('panel_api_key', Config::str('panel.api_key', ''));
         $masked  = $current === ''
             ? ''
             : '…' . substr($current, -4);
@@ -140,15 +141,14 @@ final class PasarguardSettings
             '• <code>api_keys.create</code> — ساخت کلید برای پنل نمایندگی',
             '• <code>admin_roles.read</code> — پیدا کردن نقش اپراتور',
             '',
-            'بررسی کافی‌بودن کلید (فقط‌خواندنی، چیزی نمی‌سازد):',
-            '<code>php tools/panel_key_check.php &lt;کلید&gt;</code>',
-            '',
-            '📝 برای ویرایش، مقدار را در <code>config.php</code> زیر',
-            '<code>panel.api_key</code> بگذارید و ربات را ری‌استارت کنید.',
+            '📝 برای تنظیم کلید جدید، لطفاً کلید API را در پیام بعدی ارسال کنید.',
+            'کلید باید از پنل مرکزی Pasargad گرفته شده باشد.',
         ];
 
         $keyboard = Keyboard::rows([
+            [['text' => '✏️ تنظیم کلید جدید', 'data' => BotApi::encodeData('admin.settings.panel.owner.set')]],
             [['text' => '🧪 تست اتصال', 'data' => BotApi::encodeData('admin.settings.panel.owner.test')]],
+            [['text' => '🗑️ حذف کلید', 'data' => BotApi::encodeData('admin.settings.panel.owner.delete')]],
             Keyboard::back(BotApi::encodeData('admin.settings.pasargad'), '🔙 بازگشت'),
         ]);
 
