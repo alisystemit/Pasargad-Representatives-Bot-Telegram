@@ -496,6 +496,49 @@ check('کلاینت واقعیِ تزریق‌شده هم کلید سازنده 
 check('همان نمونهٔ تزریق‌شده است (کلاینت تازه ساخته نمی‌شود)',
     $injectedClient === $injectedReal);
 
+// ------------------------------------------------------------------
+echo "\n▶ ۱۰) ساخت پنل بعدی با «همان API اول»، نه کلید پنلِ ساخته‌شده\n";
+// ------------------------------------------------------------------
+
+// باگ واقعی (گزارش اپراتور): بعد از خرید اول، ردیف پنل با کلیدی که ربات
+// برای همان پنل صادر می‌کند ذخیره می‌شود. خرید دوم `creatorPanelFor` را
+// به همان ردیف می‌رساند و ساخت با کلیدی انجام می‌شد که مجوز `admins.create`
+// ندارد ⇒ ۴۰۳ «دسترسی محدود»، در حالی که خرید اول با کلید سازنده موفق بود.
+$creatorUid = (int) $users->upsertByTelegram(8810, ['telegram_id' => 8810])['id'];
+
+// پنلی که ربات ساخته (source = bot) و حتی پیش‌فرض هم علامت خورده است.
+$botMadeId = $panels->create($creatorUid, 'bot_made', '', [
+    'api_key'    => 'pg_key_bot_made',
+    'is_default' => 1,
+]);
+
+$creatorUser = $users->findById($creatorUid);
+$chosen      = (new PanelAccess($panels))->creatorPanelFor($creatorUser);
+
+check('پنلِ ساخته‌شدهٔ ربات منبع ساخت بعدی نمی‌شود (کلید سازنده می‌ماند)',
+    $chosen === null, $chosen === null ? '' : 'panel_id=' . (int) $chosen['id']);
+
+// پنلی که خودِ کاربر با کلیدش وصل کرده، همچنان معتبر است.
+$selfId = $panels->create($creatorUid, 'self_made', '', ['api_key' => 'pg_key_self_made']);
+$panels->update($selfId, ['source' => PanelRepository::SOURCE_SELF]);
+
+$chosen = (new PanelAccess($panels))->creatorPanelFor($creatorUser);
+
+check('پنلِ متصل‌شده توسط خود کاربر انتخاب می‌شود',
+    $chosen !== null && (int) $chosen['id'] === $selfId,
+    $chosen === null ? 'null' : 'panel_id=' . (int) $chosen['id']);
+
+// و اگر جز پنلِ ساخته‌شدهٔ ربات چیزی نباشد، AgencyService با همان کلید
+// سازنده/سراسری کار می‌کند (نه با کلید پنلِ ربات‌ساخته).
+$agencyFallback = new AgencyService();
+$agencyFallback->useCreatorPanel(null);
+$fallbackClient = $panelFactory->invoke($agencyFallback);
+
+check('مسیر جایگزین با کلید سازندهٔ سراسری کار می‌کند',
+    $fallbackClient->hasStaticToken() && $fallbackClient->authScheme() === 'ApiKey');
+
+check('ردیف پیش‌فرضِ ربات‌ساخته دست‌نخورده ماند', $panels->find($botMadeId) !== null);
+
 echo "\n" . str_repeat('─', 62) . "\n";
 echo "نتیجه: {$passed} موفق، {$failed} ناموفق\n";
 echo str_repeat('─', 62) . "\n";

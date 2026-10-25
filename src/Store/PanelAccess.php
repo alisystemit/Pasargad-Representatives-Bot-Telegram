@@ -203,6 +203,20 @@ final class PanelAccess
      * می‌خواهد زیر آن نمایندگی بسازد» مشخصاً همان است که پیش‌فرض علامت
      * خورده — حدسِ «اولین ردیف» در آن حالت به پنل اشتباه اشاره می‌کند.
      *
+     * ## ⚠️ پنل‌هایی که خودِ ربات ساخته‌اند «کلیدِ سازنده» نیستند
+     *
+     * ردیفی که هنگام خرید ساخته می‌شود (`source = bot`) برای مدیریت همان
+     * پنل است؛ کلیدش هم در همان لحظه صادر می‌شود و ممکن است مجوز
+     * `admins.create` / `api_keys.create` نداشته باشد. اگر ساخت پنل بعدی
+     * با همین کلید انجام شود، خرید دوم/سوم با ۴۰۳ («دسترسی محدود») شکست
+     * می‌خورد — در حالی که خرید اول با «کلید سازندهٔ پنل» موفق بوده.
+     *
+     * پس فقط پنلی که **کاربر خودش با کلیدش وصل کرده** (`source = self`)
+     * یا ردیف قدیمی (legacy) صلاحیت دارد؛ وگرنه برمی‌گردانیم null تا
+     * `AgencyService` از همان کلید سازندهٔ سراسری (API اول) استفاده کند.
+     * این تصمیم عیناً همان چیزی است که در مستند `AgencyService` نوشته
+     * شده: «اولویت با پنلی است که خودِ کاربر وصل کرده».
+     *
      * @param  array<string, mixed> $user
      * @return array<string, mixed>|null
      */
@@ -216,14 +230,19 @@ final class PanelAccess
 
         $panels = $this->panels->listByUser($userId);
 
+        // پنلِ ساخته‌شده توسط خود ربات، کلیدِ مدیریتیِ قابل‌اتکا ندارد.
+        $usable = static function (array $panel): bool {
+            return (string) ($panel['source'] ?? '') !== PanelRepository::SOURCE_BOT;
+        };
+
         foreach ($panels as $panel) {
-            if ((int) ($panel['is_default'] ?? 0) === 1) {
+            if ((int) ($panel['is_default'] ?? 0) === 1 && $usable($panel)) {
                 return $panel;
             }
         }
 
         foreach ($panels as $panel) {
-            if ($this->credentialsOf($panel) !== null) {
+            if ($usable($panel) && $this->credentialsOf($panel) !== null) {
                 return $panel;
             }
         }
