@@ -44,6 +44,7 @@ $db = TestDb::boot();
 Config::set('super_admins', [999]);
 Config::set('store.card_number', '6037999999999999');
 Config::set('panel.base_url', 'https://panel.test');
+Config::set('base_url', 'https://bot.test');
 
 $settings = new Settings($db);
 $flags    = new \Pasargad\Store\FeatureFlags($settings);

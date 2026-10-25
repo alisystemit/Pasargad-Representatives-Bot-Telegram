@@ -42,6 +42,7 @@ $db = TestDb::boot();
 Config::set('store.card_number', '6037999999999999');
 Config::set('nowpayments.api_key', 'test-api-key');
 Config::set('super_admins', [999]);
+Config::set('base_url', 'https://bot.test');
 
 $panel    = new FakePanelClient();
 $bot      = new FakeBotApi();

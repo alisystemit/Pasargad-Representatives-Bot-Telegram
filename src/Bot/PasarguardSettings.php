@@ -40,11 +40,15 @@ final class PasarguardSettings
         $autocard = $botConfig->autocardApiUrl();
         $card = $botConfig->cardNumber();
 
+        // ⚠️ قبلاً این‌جا یک آرایهٔ **انجمنی** با کلیدِ آیکون ساخته شده بود
+        // (`$baseUrl ? '✅' : '❌' => 'آدرس پنل'`). چون آیکون‌ها تکراری‌اند،
+        // کلیدهای یکسان روی هم می‌افتادند و فقط دو مورد از چهار مورد نمایش
+        // داده می‌شد. آرایهٔ فهرستی، هر چهار وضعیت را نگه می‌دارد.
         $status = [
-            $baseUrl ? '✅' : '❌' => 'آدرس پنل',
-            $botKey ? '✅' : '❌' => 'کلید سازندهٔ پنل',
-            $autocard ? '✅' : '❌' => 'کارت خودکار',
-            $card ? '✅' : '❌' => 'کارت دستی',
+            [$baseUrl ? '✅' : '❌', 'آدرس پنل'],
+            [$botKey ? '✅' : '❌', 'کلید سازندهٔ پنل'],
+            [$autocard ? '✅' : '❌', 'کارت خودکار'],
+            [$card ? '✅' : '❌', 'کارت دستی'],
         ];
 
         $lines = [
@@ -53,7 +57,7 @@ final class PasarguardSettings
             '📋 وضعیت فعلی:',
         ];
 
-        foreach ($status as $icon => $name) {
+        foreach ($status as [$icon, $name]) {
             $lines[] = '  ' . $icon . ' ' . $name;
         }
 
@@ -218,11 +222,11 @@ final class PasarguardSettings
                 '',
                 '📋 سیستم اکنون آماده ساخت پنل‌های نمایندگی است.',
                 'کاربران می‌توانند بستهٔ «پنل نمایندگی» را خریداری کنند.',
-            ]), [
-                'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                    Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
-                ])),
-            ]);
+            ]));
+
+            // صفحهٔ وضعیت دوباره نمایش داده می‌شود تا مدیر همان لحظه ببیند
+            // کلید ثبت شده و لازم نیست خودش دکمهٔ بازگشت را بزند.
+            $this->setOwnerAccount($chatId);
             
         } catch (PanelException $e) {
             $this->bot->sendMessage($chatId, implode("\n", [
@@ -253,11 +257,6 @@ final class PasarguardSettings
             'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
                 Keyboard::back(BotApi::encodeData('admin.settings.panel.owner'), '🔙 بازگشت'),
             ])),
-        ]);
-    }
-
-        $this->bot->sendMessage($chatId, implode("\n", $lines), [
-            'reply_markup' => $this->bot->buildMarkup($keyboard),
         ]);
     }
 

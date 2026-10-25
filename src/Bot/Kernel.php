@@ -11,6 +11,7 @@ use Pasargad\Store\DiscountService;
 use Pasargad\Store\FeatureFlags;
 use Pasargad\Store\OrderRepository;
 use Pasargad\Store\PackageRepository;
+use Pasargad\Store\PanelAccess;
 use Pasargad\Store\PanelRepository;
 use Pasargad\Store\PanelSyncer;
 use Pasargad\Store\Provisioner;
@@ -558,6 +559,7 @@ final class Kernel
         'admin_wallet',
         'admin_testconfig',
         'admin_panel_transfer',
+        'enter_api_key',
     ];
 
     /**
@@ -1090,6 +1092,19 @@ final class Kernel
                 $this->handleBuyCommand($update, $user);
                 break;
 
+            case 'cancel':
+                // اگر واقعاً مرحله‌ای در جریان بود، همان مرحله در
+                // `handleSessionState()` این دستور را گرفته و این‌جا نمی‌رسیم.
+                // پس این شاخه یعنی «هیچ کار نیمه‌کاره‌ای نبود» — و گفتن
+                // «دستور ناشناخته» به /cancel، هم غلط است هم گیج‌کننده.
+                $this->sessions->clear($telegramId);
+                $this->bot->sendMessage($chatId, 'ℹ️ عملیات در جریانی برای لغو وجود ندارد.', [
+                    'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
+                        Keyboard::back('menu', '🏠 منوی اصلی'),
+                    ])),
+                ]);
+                break;
+
             default:
                 $this->bot->sendMessage($chatId, '❓ دستور ناشناخته. /help را ببینید.');
         }
@@ -1299,6 +1314,17 @@ final class Kernel
                 return true;
 
             // ============ تنظیمات Pasargad ============
+            case 'enter_api_key':
+                if ($update->command() === 'cancel' || $update->command() === 'start') {
+                    $this->sessions->clear($telegramId);
+                    $this->bot->sendMessage($chatId, '❌ لغو شد.');
+                    return true;
+                }
+
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))
+                    ->processApiKey($chatId, $telegramId, $text, $this->sessions);
+                return true;
+
             case 'admin_panel_base_url':
                 if ($update->command() === 'cancel' || $update->command() === 'start') {
                     $this->sessions->clear($telegramId);
@@ -1306,21 +1332,19 @@ final class Kernel
                     return true;
                 }
 
-                $url = trim($text);
-                if (!str_starts_with($url, 'https://') && !str_starts_with($url, 'http://')) {
-                    $this->bot->sendMessage($chatId, '⚠️ باید با https:// یا http:// شروع شود.');
-                    return true;
-                }
-
-                if ($url === '') {
-                    $this->bot->sendMessage($chatId, '⚠️ آدرس خالی نیست.');
+                $url = rtrim(trim($text), '/');
+                if (!filter_var($url, FILTER_VALIDATE_URL)
+                    || (!str_starts_with($url, 'https://') && !str_starts_with($url, 'http://'))) {
+                    $this->bot->sendMessage($chatId, '⚠️ آدرس نامعتبر است. باید با https:// یا http:// شروع شود.');
                     return true;
                 }
 
                 $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $settings->set('panel_base_url', $url);
-                $this->bot->sendMessage($chatId, '✅ آدرس پنل به‌روزرسانی شد (نیاز به restart ربات دارد).');
+                // از `BotConfig` استفاده می‌شود (نه نوشتنِ خام در Settings) تا
+                // همان کلیدی به‌روز شود که خواننده‌ها انتظار دارند.
+                (new \Pasargad\Store\BotConfig())->setPanelBaseUrl($url);
+                $this->bot->sendMessage($chatId, '✅ آدرس پنل به‌روزرسانی شد. کلاینت‌ها در درخواست بعدی از همین آدرس استفاده می‌کنند.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))->mainMenu($chatId);
                 return true;
 
             // ⚠️ مراحل `admin_owner_username` و `admin_owner_password` حذف شدند.
@@ -1336,11 +1360,11 @@ final class Kernel
                     'ℹ️ ربات دیگر نام کاربری و رمز عبور نمی‌گیرد.',
                     '',
                     'برای ساخت «پنل نمایندگی» فقط **کلید API** لازم است.',
-                    'آن را از داخل پنل بسازید (Settings → API Keys) و در',
-                    '<code>config.php</code> مقدار <code>panel.api_key</code> را تنظیم کنید.',
+                    'آن را از داخل پنل بسازید (Settings → API Keys) و از',
+                    'دکمهٔ «🔑 کلید سازندهٔ پنل» در همین ربات تنظیم کنید.',
                 ]), [
                     'reply_markup' => $this->bot->buildMarkup(Keyboard::rows([
-                        [['text' => '⚙️ تنظیمات پنل', 'data' => BotApi::encodeData('admin.settings.panel')]],
+                        [['text' => '⚙️ تنظیمات Pasargad', 'data' => BotApi::encodeData('admin.settings.pasargad')]],
                         Keyboard::back('menu', '🔙 بازگشت'),
                     ])),
                 ]);
@@ -1381,9 +1405,9 @@ final class Kernel
                 }
 
                 $this->sessions->clear($telegramId);
-                $settings = new \Pasargad\Store\Settings();
-                $settings->set('panel_rep_role', (string) $roleId);
+                (new \Pasargad\Store\BotConfig())->setRepRoleId($roleId);
                 $this->bot->sendMessage($chatId, '✅ نقش نماینده تنظیم شد: ' . ($roleId > 0 ? \Pasargad\Support\Str::faNumber($roleId) : 'خودکار'));
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))->mainMenu($chatId);
                 return true;
 
             case 'admin_payment_card':
@@ -1407,6 +1431,12 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setCardNumber($card);
                 $this->bot->sendMessage($chatId, '✅ شماره کارت ذخیره شد: ' . \Pasargad\Support\Str::maskCardNumber($card));
+
+                // صفحهٔ تنظیمات فوراً با مقدار تازه دوباره نمایش داده می‌شود.
+                // قبلاً مدیر فقط پیام «ذخیره شد» می‌گرفت و برای دیدن نتیجه باید
+                // خودش دکمهٔ بازگشت را می‌زد — و اگر صفحهٔ قدیمی در حافظهٔ
+                // مرورگر/گفتگو می‌ماند، به نظر می‌رسید ذخیره نشده است.
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))->paymentSettings($chatId);
                 return true;
 
             case 'admin_payment_owner':
@@ -1425,6 +1455,7 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setCardOwner($owner);
                 $this->bot->sendMessage($chatId, '✅ نام صاحب کارت ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))->paymentSettings($chatId);
                 return true;
 
             case 'admin_payment_bank':
@@ -1443,6 +1474,7 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setCardBank($bank);
                 $this->bot->sendMessage($chatId, '✅ نام بانک ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))->paymentSettings($chatId);
                 return true;
 
             case 'admin_autocard_api_url':
@@ -1461,6 +1493,8 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setAutocardApiUrl($url);
                 $this->bot->sendMessage($chatId, '✅ آدرس API استعلام ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))
+                    ->autocardSettings($chatId, $telegramId, $this->sessions);
                 return true;
 
             case 'admin_autocard_api_key':
@@ -1479,6 +1513,8 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setAutocardApiKey($apiKey);
                 $this->bot->sendMessage($chatId, '✅ کلید API ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))
+                    ->autocardSettings($chatId, $telegramId, $this->sessions);
                 return true;
 
             case 'admin_autocard_card':
@@ -1497,6 +1533,8 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setAutocardCardNumber($card);
                 $this->bot->sendMessage($chatId, '✅ شماره کارت خودکار ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))
+                    ->autocardSettings($chatId, $telegramId, $this->sessions);
                 return true;
 
             case 'admin_nowpayments_api_key':
@@ -1515,6 +1553,8 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setNowpaymentsApiKey($apiKey);
                 $this->bot->sendMessage($chatId, '✅ کلید API NowPayments ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))
+                    ->nowpaymentsSettings($chatId, $telegramId, $this->sessions);
                 return true;
 
             case 'admin_nowpayments_ipn_secret':
@@ -1533,6 +1573,8 @@ final class Kernel
                 $this->sessions->clear($telegramId);
                 (new \Pasargad\Store\BotConfig())->setNowpaymentsIpnSecret($secret);
                 $this->bot->sendMessage($chatId, '✅ IPN Secret ذخیره شد.');
+                (new \Pasargad\Bot\PasarguardSettings($this->bot))
+                    ->nowpaymentsSettings($chatId, $telegramId, $this->sessions);
                 return true;
 
             // ⚠️ مراحل `panel:username` و `panel:password` عمداً حذف شدند.
@@ -2606,9 +2648,11 @@ final class Kernel
             return;
         }
 
-        // خرید پنل نمایندگی وقتی ممکن نیست که اکانت سازندهٔ پنل تنظیم نشده باشد.
+        // خرید پنل نمایندگی وقتی ممکن نیست که نه اکانت سازندهٔ سراسری تنظیم
+        // شده باشد و نه خریدار پنل خودش را با کلید وصل کرده باشد.
         if ($kind === PackageRepository::KIND_AGENCY) {
             $agency = new AgencyService();
+            $agency->useCreatorPanel((new PanelAccess($this->panels))->creatorPanelFor($user));
 
             if (!$agency->canCreatePanels()['ok']) {
                 $this->bot->sendMessage($chatId, implode("\n", [

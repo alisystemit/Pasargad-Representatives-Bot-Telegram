@@ -130,6 +130,12 @@ final class AgencyService
      */
     public function canCreatePanels(): array
     {
+        // اگر خریدار پنل خودش را با کلید وصل کرده باشد، ساخت روی همان پنل و
+        // با همان کلید انجام می‌شود؛ در این حالت کلید سراسری لازم نیست.
+        if ($this->creator !== null && PanelAccess::isApiKey($this->creator)) {
+            return ['ok' => true, 'message' => ''];
+        }
+
         if ($this->ownerCredentials() !== null) {
             return ['ok' => true, 'message' => ''];
         }
@@ -380,7 +386,9 @@ final class AgencyService
             return ['ok' => false, 'message' => $guard['message'], 'details' => ['fatal' => true]];
         }
 
-        [$ownerUser, $ownerPassword] = $this->ownerCredentials();
+        // در مسیر پنلِ خودِ خریدار، کلاینت با توکن ثابت همان پنل کار می‌کند و
+        // نام کاربری/رمز نقشی ندارند. فقط برای امضای متد مقدار می‌دهیم.
+        [$ownerUser, $ownerPassword] = $this->ownerCredentials() ?? ['api', ''];
 
         $client   = $this->panelClient();
         $userId   = (int) $botUser['id'];
@@ -410,7 +418,7 @@ final class AgencyService
         // بود. اگر ادمین شناسه را در config گذاشته باشد همان، وگرنه از فهرست
         // نقش‌های خودِ پنل یک نقش غیرمالک (ترجیحاً اپراتور) پیدا می‌شود.
         // نقش مالک هرگز خودکار داده نمی‌شود (ارتقای دسترسی ممنوع).
-        $roleId = Config::int('panel.rep_role_id', 0);
+        $roleId = (new BotConfig())->repRoleId();
 
         if ($roleId <= 0) {
             $resolved = $this->resolveOperatorRole($client, $ownerUser, $ownerPassword);
@@ -422,7 +430,8 @@ final class AgencyService
                 return [
                     'ok'      => false,
                     'message' => 'روی پنل هیچ نقش غیرمالکی (اپراتور) پیدا نشد. '
-                        . 'یک نقش اپراتور در پنل بسازید یا rep_role_id را در config.php تنظیم کنید.',
+                        . 'یک نقش اپراتور در پنل بسازید یا شناسهٔ نقش را از '
+                        . '«تنظیمات Pasargad → نقش نماینده» در ربات تنظیم کنید.',
                     'details' => ['fatal' => true],
                 ];
             }

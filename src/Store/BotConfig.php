@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Pasargad\Store;
 
 use Pasargad\Support\Config;
+use Pasargad\Support\Crypto;
+use Pasargad\Support\Logger;
 
 /**
  * تنظیمات قابل ویرایش ربات.
@@ -23,13 +25,87 @@ final class BotConfig
         $this->settings = $settings ?? new Settings();
     }
 
+    /**
+     * مقدارِ قابل‌ویرایش از دیتابیس، و اگر خالی بود مقدارِ config.php.
+     *
+     * ⚠️ چرا «خالی» هم مثل «نبود» رفتار می‌کند: مایگریشن برای این کلیدها
+     * ردیفِ خالی می‌سازد. اگر فقط `null` را نشانهٔ نبود بدانیم، مقدارِ
+     * `config.php` هیچ‌وقت استفاده نمی‌شود و نصبی که کارت را در config
+     * گذاشته، بی‌دلیل «درگاه پیکربندی‌نشده» می‌بیند.
+     */
+    private function setting(string $key, string $configKey, string $default = ''): string
+    {
+        $value = $this->settings->get($key);
+
+        if ($value !== null && trim($value) !== '') {
+            return $value;
+        }
+
+        return Config::str($configKey, $default);
+    }
+
+    /**
+     * خواندنِ رازی که در دیتابیس رمزنگاری‌شده ذخیره می‌شود.
+     *
+     * ⚠️ سازگاری با مقدارهای قدیمی: ردیف‌هایی که پیش از افزودن رمزنگاری
+     * ذخیره شده‌اند، پیشوند `v1:` ندارند و همان‌طور خام برگردانده می‌شوند؛
+     * وگرنه با یک تغییر کوچک، کلیدهایی که کاربر قبلاً وارد کرده از کار
+     * می‌افتادند.
+     */
+    private function secret(string $key, string $configKey, string $default = ''): string
+    {
+        $value = $this->setting($key, $configKey, $default);
+
+        if ($value === '' || !str_starts_with($value, 'v1:')) {
+            return $value;
+        }
+
+        try {
+            return Crypto::decrypt($value);
+        } catch (\Throwable $e) {
+            Logger::error('Cannot decrypt bot setting', [
+                'key'   => $key,
+                'error' => $e->getMessage(),
+            ]);
+
+            return '';
+        }
+    }
+
+    /**
+     * ذخیرهٔ رمزنگاری‌شده (اگر رمزنگاری در دسترس باشد).
+     */
+    private function setSecret(string $key, string $value): void
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            $this->settings->set($key, '');
+            return;
+        }
+
+        if (Crypto::available() && Config::str('crypto_key', '') !== '') {
+            try {
+                $this->settings->set($key, Crypto::encrypt($value));
+                return;
+            } catch (\Throwable $e) {
+                Logger::warning('Cannot encrypt bot setting; stored as-is', [
+                    'key'   => $key,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        $this->settings->set($key, $value);
+    }
+
     // ------------------------------------------------------------------
     // کارت‌به‌کارت دستی
     // ------------------------------------------------------------------
 
     public function cardNumber(): string
     {
-        return $this->settings->get('store_card_number', Config::str('store.card_number', ''));
+        return $this->setting('store_card_number', 'store.card_number');
     }
 
     public function setCardNumber(string $value): void
@@ -39,7 +115,7 @@ final class BotConfig
 
     public function cardOwner(): string
     {
-        return $this->settings->get('store_card_owner', Config::str('store.card_owner', ''));
+        return $this->setting('store_card_owner', 'store.card_owner');
     }
 
     public function setCardOwner(string $value): void
@@ -49,7 +125,7 @@ final class BotConfig
 
     public function cardBank(): string
     {
-        return $this->settings->get('store_card_bank', Config::str('store.card_bank', ''));
+        return $this->setting('store_card_bank', 'store.card_bank');
     }
 
     public function setCardBank(string $value): void
@@ -59,7 +135,7 @@ final class BotConfig
 
     public function cardNote(): string
     {
-        return $this->settings->get('store_card_note', Config::str('store.card_note', ''));
+        return $this->setting('store_card_note', 'store.card_note');
     }
 
     public function setCardNote(string $value): void
@@ -73,22 +149,22 @@ final class BotConfig
 
     public function nowpaymentsApiKey(): string
     {
-        return $this->settings->get('nowpayments_api_key', Config::str('nowpayments.api_key', ''));
+        return $this->secret('nowpayments_api_key', 'nowpayments.api_key');
     }
 
     public function setNowpaymentsApiKey(string $value): void
     {
-        $this->settings->set('nowpayments_api_key', trim($value));
+        $this->setSecret('nowpayments_api_key', $value);
     }
 
     public function nowpaymentsIpnSecret(): string
     {
-        return $this->settings->get('nowpayments_ipn_secret', Config::str('nowpayments.ipn_secret', ''));
+        return $this->secret('nowpayments_ipn_secret', 'nowpayments.ipn_secret');
     }
 
     public function setNowpaymentsIpnSecret(string $value): void
     {
-        $this->settings->set('nowpayments_ipn_secret', trim($value));
+        $this->setSecret('nowpayments_ipn_secret', $value);
     }
 
     // ------------------------------------------------------------------
@@ -97,7 +173,7 @@ final class BotConfig
 
     public function autocardApiUrl(): string
     {
-        return $this->settings->get('autocard_api_url', Config::str('autocard.api_url', ''));
+        return $this->setting('autocard_api_url', 'autocard.api_url');
     }
 
     public function setAutocardApiUrl(string $value): void
@@ -107,17 +183,17 @@ final class BotConfig
 
     public function autocardApiKey(): string
     {
-        return $this->settings->get('autocard_api_key', Config::str('autocard.api_key', ''));
+        return $this->secret('autocard_api_key', 'autocard.api_key');
     }
 
     public function setAutocardApiKey(string $value): void
     {
-        $this->settings->set('autocard_api_key', trim($value));
+        $this->setSecret('autocard_api_key', $value);
     }
 
     public function autocardCardNumber(): string
     {
-        return $this->settings->get('autocard_card_number', Config::str('autocard.card_number', ''));
+        return $this->setting('autocard_card_number', 'autocard.card_number');
     }
 
     public function setAutocardCardNumber(string $value): void
@@ -127,7 +203,7 @@ final class BotConfig
 
     public function autocardCardOwner(): string
     {
-        return $this->settings->get('autocard_card_owner', Config::str('autocard.card_owner', ''));
+        return $this->setting('autocard_card_owner', 'autocard.card_owner');
     }
 
     public function setAutocardCardOwner(string $value): void
@@ -141,20 +217,14 @@ final class BotConfig
 
     public function ownerApiKey(): string
     {
-        $value = $this->settings->get('panel_api_key');
+        $value = $this->secret('panel_api_key', 'panel.api_key');
 
-        if ($value !== null && $value !== '' && $value !== 'YOUR_PANEL_API_KEY_HERE') {
-            return $value;
-        }
-
-        $configValue = Config::str('panel.api_key', '');
-
-        return ($configValue === '' || $configValue === 'YOUR_PANEL_API_KEY_HERE') ? '' : $configValue;
+        return $value === 'YOUR_PANEL_API_KEY_HERE' ? '' : $value;
     }
 
     public function setOwnerApiKey(string $value): void
     {
-        $this->settings->set('panel_api_key', trim($value));
+        $this->setSecret('panel_api_key', $value);
     }
 
     public function deleteOwnerApiKey(): void
@@ -168,7 +238,7 @@ final class BotConfig
 
     public function panelBaseUrl(): string
     {
-        return $this->settings->get('panel_base_url', Config::str('panel.base_url', 'https://us.api-system.top'));
+        return $this->setting('panel_base_url', 'panel.base_url', 'https://us.api-system.top');
     }
 
     public function setPanelBaseUrl(string $value): void
@@ -184,7 +254,7 @@ final class BotConfig
     {
         $value = $this->settings->get('panel_rep_role_id');
 
-        if ($value === null) {
+        if ($value === null || trim($value) === '') {
             return Config::int('panel.rep_role_id', 0);
         }
 

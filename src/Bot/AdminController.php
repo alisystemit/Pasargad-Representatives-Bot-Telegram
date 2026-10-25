@@ -206,14 +206,26 @@ final class AdminController
                 break;
 
             // ⚠️ فقط کلید API. قدم‌های نام‌کاربری/رمز حذف شده‌اند و `setOwnerAccount`
-                // خودش پیام راهنما می‌دهد، پس اینجا نشستی ساخته نمی‌شود.
-                case 'admin.settings.panel.owner':
-                    (new PasarguardSettings($this->bot))->setOwnerAccount($chatId);
-                    break;
+            // خودش پیام راهنما می‌دهد، پس اینجا نشستی ساخته نمی‌شود.
+            case 'admin.settings.panel.owner':
+                (new PasarguardSettings($this->bot))->setOwnerAccount($chatId);
+                break;
 
-                case 'admin.settings.panel.owner.test':
-                    (new PasarguardSettings($this->bot))->testOwnerConnection($chatId);
-                    break;
+            case 'admin.settings.panel.owner.test':
+                (new PasarguardSettings($this->bot))->testOwnerConnection($chatId);
+                break;
+
+            case 'admin.settings.panel.owner.set':
+                (new PasarguardSettings($this->bot))->startSetApiKey(
+                    $chatId,
+                    (int) $update->userId(),
+                    $this->sessions
+                );
+                break;
+
+            case 'admin.settings.panel.owner.delete':
+                (new PasarguardSettings($this->bot))->deleteApiKey($chatId);
+                break;
 
             case 'admin.settings.panel.role':
                 (new PasarguardSettings($this->bot))->setRepRole($chatId);
@@ -1754,12 +1766,10 @@ final class AdminController
                 ['text' => '📡 تنظیم کانال', 'data' => BotApi::encodeData('admin.channel')],
                 ['text' => '📜 ویرایش قوانین', 'data' => BotApi::encodeData('admin.rules.edit')],
             ],
+            // ⚠️ «متن‌ها»، «بکاپ»، «رشد و نگهداشت»، «پنل‌ها» و «آمار» عمداً
+            // این‌جا تکرار نشده‌اند: همین دکمه‌ها در پنل مدیریت (admin.home)
+            // هستند و تکرارشان فقط صفحهٔ تنظیمات را شلوغ می‌کرد.
             [
-                ['text' => '✏️✨ متن‌های ثابت', 'data' => BotApi::encodeData('admin.texts')],
-                ['text' => '💾 بکاپ', 'data' => BotApi::encodeData('admin.backup')],
-            ],
-            [
-                ['text' => '🚀 رشد و نگهداشت', 'data' => BotApi::encodeData('admin.grow')],
                 ['text' => ($flags->isCouponsEnabled() ? '🔴' : '🟢') . ' کد تخفیف',
                  'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::COUPONS_ENABLED])],
             ],
@@ -1772,10 +1782,6 @@ final class AdminController
             [['text' => '💳 مدیریت درگاه‌های پرداخت', 'data' => BotApi::encodeData('admin.gateways')]],
             [['text' => ($dailyReport ? '🔴' : '🟢') . ' گزارش روزانه ادمین', 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::REPORT_DAILY])]],
             [['text' => ($weeklyReport ? '🔴' : '🟢') . ' گزارش هفتگی ادمین', 'data' => BotApi::encodeData('admin.flag.toggle', ['key' => Settings::REPORT_WEEKLY])]],
-            [
-                ['text' => '🖥 پنل‌ها', 'data' => BotApi::encodeData('admin.panels')],
-                ['text' => '📊 آمار', 'data' => BotApi::encodeData('admin.stats')],
-            ],
             [['text' => '🌐 تنظیمات Pasargad', 'data' => BotApi::encodeData('admin.settings.pasargad')]],
             [['text' => '🔙 بازگشت به پنل مدیریت 🛠', 'data' => BotApi::encodeData('admin.home')]],
         ]);
@@ -2135,11 +2141,13 @@ final class AdminController
 
             if ($name === 'card2card') {
                 $card = (new \Pasargad\Store\BotConfig())->cardNumber();
-                $lines[] = '   🏦 شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape($card) . '</code> ✅' : '<i>⚠️ تنظیم نشده</i>');
+                // شمارهٔ کارت کامل نمایش داده نمی‌شود: صفحهٔ مدیریت هم ممکن است
+                // روی نمایشگر یا اسکرین‌شات دیده شود و شمارهٔ کامل لازم نیست.
+                $lines[] = '   🏦 شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape(Str::maskCardNumber($card)) . '</code> ✅' : '<i>⚠️ تنظیم نشده</i>');
             } elseif ($name === 'autocard') {
                 $card = \Pasargad\Payment\AutoCardGateway::cardNumber();
                 $api  = trim((new \Pasargad\Store\BotConfig())->autocardApiUrl());
-                $lines[] = '   🏦 شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape($card) . '</code> ✅' : '<i>⚠️ تنظیم نشده</i>');
+                $lines[] = '   🏦 شماره کارت: ' . ($card !== '' ? '<code>' . Str::escape(Str::maskCardNumber($card)) . '</code> ✅' : '<i>⚠️ تنظیم نشده</i>');
                 $lines[] = '   🔌 استعلام: ' . ($api !== '' ? '<code>' . Str::escape(Str::truncate($api, 40)) . '</code> ✅' : '<i>⚠️ api_url تنظیم نشده</i>');
                 $lines[] = '   💡 مبالغ یکتا + تأیید خودکار، بدون رسید دستی 🤖';
             } else {
@@ -2147,7 +2155,7 @@ final class AdminController
             }
 
             $lines[] = '   📊 وضعیت: ' . ($enabled ? 'فعال ✅' : 'غیرفعال 🔴')
-                . ($state['configured'] ? '' : ' — ⚠️ تا وقتی در config.php پیکربندی نشود کار نمی‌کند! 📝');
+                . ($state['configured'] ? '' : ' — ⚠️ تنظیماتش از «🌐 تنظیمات Pasargad» کامل شود! 📝');
 
             // ---- سنجهٔ واقعیِ سلامت ----
             //

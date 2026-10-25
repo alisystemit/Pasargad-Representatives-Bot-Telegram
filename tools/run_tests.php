@@ -26,6 +26,7 @@ $suites = [
     // می‌گیرند: دکمه‌ای که ساخته می‌شود ولی مسیریابی ندارد، و نوعی که در امضای
     // یک متد به کلاسِ ناموجود اشاره می‌کند (که `php -l` آن را نمی‌بیند).
     ['مسیریابی همهٔ دکمه‌ها',   $root . '/tests/routing_test.php',   false],
+    ['تنظیمات ادمین (ذخیره و نمایش)', $root . '/tests/admin_settings_test.php', false],
     ['نوع‌های حل‌نشده',        $root . '/tests/types_test.php',     false],
     ['تلاش دوبارهٔ وبهوک',     $root . '/tests/webhook_reliability_test.php', false],
     ['سفر مشتری و ادمین',    $root . '/tests/customer_journey_test.php', false],
