@@ -107,29 +107,68 @@ final class AgencyService
      * بدون این اکانت، خرید «پنل نمایندگی» قابل اجرا نیست — ولی خرید
      * «شارژ پنل» کار می‌کند چون از اکانت خودِ نماینده استفاده می‌کند.
      *
-     * اولویت با **کلید پنلی است که خریدار وصل کرده**؛ اگر نداشت، با کلید
-     * سراسریِ ربات (`panel.api_key`) ساخته می‌شود تا خریدارِ بدون پنل هم
-     * بتواند بخرد. رمز عبور دیگر هیچ‌جا در این مسیر پذیرفته نمی‌شود.
+     * فقط از **پنل‌های سوپر ادمین‌ها** برای ساخت پنل نمایندگی استفاده می‌شود.
+     * اگر هیچ سوپر ادمینی پنل وصل نکرده باشد، سیستم کار نمی‌کند.
      *
      * @return array{0:string, 1:string}|null [authUsername, apiKey]
      */
     private function ownerCredentials(): ?array
     {
-        if ($this->creator !== null) {
-            $credentials = $this->access->credentialsOf($this->creator);
+        // فقط سوپر ادمین‌ها می‌توانند پنل نمایندگی بسازند
+        // ابتدا پنل‌های سوپر ادمین‌ها را پیدا می‌کنیم
+        $superAdminPanels = $this->findSuperAdminPanels();
+        
+        if (empty($superAdminPanels)) {
+            return null;
+        }
+        
+        // از اولین پنل سوپر ادمین استفاده می‌کنیم
+        $panel = $superAdminPanels[0];
+        $credentials = $this->access->credentialsOf($panel);
 
-            if ($credentials === null) {
-                return null;
-            }
-
-            // در مسیر کلید، نام کاربری بی‌معنی است؛ خودِ کلید نقش را دارد و
-            // `panelClient()` آن را به‌عنوان توکن ثابت ست می‌کند.
-            return ['api', $credentials['credential']];
+        if ($credentials === null) {
+            return null;
         }
 
-        $globalKey = trim((string) Config::str('panel.api_key', ''));
-
-        return $globalKey === '' ? null : ['api', $globalKey];
+        // در مسیر کلید، نام کاربری بی‌معنی است؛ خودِ کلید نقش را دارد و
+        // `panelClient()` آن را به‌عنوان توکن ثابت ست می‌کند.
+        return ['api', $credentials['credential']];
+    }
+    
+    /**
+     * پنل‌های سوپر ادمین‌ها را پیدا می‌کند.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function findSuperAdminPanels(): array
+    {
+        $superAdmins = Config::arr('super_admins', []);
+        
+        if (empty($superAdmins)) {
+            return [];
+        }
+        
+        $db = \Pasargad\Support\Db::instance();
+        $placeholders = implode(',', array_fill(0, count($superAdmins), '?'));
+        
+        // پیدا کردن کاربران سوپر ادمین
+        $superAdminUsers = $db->all(
+            "SELECT id FROM users WHERE telegram_id IN ($placeholders)",
+            array_map('intval', $superAdmins)
+        );
+        
+        if (empty($superAdminUsers)) {
+            return [];
+        }
+        
+        $userIds = array_column($superAdminUsers, 'id');
+        $userPlaceholders = implode(',', array_fill(0, count($userIds), '?'));
+        
+        // پیدا کردن پنل‌های سوپر ادمین‌ها
+        return $db->all(
+            "SELECT * FROM panels WHERE user_id IN ($userPlaceholders) AND api_key IS NOT NULL AND api_key != ''",
+            $userIds
+        );
     }
 
     /**
@@ -143,21 +182,35 @@ final class AgencyService
             return ['ok' => true, 'message' => ''];
         }
 
-        if ($this->creator !== null) {
-            // کاربر پنل وصل کرده ولی اطلاعاتش ناقص است — پیام باید همان
-            // را بگوید، نه اینکه سراغ تنظیمات سراسری برود.
+        // بررسی می‌کنیم آیا سوپر ادمینی وجود دارد یا نه
+        $superAdmins = Config::arr('super_admins', []);
+        
+        if (empty($superAdmins)) {
             return [
                 'ok'      => false,
-                'message' => 'پنلی که به حساب شما وصل است اطلاعات ورود کاملی ندارد. '
-                    . 'با دکمهٔ «➕ اتصال پنل جدید» دوباره آدرس و رمز یا کلید API را ثبت کنید.',
+                'message' => 'هیچ سوپر ادمینی در تنظیمات تعریف نشده است!'
+                    . "\nلطفاً در <code>config.php</code> مقدار <code>super_admins</code> را تنظیم کنید.",
+            ];
+        }
+        
+        // بررسی می‌کنیم آیا سوپر ادمین‌ها پنل وصل کرده‌اند یا نه
+        $superAdminPanels = $this->findSuperAdminPanels();
+        
+        if (empty($superAdminPanels)) {
+            return [
+                'ok'      => false,
+                'message' => 'هیچ سوپر ادمینی پنل خود را به ربات وصل نکرده است! ⛔️🔧'
+                    . "\n\nیکی از سوپر ادمین‌ها باید:"
+                    . "\n1️⃣ از منوی «⚙️ تنظیمات» گزینه «🔗 اتصال پنل جدید» را انتخاب کند"
+                    . "\n2️⃣ آدرس پنل و کلید API خود را وارد کند"
+                    . "\n3️⃣ پس از تأیید اتصال، سیستم آماده ساخت پنل نمایندگی خواهد بود",
             ];
         }
 
         return [
             'ok'      => false,
-            'message' => 'کلید سازندهٔ پنل تنظیم نشده است. یکی از این دو لازم است:'
-                . "\n• کاربر یک پنل را با کلید API به ربات وصل کند، یا"
-                . "\n• در <code>config.php</code> مقدار <code>panel.api_key</code> تنظیم شود.",
+            'message' => 'پنل‌های سوپر ادمین‌ها فاقد کلید API معتبر هستند.'
+                . "\nلطفاً سوپر ادمین‌ها دوباره پنل خود را با کلید API وصل کنند.",
         ];
     }
 
