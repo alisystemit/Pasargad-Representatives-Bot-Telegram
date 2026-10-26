@@ -118,6 +118,7 @@ echo "\n▶ کاربر عادی به پنل مدیریت دسترسی ندارد
 
 $adminPages = [
     'admin.home',
+    'admin.guide',
     'admin.stats',
     'admin.packages',
     'admin.settings',
@@ -194,6 +195,17 @@ check('آمار برای سوپرادمین باز شد', str_contains($bot->all
 $bot->reset();
 $kernel->handle(cb($adminId, ['n' => 'admin.settings']));
 check('تنظیمات برای سوپرادمین باز شد', str_contains($bot->allText(), 'تنظیمات ربات'), $bot->allText());
+
+$bot->reset();
+$kernel->handle(cb($adminId, ['n' => 'admin.guide']));
+check('راهنمای مدیر برای سوپرادمین باز شد', str_contains($bot->allText(), 'راهنمای جامع مدیر'), $bot->allText());
+check('راهنما وابستگی‌های نصب را می‌گوید',
+    str_contains($bot->allText(), 'pdo_sqlite')
+    && str_contains($bot->allText(), 'cron/worker.php'),
+    $bot->allText());
+check('راهنما مجاز بودن پورت غیر ۴۴۳ را توضیح می‌دهد',
+    str_contains($bot->allText(), 'هر پورتی مجاز است'),
+    $bot->allText());
 
 // ------------------------------------------------------------------
 echo "\n▶ SQL injection\n";

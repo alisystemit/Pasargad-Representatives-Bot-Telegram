@@ -122,6 +122,29 @@ check('مرحله به «کلید» رفت', ($state['step'] ?? '') === PanelCon
 check('از کاربر کلید خواسته شد', str_contains($bot->allText(), 'کلید API'), $bot->allText());
 check('نام کاربری دیگر پرسیده نمی‌شود', !str_contains($bot->allText(), 'نام کاربری'), $bot->allText());
 
+// پورت دلخواه: اتصال پنل نباید به ۴۴۳ محدود باشد.
+// قبلاً گزارش شده بود که آدرس با پورت غیر ۴۴۳ رد می‌شود؛ این تست همان
+// ورودی را می‌فرستد و مطمئن می‌شود پورت نه‌تنها پذیرفته، بلکه حفظ می‌شود.
+$bot->reset();
+$manager->handleBaseUrl(100, 100, 'panel.example.com:8443', $state);
+$state = $sessions->get(100) ?? [];
+
+check(
+    'آدرس با پورت غیر ۴۴۳ پذیرفته شد',
+    ($state['panel_base_url'] ?? '') === 'https://panel.example.com:8443',
+    json_encode($state, JSON_UNESCAPED_UNICODE)
+);
+check('مرحله با پورت غیر ۴۴۳ جلو رفت', ($state['step'] ?? '') === PanelConnectionManager::STEP_CREDENTIAL);
+
+$bot->reset();
+$manager->handleBaseUrl(100, 100, 'https://1.2.3.4:2096', $state);
+$state = $sessions->get(100) ?? [];
+check(
+    'آدرس IP با پورت دلخواه هم پذیرفته شد',
+    ($state['panel_base_url'] ?? '') === 'https://1.2.3.4:2096',
+    json_encode($state, JSON_UNESCAPED_UNICODE)
+);
+
 // ------------------------------------------------------------------
 echo "\n▶ مرحلهٔ ۲: کلید اشتباه نباید چیزی ذخیره کند\n";
 // ------------------------------------------------------------------
@@ -193,7 +216,7 @@ $secondId = $panels->upsertFromPanel(
 );
 
 check('کاربر می‌تواند دو پنل داشته باشد', $panels->countByUser((int) $user['id']) === 2);
-check('دو پنل شناسهٔ متفاوت دارند', $panelId !== $secondId);
+check('دو پنل شناسهٔ متفاوت دارند', (int) $stored['id'] !== $secondId);
 check('پنل دوم آدرس خودش را دارد', ($panels->find($secondId)['base_url'] ?? '') === 'https://panel2.example.com');
 
 // ------------------------------------------------------------------

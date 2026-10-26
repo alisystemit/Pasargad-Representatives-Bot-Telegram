@@ -207,8 +207,11 @@ final class PanelConnectionManager
         $this->bot->sendMessage(
             $chatId,
             "🌐 <b>آدرس پنل پاسارگاد را بفرستید</b>\n\n"
-            . "آدرسی که با آن پنل را باز می‌کنید، همراه <code>https://</code>:\n"
-            . "<code>https://panel.example.com</code>\n\n"
+            . "آدرسی که با آن پنل را باز می‌کنید، همراه <code>https://</code> یا <code>http://</code>:\n"
+            . "<code>https://panel.example.com</code>\n"
+            . "<code>https://panel.example.com:8443</code>\n\n"
+            . "💡 <b>هر پورتی مجاز است</b>؛ لازم نیست ۴۴۳ باشد. اگر پورت را نوشتید،"
+            . " همان‌طور در آدرس بمانید.\n"
             . "💡 اگر پنل روی زیرشاخه نصب است همان را کامل بنویسید.\n"
             . "❌ برای لغو: /cancel"
         );
@@ -245,8 +248,10 @@ final class PanelConnectionManager
             $this->bot->sendMessage(
                 $chatId,
                 "⚠️ <b>آدرس پنل معتبر نیست.</b>\n\n"
-                . "آدرس باید با <code>http://</code> یا <code>https://</code> شروع شود و یک دامنه داشته باشد.\n"
-                . "نمونهٔ درست: <code>https://panel.example.com</code>"
+                . "آدرس باید با <code>http://</code> یا <code>https://</code> شروع شود و یک دامنه یا IP معتبر داشته باشد.\n"
+                . "پورت دلخواه مجاز است و لازم نیست ۴۴۳ باشد.\n"
+                . "نمونهٔ درست: <code>https://panel.example.com</code>\n"
+                . "یا با پورت: <code>https://panel.example.com:8443</code>"
             );
 
             return false;   // نشست را نگه می‌داریم تا کاربر دوباره تلاش کند.
@@ -306,8 +311,10 @@ final class PanelConnectionManager
                 $this->bot->sendMessage(
                     $chatId,
                     "❌ <b>اتصال برقرار نشد</b>\n\n" . $probe['message'] . "\n\n"
-                    . "💡 آدرس پنل و کلید را بررسی کنید. اگر پنل گواهی SSL معتبر ندارد، "
-                    . "موقتاً <code>panel.verify_ssl</code> را در تنظیمات خاموش کنید."
+                    . '🌐 آدرس تلاش‌شده: <code>' . Str::escape($baseUrl) . '</code>' . "\n"
+                    . "💡 پورت غیر از ۴۴۳ مشکلی ندارد؛ اگر پنل روی پورت دیگری است همان را"
+                    . " در آدرس بنویسید (مثل <code>https://host:8443</code>).\n"
+                    . "💡 اگر پنل گواهی SSL معتبر ندارد، موقتاً <code>panel.verify_ssl</code> را در تنظیمات خاموش کنید."
                 );
 
                 return false;

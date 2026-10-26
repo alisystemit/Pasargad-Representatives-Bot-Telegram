@@ -107,6 +107,10 @@ final class AdminController
                 $this->showHome($chatId);
                 break;
 
+            case 'admin.guide':
+                $this->showGuide($chatId);
+                break;
+
             case 'admin.stats':
                 $this->showStats($chatId);
                 break;
@@ -632,6 +636,7 @@ final class AdminController
             ],
             [
                 ['text' => '📋 لاگ حسابرسی', 'data' => BotApi::encodeData('admin.audit_log')],
+                ['text' => '📖 راهنمای مدیر', 'data' => BotApi::encodeData('admin.guide')],
             ],
             [
                 ['text' => '⚡ عملیات گروهی', 'data' => BotApi::encodeData('admin.bulk_ops')],
@@ -642,6 +647,176 @@ final class AdminController
                 ['text' => '🔄 انتقال', 'data' => BotApi::encodeData('admin.panel.transfer', ['id' => 0])],
             ],
             [['text' => '🔙 بازگشت به منوی اصلی 🏠', 'data' => BotApi::encodeData('menu')]],
+        ]);
+
+        $this->bot->sendMessage($chatId, implode("\n", $lines), [
+            'reply_markup' => $this->bot->buildMarkup($keyboard),
+        ]);
+    }
+
+    /**
+     * راهنمای جامع مدیر — از پیش‌نیازها تا اولین فروش و عیب‌یابی.
+     *
+     * چرا یک صفحهٔ ثابت و کامل؟ تازه‌کار نمی‌داند اول کدام دکمه را بزند و
+     * ترتیبِ «آدرس پنل ← کلید ← بسته ← درگاه ← تست» را از هیچ صفحه‌ای
+     * نمی‌فهمید. متن عمداً بلند است و `BotApi::sendMessage` خودش آن را به
+     * بخش‌های مجاز تلگرام می‌شکند.
+     */
+    private function showGuide(int $chatId): void
+    {
+        $botConfig = new \Pasargad\Store\BotConfig();
+
+        $tokenOk    = trim(Config::str('bot_token', '')) !== '';
+        $webhookOk  = trim(Config::str('webhook_secret', '')) !== ''
+            && Config::str('webhook_secret', '') !== 'CHANGE-THIS-RANDOM-SECRET';
+        $baseUrl    = trim(Config::str('base_url', ''));
+        $baseOk     = str_starts_with($baseUrl, 'https://');
+        $ownerKeyOk = trim($botConfig->ownerApiKey()) !== '';
+        $cardOk     = trim($botConfig->cardNumber()) !== '';
+        $nowOk      = trim($botConfig->nowpaymentsApiKey()) !== '';
+        $autoOk     = \Pasargad\Payment\AutoCardGateway::isConfigured();
+        $panelUrl   = $botConfig->panelBaseUrl();
+
+        $mark = static fn (bool $ok): string => $ok ? '✅' : '❌';
+
+        $lines = [
+            '📖✨ <b>راهنمای جامع مدیر</b>',
+            '👑 <i>از راه‌اندازی تا اولین فروش</i>',
+            '',
+            '📋✨ <b>وضعیت فعلی</b>',
+            '• توکن ربات: ' . $mark($tokenOk),
+            '• رمز وبهوک: ' . $mark($webhookOk),
+            '• آدرس وب HTTPS: ' . $mark($baseOk)
+                . ($baseUrl === '' ? '' : ' (<code>' . Str::escape($baseUrl) . '</code>)'),
+            '• کلید سازندهٔ پنل: ' . $mark($ownerKeyOk)
+                . ($ownerKeyOk ? ' (<code>' . Str::escape($panelUrl) . '</code>)' : ''),
+            '• کارت‌به‌کارت: ' . $mark($cardOk),
+            '• کارت خودکار: ' . $mark($autoOk),
+            '• NowPayments: ' . $mark($nowOk),
+            '',
+            '━━━━━━━━━━━━━━',
+            '🧱 <b>۱) وابستگی‌ها و پیش‌نیازها</b>',
+            '• PHP 8.1+ با افزونه‌های <code>pdo_sqlite</code>، <code>curl</code>،',
+            '  <code>mbstring</code>، <code>json</code>، <code>openssl</code>',
+            '• دسترسی نوشتن روی <code>data/</code> و فایل <code>data/bot.sqlite</code>',
+            '• دامنهٔ HTTPS؛ تلگرام وبهوک را روی HTTP قبول نمی‌کند',
+            '• <code>config.php</code> شامل <code>bot_token</code>،',
+            '  <code>webhook_secret</code> (اجباری)، <code>crypto_key</code>، <code>base_url</code>',
+            '• کرون هر ۵ دقیقه: <code>php /path/cron/worker.php</code>',
+            '• پنل PasarGuard و یک کلید API با مجوزهای لازم',
+            '• برای وب‌اپ و فاکتور: دسترسی عمومی به ریشهٔ سایت روی HTTPS',
+            '',
+            '━━━━━━━━━━━━━━',
+            '🚀 <b>۲) شروع کار</b>',
+            '۱. توکن ربات را از <b>@BotFather</b> بگیرید و در <code>config.php</code>',
+            '   در مقدار <code>bot_token</code> بگذارید.',
+            '۲. آیدی عددی خودتان را در <code>super_admins</code> اضافه کنید؛',
+            '   دکمهٔ «🛠 پنل مدیریت» فقط برای همین آیدی‌ها نمایش داده می‌شود.',
+            '۳. دامنهٔ HTTPS را در <code>base_url</code> بنویسید و وبهوک را ثبت کنید:',
+            '   <code>php tools/cli.php set-webhook</code>',
+            '۴. وضعیت را با <code>php tools/cli.php health</code> و',
+            '   <code>php tools/healthcheck.php</code> بررسی کنید.',
+            '۵. کرون را فعال کنید؛ بدون آن سفارش‌ها در صف می‌مانند و',
+            '   هشدار حجم/انقضا و بکاپ خودکار اجرا نمی‌شود.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '🔌 <b>۳) اتصال پنل پاسارگاد</b>',
+            'مسیر: «⚙️ تنظیمات» → «🔧 تنظیمات Pasargad»',
+            '',
+            '• <b>آدرس پنل</b>: آدرسی که خودتان در مرورگر باز می‌کنید.',
+            '  هر پورتی مجاز است (۴۴۳ الزامی نیست)؛ مثلاً:',
+            '  <code>https://panel.example.com:8443</code>',
+            '• <b>کلید سازندهٔ پنل</b>: در پنل بسازید:',
+            '  Settings → API Keys → کلید جدید',
+            '• دسترسی‌های لازم:',
+            '  <code>admins.create</code> — ساخت پنل نمایندگی',
+            '  <code>admins.read</code> — خواندن پنل و وضعیت',
+            '  <code>admins.update</code> — شارژ و تمدید',
+            '  <code>api_keys.create</code> — کلید پنل نماینده',
+            '  <code>admin_roles.read</code> — یافتن نقش اپراتور',
+            '  <code>users.read</code> — آمار کاربران',
+            '• دکمهٔ «🧪 تست اتصال» فقط احراز هویت و <code>admins.read</code> را',
+            '  می‌سنجد؛ برای بررسی همهٔ مجوزها اجرا کنید:',
+            '  <code>php tools/panel_key_check.php</code>',
+            '• <b>نقش نماینده</b>: اگر خالی بمانید، ربات نقش غیرمالک را',
+            '  خودکار از پنل پیدا می‌کند. نقش مالک هرگز خودکار داده نمی‌شود.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '📦 <b>۴) ساخت بسته</b>',
+            'مسیر: «📦 بسته‌ها» → «➕ بستهٔ جدید»',
+            '',
+            '• <b>پنل نمایندگی</b>: ربات روی پنل خریدار (اگر وصل کرده باشد)',
+            '  یا پنل مرکزی، یک ادمین اپراتور می‌سازد و حجم/انقضا می‌دهد.',
+            '• <b>شارژ پنل</b>: حجم را به پنل موجود نماینده اضافه می‌کند؛',
+            '  خریدار باید از قبل پنل وصل کرده باشد.',
+            '• برای هر بسته حجم (گیگ)، مدت (روز)، قیمت (تومان)،',
+            '  سقف کاربران و وضعیت فعال/غیرفعال را مشخص کنید.',
+            '• بستهٔ غیرفعال در فروشگاه دیده نمی‌شود ولی حذف نمی‌شود.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '💳 <b>۵) پرداخت‌ها</b>',
+            '• <b>کارت‌به‌کارت</b>: «تنظیمات» → «تنظیمات پرداخت» →',
+            '  شماره کارت و نام صاحب کارت. کاربر رسید می‌فرستد و شما از',
+            '  «🧾 سفارش‌ها» تأیید یا رد می‌کنید.',
+            '• <b>کارت خودکار</b>: نیاز به سرویس کارت‌خوان و تنظیمات آن دارد.',
+            '• <b>NowPayments</b>: کلید API همان درگاه را وارد کنید.',
+            '• روش‌های تأییدنشده در فروشگاه نمایش داده نمی‌شوند.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '🧪 <b>۶) تست خرید و اجرای سفارش</b>',
+            '۱. یک بسته ارزان بسازید و با حساب غیرادمین خرید کنید.',
+            '۲. پرداخت را کامل و سفارش را تأیید کنید.',
+            '۳. سرنوشت سفارش را در «🧾 سفارش‌ها» ببینید:',
+            '   awaiting_payment ← paid ← applying ← applied',
+            '۴. اگر اجرا خودکار خاموش است، کرون یا دکمهٔ «تلاش مجدد»',
+            '   سفارش را اعمال می‌کند.',
+            '۵. لاگ هر سفارش (success/failed/agency) در جزئیات آن است؛',
+            '   خطای قدیمی که بعداً جبران شده، وضعیت فعلی را خراب نمی‌کند.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '🌐 <b>۷) وب‌اپ، فاکتور و کانفیگ تست</b>',
+            '• مینی‌اپ و فاکتور فقط با <code>base_url</code> معتبر روی HTTPS کار',
+            '  می‌کنند. دکمهٔ مینی‌اپ در منوی کاربر دیده می‌شود.',
+            '• «🧪 تست» امکان ساخت کانفیگ آزمایشی روی پنل نماینده و',
+            '  غیرفعال‌سازی خودکار آن را تنظیم می‌کند.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '🛠 <b>۸) نگهداری روزمره</b>',
+            '• «💾 بکاپ»: فایل دیتابیس را روی تلگرام دریافت کنید.',
+            '• «📋 لاگ حسابرسی»: اقدامات مدیر را نشان می‌دهد.',
+            '• «📣 پیام همگانی»: ارسال پیام به کاربران (با احتیاط).',
+            '• «📊 آمار» و «💰 داشبورد درآمد»: فروش و وضعیت پنل‌ها.',
+            '• «🎫 پشتیبانی»: تیکت‌های باز کاربران.',
+            '',
+            '━━━━━━━━━━━━━━',
+            '🩺 <b>۹) عیب‌یابی سریع</b>',
+            '• <b>۴۰۱</b>: توکن/کلید اشتباه یا منقضی است.',
+            '• <b>۴۰۳</b>: کلید معتبر است ولی مجوز لازم را ندارد؛ کلید تازه',
+            '  با دسترسی‌های بخش ۳ بسازید.',
+            '• <b>آدرس پنل</b>: پورت دلخواه مجاز است؛ <code>user:pass@</code> در',
+            '  آدرس ممنوع است. اگر پنل گواهی SSL معتبر ندارد،',
+            '  <code>panel.verify_ssl</code> را در <code>config.php</code> خاموش کنید.',
+            '• <b>ربات جواب نمی‌دهد</b>: <code>php tools/cli.php webhook-info</code>',
+            '  و <code>php tools/cli.php get-me</code> را اجرا کنید.',
+            '• <b>سفارش در صف ماند</b>: کرون <code>cron/worker.php</code> را',
+            '  بررسی کنید؛ «تلاش مجدد» فقط برای خطاهای قابل‌رفع است.',
+            '• <b>پنل نمایندگی ساخته نشد</b>: لاگ سفارش را بخوانید؛ معمولاً',
+            '  مجوز <code>admins.create</code> یا نقش اپراتور کم است.',
+            '',
+            '💡 هر زمان شک کردید، اول «🩺 healthcheck» را اجرا کنید:',
+            '<code>php tools/healthcheck.php</code>',
+        ];
+
+        $keyboard = Keyboard::rows([
+            [
+                ['text' => '🔧 تنظیمات Pasargad', 'data' => BotApi::encodeData('admin.settings.pasargad')],
+                ['text' => '📦 بسته‌ها', 'data' => BotApi::encodeData('admin.packages')],
+            ],
+            [
+                ['text' => '💳 درگاه‌ها', 'data' => BotApi::encodeData('admin.gateways')],
+                ['text' => '🧾 سفارش‌ها', 'data' => BotApi::encodeData('admin.orders')],
+            ],
+            Keyboard::back(BotApi::encodeData('admin.home'), '🛠 پنل مدیریت'),
         ]);
 
         $this->bot->sendMessage($chatId, implode("\n", $lines), [
